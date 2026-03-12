@@ -11,20 +11,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import {
-  Users, Boxes, Database, FolderKanban, Home,
+  Users, Database, FolderKanban, Home,
   HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog,
 } from "lucide-react";
 import { motion } from "framer-motion";
-
-interface Module {
-  id: string;
-  name: string;
-  description: string | null;
-  icon: string;
-  color: string;
-  nocodb_table_id: string;
-  nocodb_base_id: string;
-}
 
 interface UserToggle {
   id: string;
@@ -35,15 +25,14 @@ interface UserToggle {
 interface DashboardSidebarProps {
   isAdmin: boolean;
   activeView: string;
-  onViewChange: (view: string, module?: Module, toggle?: UserToggle) => void;
-  modules: Module[];
+  onViewChange: (view: string, module?: any, toggle?: UserToggle) => void;
   toggles?: UserToggle[];
   companyRole?: string | null;
   companyName?: string;
 }
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  administrador: ["team", "modules", "inbox", "coverage", "tickets", "usage"],
+  administrador: ["team", "inbox", "coverage", "tickets", "usage"],
   supervisor: ["inbox", "tickets"],
   operador: ["inbox", "tickets"],
 };
@@ -68,7 +57,7 @@ const toggleItemClass = `
   hover:bg-secondary/60 hover:translate-x-0.5
 `;
 
-export default function DashboardSidebar({ isAdmin, activeView, onViewChange, modules, toggles = [], companyRole, companyName }: DashboardSidebarProps) {
+export default function DashboardSidebar({ isAdmin, activeView, onViewChange, toggles = [], companyRole, companyName }: DashboardSidebarProps) {
   const { state, setOpen, isMobile } = useSidebar();
   const collapsed = state === "collapsed";
 
@@ -139,7 +128,6 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, mo
               <SidebarMenu className="space-y-0.5">
                 <NavItem view="home" icon={Home} label="Inicio" />
                 <NavItem view="users" icon={Users} label="Empresas" />
-                <NavItem view="modules" icon={Boxes} label="Módulos" />
                 <NavItem view="usage" icon={Activity} label="Uso" />
                 <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />
                 <NavItem view="tickets" icon={Ticket} label="Tickets" />
@@ -166,32 +154,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, mo
           </SidebarGroup>
         )}
 
-        {/* Modules */}
-        {modules.length > 0 && (
-          <SidebarGroup>
-            <SectionLabel>Módulos</SectionLabel>
-            <SidebarGroupContent>
-              <SidebarMenu className="space-y-0.5">
-                {modules.map(mod => {
-                  const IconComp = iconMap[mod.icon] || iconMap.default;
-                  return (
-                    <SidebarMenuItem key={mod.id}>
-                      <SidebarMenuButton
-                        onClick={() => onViewChange(`module-${mod.id}`, mod)}
-                        isActive={activeView === `module-${mod.id}`}
-                        tooltip={mod.name}
-                        className={menuItemClass}
-                      >
-                        <IconComp className="w-[18px] h-[18px] flex-shrink-0 opacity-80" />
-                        <span className="truncate">{mod.name}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
+
 
         {/* Toggles */}
         {toggles.length > 0 && (

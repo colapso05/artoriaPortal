@@ -45,7 +45,6 @@ import {
   UserCog,
   Eye,
   EyeOff,
-  Boxes,
 } from "lucide-react";
 
 const generatePassword = () => {
@@ -99,7 +98,6 @@ const ROLE_CONFIG = {
 interface Props {
   companyId: string;
   companyName: string;
-  onOpenEditModules?: (userId: string) => void;
   onOpenResetPassword?: (userId: string) => void;
   onSimulate?: (userId: string, name: string) => void;
 }
@@ -107,7 +105,6 @@ interface Props {
 export default function CompanyTeamManager({ 
   companyId, 
   companyName,
-  onOpenEditModules,
   onOpenResetPassword,
   onSimulate 
 }: Props) {
@@ -467,12 +464,7 @@ export default function CompanyTeamManager({
                           <DropdownMenuItem onClick={() => openEdit(u)} className="cursor-pointer gap-2">
                           <Pencil className="w-4 h-4" /> Detalle / Editar
                         </DropdownMenuItem>
-                        <DropdownMenuItem 
-                          onClick={() => onOpenEditModules?.(u.user_id)} 
-                          className="cursor-pointer gap-2 text-sm"
-                        >
-                          <Boxes className="w-4 h-4" /> Asignar módulos
-                        </DropdownMenuItem>
+
                         <DropdownMenuItem 
                           onClick={() => onOpenResetPassword?.(u.user_id)} 
                           className="cursor-pointer gap-2 text-sm"

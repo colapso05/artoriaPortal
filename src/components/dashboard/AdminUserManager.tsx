@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Plus, Trash2, Settings2, Pencil, Building2, KeyRound, Copy, Eye, EyeOff,
-  MoreHorizontal, Link2, Phone, Key, Boxes, RotateCw, ChevronLeft, Map, Users as UsersIcon, Settings
+  MoreHorizontal, Link2, Phone, Key, RotateCw, ChevronLeft, Map, Users as UsersIcon, Settings
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -32,15 +32,7 @@ const generatePassword = () => {
 };
 
 
-interface Module {
-  id: string;
-  name: string;
-  description: string | null;
-  nocodb_table_id: string;
-  nocodb_base_id: string;
-  icon: string;
-  color: string;
-}
+
 
 interface CompanyConfig {
   id: string;
@@ -55,8 +47,6 @@ interface CompanyConfig {
 export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: string, name: string) => void }) {
   const [companies, setCompanies] = useState<CompanyConfig[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<CompanyConfig | null>(null);
-  const [modules, setModules] = useState<Module[]>([]);
-  const [userModules, setUserModules] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(false);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
 
@@ -71,9 +61,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const [countryPrefix, setCountryPrefix] = useState("+56");
 
 
-  // Edit modules
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editModules, setEditModules] = useState<string[]>([]);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
   // Edit user/company
@@ -105,7 +93,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
 
   useEffect(() => {
     fetchCompanies();
-    fetchModules();
   }, []);
 
   const fetchCompanies = async () => {
@@ -114,23 +101,11 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     const validConfigs = configs || [];
     setCompanies(validConfigs);
 
-    // Load modules mapped to owners/admins
-    const { data: umData } = await supabase.from("user_modules").select("*");
-    if (umData) {
-      const map: Record<string, string[]> = {};
-      umData.forEach((um: any) => {
-        if (!map[um.user_id]) map[um.user_id] = [];
-        map[um.user_id].push(um.module_id);
-      });
-      setUserModules(map);
-    }
+
     setLoading(false);
   };
 
-  const fetchModules = async () => {
-    const { data } = await supabase.from("modules").select("*").order("name");
-    setModules(data || []);
-  };
+
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -179,11 +154,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
         });
       }
 
-      // 2. Assign modules
-      if (selectedModules.length > 0) {
-        const inserts = selectedModules.map(moduleId => ({ user_id: userId, module_id: moduleId }));
-        await supabase.from("user_modules").insert(inserts);
-      }
+
     }
 
     // Notify external webhook
@@ -206,7 +177,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
 
     toast({ title: "Empresa creada", description: `${newEmail}` });
     setNewEmail(""); setNewName(""); setNewPassword("");
-    setSelectedModules([]); setNewYcloudKey(""); setNewYcloudPhone("");
+    setNewYcloudKey(""); setNewYcloudPhone("");
     setDialogOpen(false);
     fetchCompanies();
     setLoading(false);
@@ -226,27 +197,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     }
   };
 
-  // Modules
-  const openEditModules = (userId: string) => {
-    setEditingUserId(userId);
-    setEditModules(userModules[userId] || []);
-    setEditDialogOpen(true);
-  };
-  const handleSaveModules = async () => {
-    if (!editingUserId) return;
-    setLoading(true);
-    await supabase.from("user_modules").delete().eq("user_id", editingUserId);
-    if (editModules.length > 0) {
-      const inserts = editModules.map(moduleId => ({ user_id: editingUserId, module_id: moduleId }));
-      await supabase.from("user_modules").insert(inserts);
-    }
-    toast({ title: "Configuración actualizada" });
-    setEditDialogOpen(false);
-    fetchCompanies();
-    setLoading(false);
-  };
-  const toggleModule = (moduleId: string) => setSelectedModules(prev => prev.includes(moduleId) ? prev.filter(m => m !== moduleId) : [...prev, moduleId]);
-  const toggleEditModule = (moduleId: string) => setEditModules(prev => prev.includes(moduleId) ? prev.filter(m => m !== moduleId) : [...prev, moduleId]);
+
 
   // Edit user/company
   const openEditUser = (company: CompanyConfig) => {
@@ -522,24 +473,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                 </div>
               </div>
 
-              {/* Sección Módulos */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 pb-1 border-b border-border/20">
-                  <Boxes className="w-4 h-4 text-primary" />
-                  <span className="text-sm font-bold uppercase tracking-wider text-muted-foreground/80">Módulos Asignados</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {modules.map(mod => (
-                    <button key={mod.id} type="button" onClick={() => toggleModule(mod.id)}
-                      className={`px-3 py-1.5 rounded-full text-[11px] font-medium transition-all border ${selectedModules.includes(mod.id)
-                        ? "bg-primary/20 text-primary border-primary/40 shadow-sm"
-                        : "bg-secondary/40 text-muted-foreground border-border/30 hover:bg-secondary/60"
-                        }`}>
-                      {mod.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
+
 
               <div className="pt-2 sticky bottom-0 bg-card/95 backdrop-blur-sm pb-1">
                 <Button type="submit" disabled={loading} className="w-full h-11 text-base font-bold shadow-lg shadow-primary/20">
@@ -556,22 +490,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
         </Dialog>
       </div>
 
-      {/* Edit Modules Dialog */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="border-border/30 bg-card">
-          <DialogHeader><DialogTitle>Asignar Módulos</DialogTitle></DialogHeader>
-          <div className="space-y-4 mt-4">
-            <div className="flex flex-wrap gap-2">
-              {modules.map(mod => (
-                <button key={mod.id} type="button" onClick={() => toggleEditModule(mod.id)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${editModules.includes(mod.id) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:bg-secondary/80"
-                    }`}>{mod.name}</button>
-              ))}
-            </div>
-            <Button onClick={handleSaveModules} disabled={loading} className="w-full">{loading ? "Guardando..." : "Guardar Módulos"}</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+
 
       {/* Edit User/Company Dialog */}
       <Dialog open={editUserDialogOpen} onOpenChange={setEditUserDialogOpen}>
@@ -719,7 +638,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
               <CompanyTeamManager 
                 companyId={selectedCompany.id} 
                 companyName={selectedCompany.company_name} 
-                onOpenEditModules={(userId) => openEditModules(userId)} // Pass the handler
                 onOpenResetPassword={(userId) => openResetPassword(userId)} // Pass the handler
                 onSimulate={onSimulate} // Pass through if available
               />

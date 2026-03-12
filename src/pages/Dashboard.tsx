@@ -8,8 +8,6 @@ import DashboardSidebar from "@/components/dashboard/DashboardSidebar";
 import { OnboardingTour } from "@/components/dashboard/OnboardingTour";
 import ChangePasswordScreen from "@/components/dashboard/ChangePasswordScreen";
 import AdminUserManager from "@/components/dashboard/AdminUserManager";
-import AdminModuleManager from "@/components/dashboard/AdminModuleManager";
-import UserDashboard from "@/components/dashboard/UserDashboard";
 import UsageTracker from "@/components/dashboard/UsageTracker";
 import AgentToggle from "@/components/dashboard/AgentToggle";
 import WhatsAppInbox from "@/components/dashboard/WhatsAppInbox";
@@ -19,15 +17,7 @@ import CompanyTeamManager from "@/components/dashboard/CompanyTeamManager";
 import AdminDashboardHome from "@/components/dashboard/AdminDashboardHome";
 import ClientDashboardHome from "@/components/dashboard/ClientDashboardHome";
 
-interface Module {
-  id: string;
-  name: string;
-  description: string | null;
-  nocodb_table_id: string;
-  nocodb_base_id: string;
-  icon: string;
-  color: string;
-}
+
 
 interface UserToggle {
   id: string;
@@ -37,7 +27,7 @@ interface UserToggle {
 
 // Permissions matrix for company roles
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  administrador: ["team", "modules", "inbox", "coverage", "tickets", "usage"],
+  administrador: ["team", "inbox", "coverage", "tickets", "usage"],
   supervisor: ["inbox", "tickets"],
   operador: ["inbox", "tickets"],
 };
@@ -47,10 +37,10 @@ export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [displayName, setDisplayName] = useState("");
-  const [modules, setModules] = useState<Module[]>([]);
+
   const [toggles, setToggles] = useState<UserToggle[]>([]);
   const [activeView, setActiveView] = useState("");
-  const [activeModule, setActiveModule] = useState<Module | null>(null);
+
   const [activeToggle, setActiveToggle] = useState<UserToggle | null>(null);
   const [companyRole, setCompanyRole] = useState<string | null>(null);
   const [companyId, setCompanyId] = useState<string | null>(null);
@@ -136,22 +126,7 @@ export default function Dashboard() {
     if (profileData?.must_change_password) setMustChangePassword(true);
     if (profileData?.display_name) setDisplayName(profileData.display_name);
 
-    // Load modules
-    const { data: umData } = await supabase
-      .from("user_modules")
-      .select("module_id")
-      .eq("user_id", userId);
 
-    let loadedModules: Module[] = [];
-    if (umData && umData.length > 0) {
-      const moduleIds = umData.map((um: any) => um.module_id);
-      const { data: modulesData } = await supabase
-        .from("modules")
-        .select("*")
-        .in("id", moduleIds);
-      if (modulesData) loadedModules = modulesData;
-    }
-    setModules(loadedModules);
 
     // Load toggles
     const { data: togglesData } = await supabase
@@ -169,9 +144,8 @@ export default function Dashboard() {
     }
   };
 
-  const handleViewChange = (view: string, module?: Module, toggle?: UserToggle) => {
+  const handleViewChange = (view: string, unused_module?: any, toggle?: UserToggle) => {
     setActiveView(view);
-    setActiveModule(module || null);
     setActiveToggle(toggle || null);
   };
 
@@ -218,7 +192,7 @@ export default function Dashboard() {
           isAdmin={effectiveIsAdmin}
           activeView={activeView}
           onViewChange={handleViewChange}
-          modules={modules}
+
           toggles={toggles}
           companyRole={effectiveCompanyRole}
           companyName={effectiveCompanyName}
@@ -259,7 +233,7 @@ export default function Dashboard() {
                   setActiveView("home");
                 }} />
               )}
-              {activeView === "modules" && effectiveIsAdmin && <AdminModuleManager />}
+
               {activeView === "inbox" && (effectiveIsAdmin || hasPermission("inbox")) && (
                 <WhatsAppInbox 
                   companyId={effectiveCompanyId || undefined} 
@@ -303,9 +277,7 @@ export default function Dashboard() {
                   <UsageTracker mode="client" empresaFilter={simulatedCompanyId ? simulatedCompanyName : displayName} />
                 </div>
               )}
-              {activeView.startsWith("module-") && (
-                <UserDashboard activeModule={activeModule} onModuleUpdated={() => session && initializeDashboard(session.user.id)} />
-              )}
+
               {activeView.startsWith("toggle-") && activeToggle && (
                 <div className="max-w-xl">
                   <AgentToggle tableId={activeToggle.nocodb_table_id} name={activeToggle.name} />
