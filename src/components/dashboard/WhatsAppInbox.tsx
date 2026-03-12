@@ -33,6 +33,7 @@ interface Conversation {
   taken_by?: string | null;
   taken_at?: string | null;
   status: 'abierto' | 'en_progreso' | 'cerrado'; // Virtual/Infered field
+  match_content?: string; // For search results
 }
 
 interface Message {
@@ -243,6 +244,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [searchResults, setSearchResults] = useState<any[]>([]);
   const [chatFilter, setChatFilter] = useState<'all' | 'open' | 'mine' | 'closed'>('all');
   const [isTicketModalOpen, setIsTicketModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
@@ -258,6 +260,26 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const selectedConvRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  // Debounced keyword search
+  useEffect(() => {
+    if (!searchTerm.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const { data, error } = await supabase.rpc('search_conversations_by_keyword', {
+        p_company_id: companyId,
+        p_keyword: searchTerm
+      });
+      if (!error && data) {
+        setSearchResults(data);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm, companyId]);
 
   useEffect(() => {
     loadConversations();
@@ -609,9 +631,33 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   };
 
   // Filter conversations
-  const filtered = conversations.filter((c) => {
-    const matchesSearch = !searchTerm || c.profile_name?.toLowerCase().includes(searchTerm.toLowerCase()) || c.wa_id.includes(searchTerm);
+  const filtered = (() => {
+    let base = [...conversations];
+    if (searchTerm.trim() && searchResults.length > 0) {
+      searchResults.forEach(sr => {
+        if (!base.find(c => c.id === sr.id)) {
+          base.push({
+            ...sr,
+            status: sr.status || (sr.is_agent_active ? 'abierto' : 'en_progreso')
+          } as Conversation);
+        }
+      });
+    }
+
+    return base.map(c => {
+      const hit = searchResults.find(sr => sr.id === c.id);
+      return hit ? { ...c, match_content: hit.match_content } : c;
+    });
+  })().filter((c) => {
+    const matchesSearch = !searchTerm || 
+      c.profile_name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+      c.wa_id.includes(searchTerm) ||
+      !!c.match_content;
+    
     if (!matchesSearch) return false;
+
+    // Si hay match por palabra clave en mensaje, lo mostramos independientemente del filtro de pestaña
+    if (searchTerm.trim() && c.match_content) return true;
 
     if (chatFilter === 'closed') return c.status === 'cerrado';
     if (c.status === 'cerrado') return false;
@@ -764,9 +810,16 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                   </span>
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <StatusBadge status={conv.status} className="mb-0.5" />
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <StatusBadge status={conv.status} />
+                    {conv.match_content && (
+                      <Badge variant="outline" className="text-[9px] h-4 px-1.5 py-0 bg-primary/10 text-primary border-primary/20 font-bold">
+                        en mensaje
+                      </Badge>
+                    )}
+                  </div>
                   <p className={`text-[11px] leading-tight truncate w-full ${conv.unread_count > 0 ? "text-foreground/90 font-medium" : "text-muted-foreground/60 font-light"}`}>
-                    {conv.last_message_preview || "Sin mensajes"}
+                    {conv.match_content || conv.last_message_preview || "Sin mensajes"}
                   </p>
                 </div>
               </div>
