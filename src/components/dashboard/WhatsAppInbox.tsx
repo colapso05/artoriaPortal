@@ -128,54 +128,37 @@ function StatusBadge({ status, className = "" }: { status: 'abierto' | 'en_progr
 }
 
 function MessageMedia({ message }: { message: Message }) {
-  let url = message.media_url;
-  let type = message.media_type || message.message_type;
-
-  // Fallback visual para archivos adjuntos subidos manualmente desde este dashboard
-  if (!url && message.content && message.content.includes("📎 Archivo adjunto:")) {
-    const extractedUrl = message.content.split("📎 Archivo adjunto: ")[1]?.trim();
-    if (extractedUrl && extractedUrl.startsWith("http")) {
-      url = extractedUrl;
-    }
-  }
-
+  const url = message.media_url;
   if (!url) return null;
 
-  // Si no hay tipo explícito, intentar deducirlo del contenido (p.ej. si tiene el emoji 🎥)
-  if (!type && message.content) {
-    if (message.content.includes('🎥')) type = 'video';
-    else if (message.content.includes('📷')) type = 'image';
-    else if (message.content.includes('🎵')) type = 'audio';
-  }
+  // Detect type by mime in URL, extension or message properties
+  const isImage = url.includes('image') || /\.(jpg|jpeg|png|gif|webp|heic)/i.test(url) || message.message_type === 'image';
+  const isAudio = url.includes('audio') || /\.(ogg|mp3|wav|m4a|amr)/i.test(url) || message.message_type === 'audio';
+  const isVideo = url.includes('video') || /\.(mp4|mov|avi|3gp|mkv|wmv)/i.test(url) || message.message_type === 'video' || message.message_type === 'short_video';
 
-  // Deducir el tipo mime real basado en la extensión de la URL si el sistema no lo proveyó correctamente
-  if (!type || !type.match(/^(image|video|audio)/)) {
-    const lowerCut = url.split('?')[0].toLowerCase();
-    if (lowerCut.match(/\.(jpg|jpeg|png|gif|webp|svg|heic)$/)) type = "image";
-    else if (lowerCut.match(/\.(mp4|webm|mov|m4v|3gp|mkv|avi|wmv)$/)) type = "video";
-    else if (lowerCut.match(/\.(mp3|ogg|wav|aac|m4a|amr)$/)) type = "audio";
-    else if (type === 'short_video') type = 'video'; // Mapeo explícito
-  }
-
-  if (type?.startsWith("image")) {
+  if (isImage) {
     return (
       <img
         src={url}
-        alt="Imagen"
-        className="rounded-lg max-w-[200px] max-h-[240px] object-cover cursor-pointer hover:opacity-90 transition mb-1.5"
+        alt="WhatsApp Image"
+        className="rounded-lg max-w-[280px] md:max-w-xs max-h-[320px] object-cover cursor-pointer hover:opacity-90 transition mb-1.5 shadow-sm"
         onClick={() => window.open(url, "_blank")}
         loading="lazy"
       />
     );
   }
-  if (type?.startsWith("audio")) {
+
+  if (isAudio) {
     return (
-      <audio controls className="max-w-[240px] mb-1.5 h-8" preload="none">
-        <source src={url} type={type} />
-      </audio>
+      <div className="bg-secondary/20 rounded-xl p-2 mb-1.5 border border-border/10 max-w-[240px]">
+        <audio controls className="w-full h-8" preload="none">
+          <source src={url} />
+        </audio>
+      </div>
     );
   }
-  if (type?.startsWith("video")) {
+
+  if (isVideo) {
     return (
       <div className="relative group/video max-w-[280px] rounded-xl overflow-hidden bg-slate-900 border border-border/10 shadow-2xl mb-2">
         <video
@@ -183,10 +166,8 @@ function MessageMedia({ message }: { message: Message }) {
           controls
           playsInline
           preload="metadata"
-          crossOrigin="anonymous"
-          onError={(e) => console.log("Video Load Error:", e)}
         >
-          <source src={url} type={type?.includes('/') ? type : 'video/mp4'} />
+          <source src={url} />
           Tu navegador no soporta el reproductor de video.
         </video>
         <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover/video:opacity-100 transition-opacity">
@@ -195,35 +176,26 @@ function MessageMedia({ message }: { message: Message }) {
             size="icon"
             className="h-8 w-8 rounded-full bg-black/60 hover:bg-black/90 text-white border-0 backdrop-blur-sm"
             onClick={() => window.open(url, "_blank")}
-            title="Abrir en pestaña nueva"
           >
             <Monitor className="w-3.5 h-3.5" />
           </Button>
-          <a
-            href={url}
-            download={`video_${message.id.substring(0, 6)}.mp4`}
-            className="h-8 w-8 flex items-center justify-center rounded-full bg-black/60 hover:bg-secondary text-white transition-colors backdrop-blur-sm"
-            title="Descargar video"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </a>
-        </div>
-        <div className="px-3 py-1.5 text-[10px] text-white/50 bg-black/20 flex justify-between items-center">
-          <span className="truncate italic">Reproductor Seguro</span>
-          <span className="font-mono uppercase opacity-50">{type?.split('/')[1] || 'mp4'}</span>
         </div>
       </div>
     );
   }
 
-  // Custom label based on extension
-  const fileName = url.split('/').pop()?.split('?')[0] || "Archivo adjunto";
+  // Document/File Fallback
+  const fileName = message.content && message.content.includes("📎 Archivo adjunto:") 
+    ? message.content.split("📎 Archivo adjunto: ")[1]?.trim()
+    : (url.split('/').pop()?.split('?')[0] || "Contenido Multimedia");
 
   return (
     <a href={url} target="_blank" rel="noopener noreferrer"
       className="flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary/50 hover:bg-secondary transition text-xs mb-1.5 border border-border/30 max-w-[240px]">
       <FileText className="w-5 h-5 shrink-0 text-primary" />
-      <span className="underline truncate leading-snug">{fileName}</span>
+      <span className="underline truncate leading-snug font-medium text-blue-500 dark:text-blue-400">
+        📎 Ver archivo ({fileName})
+      </span>
     </a>
   );
 }
