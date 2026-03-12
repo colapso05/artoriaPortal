@@ -338,7 +338,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   };
 
   const copyCurlDerivacion = (companyId: string) => {
-    const curl = `curl -X POST "${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-ticket" \\
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/create-ticket" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
   -d '{
@@ -355,7 +355,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   };
 
   const copyCurlCobertura = (companyId: string) => {
-    const curl = `curl -X POST "${import.meta.env.VITE_SUPABASE_URL}/functions/v1/check-coverage" \\
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-coverage" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
   -d '{
