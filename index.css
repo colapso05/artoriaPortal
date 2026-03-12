@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 270 50% 4%;
+    --foreground: 210 40% 98%;
+
+    --card: 270 45% 8%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 270 45% 8%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 280 100% 70%;
+    --primary-foreground: 270 50% 4%;
+
+    --secondary: 270 40% 12%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 270 40% 12%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 280 100% 70%;
+    --accent-foreground: 270 50% 4%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 270 40% 18%;
+    --input: 270 40% 12%;
+    --ring: 280 100% 70%;
+
+    --radius: 0.5rem;
+
+    --glow: 280 100% 70%;
+    --glow-secondary: 320 100% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', sans-serif;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+}
+
+@layer utilities {
+  .glow-text {
+    text-shadow: 0 0 20px hsl(var(--glow) / 0.6), 0 0 40px hsl(var(--glow) / 0.4), 0 0 60px hsl(var(--glow-secondary) / 0.2);
+  }
+
+  .glow-box {
+    box-shadow: 0 0 20px hsl(var(--glow) / 0.4), 0 0 40px hsl(var(--glow) / 0.2), 0 0 60px hsl(var(--glow-secondary) / 0.1);
+  }
+
+  .gradient-border {
+    background: linear-gradient(135deg, hsl(var(--glow)) 0%, hsl(var(--glow-secondary)) 50%, hsl(270 40% 20%) 100%);
+    padding: 1px;
+  }
+
+  .bg-grid {
+    background-image: linear-gradient(to right, hsl(var(--border) / 0.3) 1px, transparent 1px), linear-gradient(to bottom, hsl(var(--border) / 0.3) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  .gradient-text {
+    background: linear-gradient(135deg, hsl(var(--glow)) 0%, hsl(var(--glow-secondary)) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glass {
+    background: hsl(var(--card) / 0.6);
+    backdrop-filter: blur(20px);
+    border: 1px solid hsl(var(--border) / 0.5);
+  }
+}
