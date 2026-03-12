@@ -354,17 +354,17 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     toast({ title: "¡Copiado!", description: "cURL de Derivación copiado al portapapeles" });
   };
 
-  const copyCurlCobertura = (companyId: string) => {
-    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-coverage" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
-  -d '{
-    "company_id": "${companyId}",
-    "lat": {{ $json.lat }},
-    "lng": {{ $json.lng }}
-  }'`;
-    navigator.clipboard.writeText(curl);
-    toast({ title: "¡Copiado!", description: "cURL de Cobertura copiado al portapapeles" });
+  const copyJsonCoberturaN8n = (companyId: string) => {
+    const jsonBody = `{
+  "company_id": "${companyId}",
+  "lat": {{ $('Extracciondireccion2').item.json.message.content.latitud }},
+  "lng": {{ $('Extracciondireccion2').item.json.message.content.longitud }}
+}`;
+    navigator.clipboard.writeText(jsonBody);
+    toast({ 
+      title: "¡JSON Copiado!", 
+      description: "Pegar en el campo JSON del nodo HTTP Request de n8n" 
+    });
   };
 
   const copyDerivationTemplate = () => {
@@ -783,9 +783,9 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                         variant="secondary" 
                         size="sm" 
                         className="flex-1 gap-2"
-                        onClick={() => copyCurlCobertura(selectedCompany.id)}
+                        onClick={() => copyJsonCoberturaN8n(selectedCompany.id)}
                       >
-                        <Copy className="w-3.5 h-3.5" /> cURL Cobertura
+                        <Copy className="w-3.5 h-3.5" /> JSON Cobertura n8n
                       </Button>
                     </div>
                   </div>
@@ -889,8 +889,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                         <DropdownMenuItem onClick={() => copyCurlDerivacion(c.id)} className="cursor-pointer gap-2">
                           <Copy className="w-4 h-4" /> cURL Derivación
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => copyCurlCobertura(c.id)} className="cursor-pointer gap-2">
-                          <Copy className="w-4 h-4" /> cURL Cobertura
+                        <DropdownMenuItem onClick={() => copyJsonCoberturaN8n(c.id)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> JSON Cobertura n8n
                         </DropdownMenuItem>
                         <DropdownMenuSeparator className="bg-border/20" />
                         <DropdownMenuItem 
