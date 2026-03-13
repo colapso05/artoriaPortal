@@ -156,6 +156,8 @@ function MessageMedia({ message }: { message: Message }) {
   if (!url) return null;
 
   const type = getMediaType(url, message.message_type);
+  // URLs from Supabase Storage are public and loadable by the browser directly
+  const isSupabaseUrl = url.includes('supabase.artoria.cl') || url.includes('supabase.co/storage');
 
   if (type === 'image') {
     return (
@@ -170,6 +172,18 @@ function MessageMedia({ message }: { message: Message }) {
   }
 
   if (type === 'audio') {
+    // Native player for Supabase Storage URLs
+    if (isSupabaseUrl) {
+      return (
+        <div className="mb-1.5">
+          <audio controls className="w-56 h-10 rounded-lg" preload="metadata">
+            <source src={url} type="audio/ogg" />
+            <source src={url} type="audio/mpeg" />
+          </audio>
+        </div>
+      );
+    }
+    // Fallback link for old YCloud URLs
     return (
       <a 
         href={url} 
@@ -184,6 +198,18 @@ function MessageMedia({ message }: { message: Message }) {
   }
 
   if (type === 'video') {
+    // Native player for Supabase Storage URLs
+    if (isSupabaseUrl) {
+      return (
+        <div className="max-w-xs rounded-lg overflow-hidden mb-2 shadow-lg">
+          <video controls className="w-full rounded-lg" preload="metadata" playsInline>
+            <source src={url} />
+            Tu navegador no soporta el reproductor de video.
+          </video>
+        </div>
+      );
+    }
+    // Full player with overlay button for YCloud or other URLs
     return (
       <div className="relative group/video max-w-[280px] rounded-xl overflow-hidden bg-slate-900 border border-border/10 shadow-2xl mb-2">
         <video
@@ -376,7 +402,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   const loadMessages = async (convId: string) => {
     const { data } = await supabase.from("messages").select("*").eq("conversation_id", convId).order("created_at", { ascending: true });
-    if (data) setMessages(data as unknown as Message[]);
+    if (data) {
+      console.log("[MSG DEBUG] First message fields:", JSON.stringify(data[0], null, 2));
+      console.log("[MSG DEBUG] media_url of first msg:", data[0]?.media_url);
+      setMessages(data as unknown as Message[]);
+    }
   };
 
   const sendMessage = async () => {
