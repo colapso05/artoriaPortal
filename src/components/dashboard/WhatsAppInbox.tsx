@@ -292,18 +292,48 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
 
     const timer = setTimeout(async () => {
-      const { data, error } = await supabase.rpc('search_conversations_by_keyword', {
-        p_company_id: companyId,
-        p_keyword: searchTerm
-      });
-      if (!error && data) {
-        // The RPC returns conversation_id, not id — normalize to id for consistent lookup
-        const normalized = (data as any[]).map(r => ({
-          ...r,
-          id: r.id ?? r.conversation_id,
-        }));
-        setSearchResults(normalized);
+      const normalize = (rows: any[]) =>
+        rows.map(r => ({ ...r, id: r.id ?? r.conversation_id }));
+
+      // 1. Always search the full phrase first (exact order)
+      const { data: phraseData, error: phraseError } = await (supabase as any).rpc(
+        'search_conversations_by_keyword',
+        { p_company_id: companyId, p_keyword: searchTerm.trim() }
+      );
+
+      if (!phraseError && phraseData && (phraseData as any[]).length > 0) {
+        setSearchResults(normalize(phraseData as any[]));
+        return;
       }
+
+      // 2. Fallback: search each significant word (≥4 chars) independently and merge results
+      const words = searchTerm.toLowerCase().split(/\s+/).filter(t => t.length >= 4);
+      if (words.length === 0) {
+        // If no significant words exist, nothing useful to search
+        setSearchResults([]);
+        return;
+      }
+
+      const results = await Promise.all(
+        words.map(word =>
+          (supabase as any).rpc('search_conversations_by_keyword', {
+            p_company_id: companyId,
+            p_keyword: word
+          })
+        )
+      );
+
+      // Merge deduplicated results (conversation shown once, using first match_content)
+      const merged = new Map<string, any>();
+      results.forEach(({ data, error }: any) => {
+        if (!error && data) {
+          normalize(data as any[]).forEach((r: any) => {
+            if (!merged.has(r.id)) merged.set(r.id, r);
+          });
+        }
+      });
+
+      setSearchResults(Array.from(merged.values()));
     }, 400);
 
     return () => clearTimeout(timer);
@@ -682,11 +712,16 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       return hit ? { ...c, match_content: hit.match_content } : c;
     });
   })().filter((c) => {
-    // Partial word matching: check if any word of the search term is in name/waId/match_content
-    const terms = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
-    const matchesName = !searchTerm || terms.some(t =>
-      c.profile_name?.toLowerCase().includes(t) || c.wa_id.includes(t)
-    );
+    // Name/number filter: exact phrase OR significant words (≥4 chars)
+    const matchesName = (() => {
+      if (!searchTerm) return true;
+      const q = searchTerm.toLowerCase();
+      // Try full phrase
+      if (c.profile_name?.toLowerCase().includes(q) || c.wa_id.includes(q)) return true;
+      // Fallback: significant words
+      const words = q.split(/\s+/).filter(t => t.length >= 4);
+      return words.some(t => c.profile_name?.toLowerCase().includes(t) || c.wa_id.includes(t));
+    })();
     const matchesContent = !!c.match_content;
     
     if (!matchesName && !matchesContent) return false;
