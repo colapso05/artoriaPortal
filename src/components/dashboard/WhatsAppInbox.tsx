@@ -202,7 +202,7 @@ function MessageMedia({ message }: { message: Message }) {
     if (isSupabaseUrl) {
       return (
         <div className="mb-2">
-          <video controls className="max-w-[280px] max-h-[200px] rounded-lg object-contain" preload="metadata" playsInline>
+          <video controls className="max-w-xs rounded-lg w-full" preload="metadata" playsInline>
             <source src={url} />
             Tu navegador no soporta el reproductor de video.
           </video>
@@ -722,14 +722,14 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setSending(true);
     try {
       const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const filePath = `${selectedConv.id}/${fileName}`;
+      const uniqueName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
+      const filePath = `${selectedConv.id}/${uniqueName}`;
 
       const { error: uploadError } = await supabase.storage
         .from('whatsapp_media')
-        .upload(filePath, file);
+        .upload(filePath, file, { contentType: file.type });
 
-      if (uploadError) throw new Error("Asegúrate de haber creado el bucket 'whatsapp_media' en Supabase y que sea Público. " + uploadError.message);
+      if (uploadError) throw new Error("Error al subir archivo: " + uploadError.message);
 
       const { data: { publicUrl } } = supabase.storage
         .from('whatsapp_media')
@@ -737,26 +737,26 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       if (selectedConv.is_agent_active) await handleToggleBot(false);
 
-      // Determine type for YCloud
-      let yType: 'image' | 'video' | 'audio' | 'document' = 'document';
-      if (file.type.startsWith('image/')) yType = 'image';
-      else if (file.type.startsWith('video/')) yType = 'video';
-      else if (file.type.startsWith('audio/')) yType = 'audio';
+      // Use the real MIME type from the file for YCloud
+      // YCloud requires: 'image', 'video', 'audio', or 'document'
+      let ycloudType: 'image' | 'video' | 'audio' | 'document' = 'document';
+      if (file.type.startsWith('image/')) ycloudType = 'image';
+      else if (file.type.startsWith('video/')) ycloudType = 'video';
+      else if (file.type.startsWith('audio/')) ycloudType = 'audio';
 
-      // Now send via ycloud-send with media support
       const { error: sendError } = await supabase.functions.invoke("ycloud-send", {
         body: {
           to: selectedConv.wa_id,
-          message: `📎 Archivo adjunto: ${file.name}`,
+          message: null,               // No text fallback — let YCloud handle it as pure media
           conversationId: selectedConv.id,
           mediaUrl: publicUrl,
-          mediaType: yType
+          mediaType: ycloudType,
         },
       });
       if (sendError) throw sendError;
-      toast({ title: "Archivo Enviado", description: "El adjunto se ha entregado al cliente." });
+      toast({ title: "Archivo Enviado", description: "El adjunto fue entregado al cliente." });
     } catch (err: any) {
-      toast({ title: "Error en Módulo Multimedia", description: err.message, variant: "destructive" });
+      toast({ title: "Error al subir archivo", description: err.message, variant: "destructive" });
     } finally {
       setSending(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
