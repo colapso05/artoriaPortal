@@ -201,8 +201,8 @@ function MessageMedia({ message }: { message: Message }) {
     // Native player for Supabase Storage URLs
     if (isSupabaseUrl) {
       return (
-        <div className="max-w-xs rounded-lg overflow-hidden mb-2 shadow-lg">
-          <video controls className="w-full rounded-lg" preload="metadata" playsInline>
+        <div className="mb-2">
+          <video controls className="max-w-[280px] max-h-[200px] rounded-lg object-contain" preload="metadata" playsInline>
             <source src={url} />
             Tu navegador no soporta el reproductor de video.
           </video>
