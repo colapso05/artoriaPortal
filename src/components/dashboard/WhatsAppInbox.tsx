@@ -297,7 +297,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         p_keyword: searchTerm
       });
       if (!error && data) {
-        setSearchResults(data);
+        // The RPC returns conversation_id, not id — normalize to id for consistent lookup
+        const normalized = (data as any[]).map(r => ({
+          ...r,
+          id: r.id ?? r.conversation_id,
+        }));
+        setSearchResults(normalized);
       }
     }, 400);
 
@@ -657,11 +662,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   };
 
-  // Filter conversations
+  // Filter conversations: merge keyword search hits (which may not be in conversations[] if closed)
   const filtered = (() => {
     let base = [...conversations];
     if (searchTerm.trim() && searchResults.length > 0) {
       searchResults.forEach(sr => {
+        // sr.id is already normalized from RPC's conversation_id
         if (!base.find(c => c.id === sr.id)) {
           base.push({
             ...sr,
@@ -676,15 +682,17 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       return hit ? { ...c, match_content: hit.match_content } : c;
     });
   })().filter((c) => {
-    const matchesSearch = !searchTerm || 
-      c.profile_name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      c.wa_id.includes(searchTerm) ||
-      !!c.match_content;
+    // Partial word matching: check if any word of the search term is in name/waId/match_content
+    const terms = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
+    const matchesName = !searchTerm || terms.some(t =>
+      c.profile_name?.toLowerCase().includes(t) || c.wa_id.includes(t)
+    );
+    const matchesContent = !!c.match_content;
     
-    if (!matchesSearch) return false;
+    if (!matchesName && !matchesContent) return false;
 
-    // Si hay match por palabra clave en mensaje, lo mostramos independientemente del filtro de pestaña
-    if (searchTerm.trim() && c.match_content) return true;
+    // Keyword message matches bypass tab filter
+    if (searchTerm.trim() && matchesContent) return true;
 
     if (chatFilter === 'closed') return c.status === 'cerrado';
     if (c.status === 'cerrado') return false;
