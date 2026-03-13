@@ -171,15 +171,15 @@ function MessageMedia({ message }: { message: Message }) {
 
   if (type === 'audio') {
     return (
-      <div className="bg-secondary/20 rounded-xl p-2 mb-1.5 border border-border/10 max-w-[240px]">
-        <audio controls className="w-full h-8" preload="none">
-          <source src={url} type="audio/ogg; codecs=opus" />
-          <source src={url} type="audio/mpeg" />
-          <div className="text-[10px] p-1 flex items-center gap-2">
-            <a href={url} target="_blank" className="underline text-blue-500">🎵 Descargar audio</a>
-          </div>
-        </audio>
-      </div>
+      <a 
+        href={url} 
+        target="_blank" 
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 rounded-lg px-4 py-2.5 text-sm text-white transition-colors mb-1.5 shadow-md w-fit"
+      >
+        <Phone className="w-4 h-4" />
+        <span className="font-medium">🎵 Reproducir audio</span>
+      </a>
     );
   }
 
