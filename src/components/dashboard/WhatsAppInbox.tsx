@@ -127,16 +127,37 @@ function StatusBadge({ status, className = "" }: { status: 'abierto' | 'en_progr
   );
 }
 
+function getMediaType(mediaUrl: string, messageType?: string): 'image' | 'audio' | 'video' | 'document' {
+  try {
+    // 1. Try decoding YCloud payload
+    const urlObj = new URL(mediaUrl);
+    const payload = urlObj.searchParams.get('payload');
+    if (payload) {
+      const decoded = JSON.parse(atob(payload));
+      const mime = decoded.mimeType || '';
+      if (mime.startsWith('image')) return 'image';
+      if (mime.startsWith('audio') || mime.includes('ogg')) return 'audio';
+      if (mime.startsWith('video')) return 'video';
+    }
+
+    // 2. Fallback to extension/keywords if not a YCloud URL or payload missing
+    const lowUrl = mediaUrl.toLowerCase();
+    if (lowUrl.includes('image') || /\.(jpg|jpeg|png|gif|webp|heic)/i.test(lowUrl) || messageType === 'image') return 'image';
+    if (lowUrl.includes('audio') || /\.(ogg|mp3|wav|m4a|amr)/i.test(lowUrl) || messageType === 'audio') return 'audio';
+    if (lowUrl.includes('video') || /\.(mp4|mov|avi|3gp|mkv|wmv)/i.test(lowUrl) || messageType === 'video' || messageType === 'short_video') return 'video';
+  } catch (e) {
+    console.error("Error detecting media type:", e);
+  }
+  return 'document';
+}
+
 function MessageMedia({ message }: { message: Message }) {
   const url = message.media_url;
   if (!url) return null;
 
-  // Detect type by mime in URL, extension or message properties
-  const isImage = url.includes('image') || /\.(jpg|jpeg|png|gif|webp|heic)/i.test(url) || message.message_type === 'image';
-  const isAudio = url.includes('audio') || /\.(ogg|mp3|wav|m4a|amr)/i.test(url) || message.message_type === 'audio';
-  const isVideo = url.includes('video') || /\.(mp4|mov|avi|3gp|mkv|wmv)/i.test(url) || message.message_type === 'video' || message.message_type === 'short_video';
+  const type = getMediaType(url, message.message_type);
 
-  if (isImage) {
+  if (type === 'image') {
     return (
       <img
         src={url}
@@ -148,7 +169,7 @@ function MessageMedia({ message }: { message: Message }) {
     );
   }
 
-  if (isAudio) {
+  if (type === 'audio') {
     return (
       <div className="bg-secondary/20 rounded-xl p-2 mb-1.5 border border-border/10 max-w-[240px]">
         <audio controls className="w-full h-8" preload="none">
@@ -158,7 +179,7 @@ function MessageMedia({ message }: { message: Message }) {
     );
   }
 
-  if (isVideo) {
+  if (type === 'video') {
     return (
       <div className="relative group/video max-w-[280px] rounded-xl overflow-hidden bg-slate-900 border border-border/10 shadow-2xl mb-2">
         <video
