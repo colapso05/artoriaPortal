@@ -173,7 +173,11 @@ function MessageMedia({ message }: { message: Message }) {
     return (
       <div className="bg-secondary/20 rounded-xl p-2 mb-1.5 border border-border/10 max-w-[240px]">
         <audio controls className="w-full h-8" preload="none">
-          <source src={url} />
+          <source src={url} type="audio/ogg; codecs=opus" />
+          <source src={url} type="audio/mpeg" />
+          <div className="text-[10px] p-1 flex items-center gap-2">
+            <a href={url} target="_blank" className="underline text-blue-500">🎵 Descargar audio</a>
+          </div>
         </audio>
       </div>
     );
@@ -950,22 +954,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                               </div>
                             )}
 
-                            {msg.content && (() => {
+                            {/* Mostrar texto solo si no hay multimedia o si el texto no es el placeholder de sistema [Multimedia] */}
+                            {msg.content && !msg.media_url && (() => {
                               // 1. Limpieza de etiquetas técnicas [video] y palabras redundantes solas
                               let clean = msg.content.replace(/\[(video|image|audio|document|sticker|short_video)\]/gi, '').trim();
 
                               // 2. Limpieza de iconos o palabras de sistema si están solas
-                              const redundant = ['video', 'audio', 'imagen', 'documento', 'sticker', 'archivo', 'short_video', 'foto', '🎥 video', '🎵 audio', '📷 imagen'];
+                              const redundant = ['video', 'audio', 'imagen', 'documento', 'sticker', 'archivo', 'short_video', 'foto', '🎥 video', '🎵 audio', '📷 imagen', '[multimedia]'];
                               const lowerClean = clean.toLowerCase();
                               const isRedundant = ['🎥', '📷', '🎵', '📄', '🏷️', '📍'].includes(clean) || redundant.includes(lowerClean);
 
                               if (isRedundant) {
                                 clean = '';
-                              }
-
-                              // 3. Si ya tenemos la multimedia visible, no mostrar el icono duplicado si viene al inicio (Caption)
-                              if (msg.media_url && clean.length > 2) {
-                                clean = clean.replace(/^(📷|🎵|🎥|🎥|📄|🏷️)\s*/, '');
                               }
 
                               return clean ? (
