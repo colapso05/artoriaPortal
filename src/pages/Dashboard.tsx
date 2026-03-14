@@ -27,7 +27,7 @@ interface UserToggle {
 
 // Permissions matrix for company roles
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  administrador: ["team", "inbox", "coverage", "tickets", "usage"],
+  administrador: ["team", "inbox", "coverage", "tickets"],
   supervisor: ["inbox", "tickets"],
   operador: ["inbox", "tickets"],
 };
@@ -40,6 +40,7 @@ export default function Dashboard() {
 
   const [toggles, setToggles] = useState<UserToggle[]>([]);
   const [activeView, setActiveView] = useState("");
+  const [pendingConversationId, setPendingConversationId] = useState<string | null>(null);
 
   const [activeToggle, setActiveToggle] = useState<UserToggle | null>(null);
   const [companyRole, setCompanyRole] = useState<string | null>(null);
@@ -224,6 +225,10 @@ export default function Dashboard() {
                   userName={displayName}
                   userRole={effectiveCompanyRole || undefined}
                   operatorRoles={operatorRoles}
+                  onConversationClick={(id) => {
+                    setPendingConversationId(id);
+                    setActiveView("inbox");
+                  }}
                 />
               )}
               {activeView === "users" && isAdmin && (
@@ -241,42 +246,22 @@ export default function Dashboard() {
                   userName={displayName}
                   userRole={effectiveCompanyRole || undefined}
                   operatorRoles={operatorRoles}
+                  initialConversationId={pendingConversationId || undefined}
+                  onConversationOpened={() => setPendingConversationId(null)}
                 />
               )}
               {activeView === "tickets" && (effectiveIsAdmin || hasPermission("tickets")) && <TicketManager companyId={effectiveCompanyId || undefined} />}
               {activeView === "coverage" && (effectiveIsAdmin || hasPermission("coverage")) && (
-                <div className="flex-1 flex flex-col gap-8 min-h-0 overflow-y-auto pr-2 custom-scrollbar">
-                  <div className="flex-shrink-0 min-h-[500px]">
+                <div className="flex-1 flex flex-col gap-8 min-h-0">
+                  <div className="flex-1 min-h-[500px]">
                     <CoverageMap companyId={effectiveCompanyId || undefined} />
                   </div>
-                  {effectiveCompanyId && (
-                    <div className="flex-shrink-0 border-t border-border/10 pt-8 pb-12">
-                      <CompanyTeamManager companyId={effectiveCompanyId} companyName={effectiveCompanyName} />
-                    </div>
-                  )}
                 </div>
               )}
               {activeView === "team" && hasPermission("team") && effectiveCompanyId && (
                 <CompanyTeamManager companyId={effectiveCompanyId} companyName={effectiveCompanyName} />
               )}
-              {activeView === "usage" && effectiveIsAdmin && (
-                <div>
-                  <h2 className="text-2xl font-bold tracking-tight mb-6 flex items-center gap-2">
-                    <Activity className="w-6 h-6 text-primary" />
-                    Uso por Empresa
-                  </h2>
-                  <UsageTracker mode="admin" />
-                </div>
-              )}
-              {activeView === "usage" && !effectiveIsAdmin && (
-                <div>
-                  <h2 className="text-2xl font-bold tracking-tight mb-6 flex items-center gap-2">
-                    <Activity className="w-6 h-6 text-primary" />
-                    Mi Uso
-                  </h2>
-                  <UsageTracker mode="client" empresaFilter={simulatedCompanyId ? simulatedCompanyName : displayName} />
-                </div>
-              )}
+
 
               {activeView.startsWith("toggle-") && activeToggle && (
                 <div className="max-w-xl">

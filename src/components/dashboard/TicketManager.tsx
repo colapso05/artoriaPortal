@@ -20,6 +20,7 @@ import {
   Ticket, Plus, MessageSquare, Clock, User, AlertTriangle,
   CheckCircle2, CircleDot, Pause, X, Send, Search, ArrowUpDown,
   ArrowUp, ArrowDown, SlidersHorizontal, Info, Sparkles, RotateCcw,
+  Trash2, History, Trash,
 } from "lucide-react";
 import { format, formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
@@ -48,6 +49,7 @@ interface TicketData {
   customer_rut: string | null;
   created_by: string | null;
   resolved_at: string | null;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -176,9 +178,7 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
 
   const loadTickets = async () => {
     let query = supabase.from("tickets").select("*").order("created_at", { ascending: false });
-    if (companyId) {
-      query = query.eq("company_id", companyId);
-    }
+    // Note: Since deleted_at column might be new, we handle it gracefully
     const { data } = await query;
     if (data) setTickets(data as unknown as TicketData[]);
     setLoading(false);
@@ -221,6 +221,43 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
     loadTickets();
   };
 
+  const softDeleteTicket = async (ticketId: string) => {
+    const now = new Date().toISOString();
+    await supabase.from("tickets").update({ deleted_at: now } as any).eq("id", ticketId);
+    if (selectedTicket?.id === ticketId) setSelectedTicket(null);
+    toast({ title: "Ticket enviado a la papelera" });
+    loadTickets();
+  };
+
+  const restoreTicket = async (ticketId: string) => {
+    await supabase.from("tickets").update({ deleted_at: null } as any).eq("id", ticketId);
+    toast({ title: "Ticket restaurado" });
+    loadTickets();
+  };
+
+  const permanentDeleteTicket = async (ticketId: string) => {
+    await supabase.from("tickets").delete().eq("id", ticketId);
+    if (selectedTicket?.id === ticketId) setSelectedTicket(null);
+    toast({ title: "Ticket eliminado permanentemente" });
+    loadTickets();
+  };
+
+  const emptyTrash = async () => {
+    const trashIds = tickets.filter(t => t.deleted_at).map(t => t.id);
+    if (trashIds.length === 0) return;
+    await supabase.from("tickets").delete().in("id", trashIds);
+    toast({ title: "Papelera vaciada" });
+    loadTickets();
+  };
+
+  const restoreAll = async () => {
+    const trashIds = tickets.filter(t => t.deleted_at).map(t => t.id);
+    if (trashIds.length === 0) return;
+    await supabase.from("tickets").update({ deleted_at: null } as any).in("id", trashIds);
+    toast({ title: "Todos los tickets han sido restaurados" });
+    loadTickets();
+  };
+
   const addNote = async () => {
     if (!newNote.trim() || !selectedTicket) return;
     const { data: { session } } = await supabase.auth.getSession();
@@ -258,6 +295,8 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
 
   const filtered = useMemo(() => {
     let result = tickets.filter(t => {
+      if (filterStatus === "trash") return !!t.deleted_at;
+      if (t.deleted_at) return false; // Exclude trashed by default
       if (filterStatus === "active") return activeStatuses.includes(t.status);
       if (filterStatus !== "all" && t.status !== filterStatus) return false;
       return true;
@@ -304,9 +343,10 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
   const stats = useMemo(() => ({
     open: tickets.filter(t => t.status === "abierto").length,
     inProgress: tickets.filter(t => t.status === "en_progreso").length,
-    waiting: tickets.filter(t => t.status === "esperando_cliente").length,
-    resolved: tickets.filter(t => t.status === "resuelto").length,
-    urgent: tickets.filter(t => t.priority === "urgente" && activeStatuses.includes(t.status)).length,
+    waiting: tickets.filter(t => t.status === "esperando_cliente" && !t.deleted_at).length,
+    resolved: tickets.filter(t => t.status === "resuelto" && !t.deleted_at).length,
+    urgent: tickets.filter(t => t.priority === "urgente" && activeStatuses.includes(t.status) && !t.deleted_at).length,
+    trash: tickets.filter(t => !!t.deleted_at).length,
   }), [tickets]);
 
   const hasActiveFilters = filterStatus !== "active" || filterCategory !== "all" || filterPriority !== "all" || searchQuery.trim() !== "";
@@ -354,6 +394,11 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
             {stats.urgent > 0 && (
               <button onClick={() => setFilterPriority(filterPriority === "urgente" ? "all" : "urgente")} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all ${filterPriority === "urgente" ? "ring-1 ring-destructive" : ""} bg-destructive/10 text-destructive hover:bg-destructive/20 animate-pulse`}>
                 <AlertTriangle className="w-2.5 h-2.5" /> {stats.urgent} Urgentes
+              </button>
+            )}
+            {stats.trash > 0 && (
+              <button onClick={() => setFilterStatus("trash")} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all ${filterStatus === "trash" ? "ring-1 ring-muted-foreground" : ""} bg-muted text-muted-foreground hover:bg-muted/80`}>
+                <Trash2 className="w-2.5 h-2.5" /> {stats.trash} Papelera
               </button>
             )}
             {filterStatus !== "all" && (
@@ -446,6 +491,17 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {filterStatus === "trash" && filtered.length > 0 && (
+                <div className="flex gap-2 pt-1 border-t border-border/10 mt-2">
+                  <Button variant="outline" size="sm" className="h-7 text-[10px] flex-1 gap-1" onClick={restoreAll}>
+                    <History className="w-3 h-3" /> Restaurar Todo
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-7 text-[10px] flex-1 gap-1 text-destructive hover:bg-destructive/10" onClick={emptyTrash}>
+                    <Trash className="w-3 h-3" /> Vaciar Papelera
+                  </Button>
+                </div>
+              )}
             </div>
 
             {/* Ticket List Items */}
@@ -580,23 +636,40 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
                         </p>
                       </div>
                     </div>
-                    <OnboardingTip tip="Cambia el estado del ticket para reflejar su progreso actual." side="left">
-                      <Select value={selectedTicket.status} onValueChange={(v) => updateStatus(selectedTicket.id, v as TicketStatus)}>
-                        <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {(Object.keys(statusLabels) as TicketStatus[]).map(s => {
-                            const Icon = statusIcons[s];
-                            return (
-                              <SelectItem key={s} value={s}>
-                                <span className="flex items-center gap-1.5">
-                                  <Icon className="w-3 h-3" />{statusLabels[s]}
-                                </span>
-                              </SelectItem>
-                            );
-                          })}
-                        </SelectContent>
-                      </Select>
-                    </OnboardingTip>
+                    <div className="flex items-center gap-2">
+                      <OnboardingTip tip="Cambia el estado del ticket para reflejar su progreso actual." side="left">
+                        <Select value={selectedTicket.status} onValueChange={(v) => updateStatus(selectedTicket.id, v as TicketStatus)}>
+                          <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {(Object.keys(statusLabels) as TicketStatus[]).map(s => {
+                              const Icon = statusIcons[s];
+                              return (
+                                <SelectItem key={s} value={s}>
+                                  <span className="flex items-center gap-1.5">
+                                    <Icon className="w-3 h-3" />{statusLabels[s]}
+                                  </span>
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+                      </OnboardingTip>
+                      
+                      {!selectedTicket.deleted_at ? (
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10" onClick={() => softDeleteTicket(selectedTicket.id)}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      ) : (
+                        <div className="flex gap-1">
+                           <Button variant="ghost" size="icon" className="h-8 w-8 text-emerald-500 hover:bg-emerald-500/10" onClick={() => restoreTicket(selectedTicket.id)}>
+                            <History className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:bg-destructive/10" onClick={() => permanentDeleteTicket(selectedTicket.id)}>
+                            <Trash className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap gap-1.5 mt-2.5">
@@ -681,7 +754,7 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
 
         {/* ── Create Dialog ── */}
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent className="bg-card border-border/30 max-w-md">
+          <DialogContent className="bg-card border-border/30 max-w-md max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="font-['Space_Grotesk'] flex items-center gap-2">
                 <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -724,16 +797,22 @@ export default function TicketManager({ companyId }: { companyId?: string }) {
                 <Input
                   value={form.customer_rut}
                   onChange={(e) => {
-                    // Format: remove dots, keep hyphen, allow only digits + K/k + hyphen
-                    const raw = e.target.value.replace(/\./g, "").toUpperCase();
-                    const clean = raw.replace(/[^0-9K-]/g, "");
-                    setForm(p => ({ ...p, customer_rut: clean }));
+                    // Strip everything except digits, K and hyphen
+                    const raw = e.target.value.replace(/[^0-9kK]/g, '').toUpperCase();
+                    // Auto-format: insert hyphen before last char if >1 char
+                    let formatted = raw;
+                    if (raw.length > 1) {
+                      const body = raw.slice(0, -1);
+                      const dv = raw.slice(-1);
+                      formatted = `${body}-${dv}`;
+                    }
+                    setForm(p => ({ ...p, customer_rut: formatted }));
                   }}
                   className="mt-1 font-mono"
                   placeholder="12345678-9"
-                  maxLength={10}
+                  maxLength={11}
                 />
-                <p className="text-[10px] text-muted-foreground mt-0.5">Sin puntos, con guión (ej: 12345678-9)</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">El guión se agrega automáticamente</p>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>

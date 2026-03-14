@@ -4,10 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Plus, Trash2, Settings2, Pencil, Building2, KeyRound, Copy, Eye, EyeOff,
-  MoreHorizontal, Link2, Phone, Key, RotateCw, ChevronLeft, Map, Users as UsersIcon, Settings
+  MoreHorizontal, Link2, Phone, Key, RotateCw, ChevronLeft, Map, Users as UsersIcon, Settings,
+  FileUp, AlertCircle, Save, Clock, WandSparkles
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -42,6 +44,7 @@ interface CompanyConfig {
   webhook_id: string;
   user_id: string | null;
   owner_id?: string;
+  auto_close_message?: string;
 }
 
 export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: string, name: string) => void }) {
@@ -55,7 +58,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const [newEmail, setNewEmail] = useState("");
   const [newName, setNewName] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [selectedModules, setSelectedModules] = useState<string[]>([]);
   const [newYcloudKey, setNewYcloudKey] = useState("");
   const [newYcloudPhone, setNewYcloudPhone] = useState("");
   const [countryPrefix, setCountryPrefix] = useState("+56");
@@ -73,7 +75,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     ycloud_api_key: "",
     ycloud_phone: "",
     config_id: null as string | null,
-    webhook_id: ""
+    webhook_id: "",
+    auto_close_message: ""
   });
 
   // Reset password
@@ -87,6 +90,11 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [showYcloudKey, setShowYcloudKey] = useState(false);
   const [showEditYcloudKey, setShowEditYcloudKey] = useState(false);
+  
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importJson, setImportJson] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const { toast } = useToast();
   const webhookBaseUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ycloud-webhook`;
@@ -184,10 +192,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   };
 
   const handleDeleteUser = async (userId: string) => {
-    // Also delete company config
-    if (companyConfigs[userId]) {
-      await supabase.from("company_config").delete().eq("id", companyConfigs[userId].id);
-    }
     const { data, error } = await supabase.functions.invoke("delete-user", { body: { user_id: userId } });
     if (error || data?.error) {
       toast({ title: "Error", description: data?.error || error?.message, variant: "destructive" });
@@ -208,7 +212,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
       ycloud_api_key: company.ycloud_api_key || "",
       ycloud_phone: company.ycloud_phone || "",
       config_id: company.id,
-      webhook_id: company.webhook_id || ""
+      webhook_id: company.webhook_id || "",
+      auto_close_message: company.auto_close_message || ""
     });
     setEditUserDialogOpen(true);
   };
@@ -234,7 +239,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
           .update({
             ycloud_api_key: editUserData.ycloud_api_key,
             ycloud_phone: editUserData.ycloud_phone,
-            company_name: editUserData.display_name
+            company_name: editUserData.display_name,
+            auto_close_message: editUserData.auto_close_message
           })
           .eq("id", editUserData.config_id);
         if (updateConfigError) throw new Error(updateConfigError.message);
@@ -283,6 +289,130 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   };
 
 
+  const handleImportZones = async () => {
+    if (!selectedCompany || !importJson.trim()) return;
+    setIsImporting(true);
+    try {
+      const data = JSON.parse(importJson);
+      if (!Array.isArray(data)) throw new Error("El JSON debe ser un array de zonas.");
+
+      const zonesToInsert = data.map((z: any) => {
+        if (!z.name || !Array.isArray(z.polygon)) throw new Error(`Zona sin nombre o polígono inválido: ${JSON.stringify(z)}`);
+        
+        // Invertir [lng, lat] -> [lat, lng]
+        const invertedPolygon = z.polygon.map((p: any) => {
+          if (!Array.isArray(p) || p.length < 2) return p;
+          return [p[1], p[0]]; // [lng, lat] -> [lat, lng]
+        });
+
+        return {
+          company_id: selectedCompany.id,
+          name: z.name,
+          polygon: invertedPolygon,
+          color: z.color || "#3b82f6", // Default blue
+          alert_active: true
+        };
+      });
+
+      // 1. Delete existing zones
+      const { error: delError } = await supabase
+        .from("coverage_zones")
+        .delete()
+        .eq("company_id", selectedCompany.id);
+
+      if (delError) throw delError;
+
+      // 2. Insert new zones
+      const { error: insError } = await supabase
+        .from("coverage_zones")
+        .insert(zonesToInsert);
+
+      if (insError) throw insError;
+
+      toast({ 
+        title: "Importación Exitosa", 
+        description: `Se han importado ${zonesToInsert.length} zonas correctamente.` 
+      });
+      setImportDialogOpen(false);
+      setImportJson("");
+      
+      // Force refresh map by re-selecting company
+      const current = selectedCompany;
+      setSelectedCompany(null);
+      setTimeout(() => setSelectedCompany(current), 10);
+
+    } catch (err: any) {
+      toast({ title: "Error de Importación", description: err.message, variant: "destructive" });
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleExportZones = async () => {
+    if (!selectedCompany) return;
+    setIsExporting(true);
+    try {
+      const { data, error } = await supabase
+        .from("coverage_zones")
+        .select("name, polygon")
+        .eq("company_id", selectedCompany.id);
+      
+      if (error) throw error;
+      
+      const zonesToExport = (data || []).map(z => ({
+        name: z.name,
+        polygon: (z.polygon as number[][]).map(p => [p[1], p[0]]) // Invert to [lng, lat]
+      }));
+
+      const blob = new Blob([JSON.stringify(zonesToExport, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `backup_cobertura_${selectedCompany.company_name.toLowerCase().replace(/\s+/g, '_')}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      toast({ title: "Exportación Exitosa", description: `${zonesToExport.length} zonas exportadas.` });
+    } catch (err: any) {
+      toast({ title: "Error al exportar", description: err.message, variant: "destructive" });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleCopyZones = async () => {
+    if (!selectedCompany) return;
+    await copyZonesJson(selectedCompany.id);
+  };
+
+  const copyZonesJson = async (companyId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("coverage_zones")
+        .select("name, polygon")
+        .eq("company_id", companyId);
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        toast({ title: "Sin zonas", description: "Esta empresa no tiene zonas para copiar.", variant: "destructive" });
+        return;
+      }
+
+      const zonesToCopy = (data || []).map(z => ({
+        name: z.name,
+        polygon: (z.polygon as number[][]).map(p => [p[1], p[0]]) // Invert to [lng, lat]
+      }));
+
+      await navigator.clipboard.writeText(JSON.stringify(zonesToCopy, null, 2));
+      toast({ title: "JSON Copiado", description: "Las zonas están en tu portapapeles." });
+    } catch (err: any) {
+      toast({ title: "Error al copiar", description: err.message, variant: "destructive" });
+    }
+  };
+
+
   const copyWebhook = (webhookId: string) => {
     navigator.clipboard.writeText(`${webhookBaseUrl}?cid=${webhookId}`);
     toast({ title: "URL copiada", description: "Pégala en la configuración de webhook de YCloud" });
@@ -305,17 +435,71 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     toast({ title: "¡Copiado!", description: "cURL de Derivación copiado al portapapeles" });
   };
 
-  const copyJsonCoberturaN8n = (companyId: string) => {
-    const jsonBody = `{
-  "company_id": "${companyId}",
-  "lat": {{ $('Extracciondireccion2').item.json.message.content.latitud }},
-  "lng": {{ $('Extracciondireccion2').item.json.message.content.longitud }}
-}`;
-    navigator.clipboard.writeText(jsonBody);
-    toast({ 
-      title: "¡JSON Copiado!", 
-      description: "Pegar en el campo JSON del nodo HTTP Request de n8n" 
-    });
+  const copyCurlToggleAlert = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/toggle-alert" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -d '{
+    "company_id": "${companyId}",
+    "active": true,
+    "message": "Estamos experimentando problemas en tu zona.",
+    "zone_ids": []
+  }'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Toggle Alerta copiado al portapapeles" });
+  };
+
+  const copyCurlFactibilidad = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-coverage" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -d '{
+    "company_id": "${companyId}",
+    "lat": -33.5281408,
+    "lng": -70.6984815,
+    "mode": "coverage"
+  }'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Factibilidad copiado al portapapeles" });
+  };
+
+  const copyCurlAlertStatus = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/get-alert-status" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -d '{"company_id": "${companyId}"}'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Estado Alerta copiado al portapapeles" });
+  };
+
+  const copyCurlSistemaAlerta = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-coverage" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -d '{
+    "company_id": "${companyId}",
+    "lat": -33.5281408,
+    "lng": -70.6984815,
+    "mode": "alert"
+  }'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Sistema Alerta copiado al portapapeles" });
+  };
+
+  const copyCurlVerificarTicket = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-ticket" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -d '{
+    "company_id": "${companyId}",
+    "wa_id": "+56912345678"
+  }'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Verificar Ticket copiado al portapapeles" });
+  };
+
+  const copyJsonCoberturaN8n = async (companyId: string) => {
+    await copyZonesJson(companyId);
   };
 
   const copyDerivationTemplate = () => {
@@ -558,6 +742,16 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                   </div>
                 </div>
               )}
+              <div className="pt-2 border-t border-border/10 mt-2 space-y-2">
+                <Label>Mensaje de cierre automático (72h)</Label>
+                <Textarea 
+                  value={editUserData.auto_close_message} 
+                  onChange={(e) => setEditUserData(prev => ({ ...prev, auto_close_message: e.target.value }))}
+                  placeholder="El mensaje predeterminado se usará si este campo está vacío."
+                  className="min-h-[100px] text-xs"
+                />
+                <p className="text-[10px] text-muted-foreground italic">Este mensaje se enviará automáticamente cuando un ticket lleve 72h sin actividad.</p>
+              </div>
             </div>
 
             <div className="pt-2 sticky bottom-0 bg-card/90 backdrop-blur-sm pb-1">
@@ -602,7 +796,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
 
 
       {selectedCompany ? (
-        <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-300 overflow-y-auto max-h-[calc(100vh-10rem)] pr-2">
           <div className="flex items-center gap-4">
             <Button 
               variant="outline" 
@@ -618,6 +812,55 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                 {selectedCompany.company_name}
               </h2>
               <p className="text-sm text-muted-foreground">ID: {selectedCompany.id}</p>
+            </div>
+            <div className="ml-auto">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-muted">
+                    <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 bg-card border-border/40">
+                  <DropdownMenuItem 
+                    onClick={() => onSimulate?.(selectedCompany.id, selectedCompany.company_name)} 
+                    className="cursor-pointer gap-2 text-primary focus:text-primary font-bold"
+                  >
+                    <WandSparkles className="w-4 h-4" /> Simular esta empresa
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="bg-border/20" />
+                  <DropdownMenuItem onClick={() => copyWebhook(selectedCompany.webhook_id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> Copiar Webhook
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlDerivacion(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Derivación
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlFactibilidad(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Factibilidad
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlToggleAlert(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Toggle Alerta
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlAlertStatus(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Estado Alerta
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlSistemaAlerta(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Sistema Alerta
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlVerificarTicket(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Verificar Ticket
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyJsonCoberturaN8n(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> JSON Cobertura n8n
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="bg-border/20" />
+                  <DropdownMenuItem 
+                    onClick={() => handleDeleteUser(selectedCompany.user_id || selectedCompany.owner_id || "")} 
+                    className="cursor-pointer gap-2 text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="w-4 h-4" /> Eliminar empresa
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
@@ -688,25 +931,51 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                       </div>
                     </div>
 
-                    <div className="flex gap-3 pt-2">
+                    <div className="grid grid-cols-1 gap-3 pt-2">
+                      <div className="flex gap-3">
+                        <Button 
+                          variant="secondary" 
+                          size="sm" 
+                          className="flex-1 gap-2"
+                          onClick={() => copyCurlDerivacion(selectedCompany.id)}
+                        >
+                          <Copy className="w-3.5 h-3.5" /> cURL Derivación
+                        </Button>
+                        <Button 
+                          variant="secondary" 
+                          size="sm" 
+                          className="flex-1 gap-2"
+                          onClick={() => copyJsonCoberturaN8n(selectedCompany.id)}
+                        >
+                          <Copy className="w-3.5 h-3.5" /> JSON Cobertura n8n
+                        </Button>
+                      </div>
                       <Button 
-                        variant="secondary" 
+                        variant="outline" 
                         size="sm" 
-                        className="flex-1 gap-2"
-                        onClick={() => copyCurlDerivacion(selectedCompany.id)}
+                        className="w-full gap-2 border-primary/20 hover:bg-primary/5"
+                        onClick={() => copyCurlToggleAlert(selectedCompany.id)}
                       >
-                        <Copy className="w-3.5 h-3.5" /> cURL Derivación
-                      </Button>
-                      <Button 
-                        variant="secondary" 
-                        size="sm" 
-                        className="flex-1 gap-2"
-                        onClick={() => copyJsonCoberturaN8n(selectedCompany.id)}
-                      >
-                        <Copy className="w-3.5 h-3.5" /> JSON Cobertura n8n
+                        <Copy className="w-3.5 h-3.5" /> cURL Toggle Alerta n8n
                       </Button>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border/30 bg-card p-6 space-y-4">
+                <div className="flex items-center gap-2 border-b border-border/10 pb-3">
+                  <Clock className="w-5 h-5 text-primary" />
+                  <h3 className="font-bold">Automatización de Cierre</h3>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground uppercase">Mensaje de cierre automático (72h)</Label>
+                  <div className="bg-muted/10 rounded-md p-3 border border-border/20 min-h-[80px]">
+                    <p className="text-sm text-muted-foreground whitespace-pre-wrap italic">
+                      {selectedCompany.auto_close_message || "Usando mensaje predeterminado del sistema (72h sin actividad)..."}
+                    </p>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground italic">Este mensaje se enviará automáticamente si el ticket no tiene actividad por 72 horas.</p>
                 </div>
               </div>
 
@@ -720,7 +989,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                       ycloud_api_key: selectedCompany.ycloud_api_key,
                       ycloud_phone: selectedCompany.ycloud_phone,
                       config_id: selectedCompany.id,
-                      webhook_id: selectedCompany.webhook_id
+                      webhook_id: selectedCompany.webhook_id,
+                      auto_close_message: selectedCompany.auto_close_message || ""
                     });
                     setEditUserDialogOpen(true);
                   }}
@@ -731,8 +1001,42 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
               </div>
             </TabsContent>
 
-            <TabsContent value="map" className="outline-none">
-              <div className="rounded-xl border border-border/30 bg-card overflow-hidden h-[600px]">
+            <TabsContent value="map" className="outline-none space-y-4 overflow-hidden">
+              <div className="flex justify-between items-center bg-card border border-border/30 p-3 rounded-xl flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <Map className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-bold uppercase tracking-wider text-muted-foreground/80">Capa de Cobertura Geográfica</span>
+                </div>
+                <div className="flex gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="gap-2 border-primary/20 hover:bg-primary/5 h-8 text-[11px] font-bold uppercase tracking-wider"
+                    onClick={() => setImportDialogOpen(true)}
+                  >
+                    <FileUp className="w-3.5 h-3.5" /> Importar JSON
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="gap-2 border-primary/20 hover:bg-primary/5 h-8 text-[11px] font-bold uppercase tracking-wider"
+                    onClick={handleCopyZones}
+                  >
+                    <Copy className="w-3.5 h-3.5" /> Copiar JSON
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="gap-2 border-primary/20 hover:bg-primary/5 h-8 text-[11px] font-bold uppercase tracking-wider"
+                    onClick={handleExportZones}
+                    disabled={isExporting}
+                  >
+                    {isExporting ? <RotateCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                    Exportar Backup
+                  </Button>
+                </div>
+              </div>
+              <div className="rounded-xl border border-border/30 bg-card overflow-hidden h-[600px] shadow-inner relative z-0">
                 <CoverageMap companyId={selectedCompany.id} />
               </div>
             </TabsContent>
@@ -745,7 +1049,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
               <tr className="border-b border-border/30 bg-muted/20">
                 <th className="px-6 py-4 text-[11px] uppercase tracking-wider text-muted-foreground/60 font-bold">Empresa</th>
                 <th className="px-6 py-4 text-[11px] uppercase tracking-wider text-muted-foreground/60 font-bold">WhatsApp</th>
-                <th className="px-6 py-4 text-[11px] uppercase tracking-wider text-muted-foreground/60 font-bold">Módulos</th>
                 <th className="px-6 py-4 text-[11px] uppercase tracking-wider text-muted-foreground/60 font-bold w-[120px]">Acciones</th>
               </tr>
             </thead>
@@ -774,21 +1077,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4">
-                    <div className="flex flex-wrap gap-1.5">
-                      {(userModules[c.user_id || c.owner_id || ""] || []).map(modId => {
-                        const mod = modules.find(m => m.id === modId);
-                        return mod ? (
-                          <Badge key={modId} variant="outline" className="text-[10px] h-5 bg-primary/5 text-primary border-primary/20">
-                            {mod.name}
-                          </Badge>
-                        ) : null;
-                      })}
-                      {(!userModules[c.user_id || c.owner_id || ""] || userModules[c.user_id || c.owner_id || ""].length === 0) && (
-                        <span className="text-xs text-muted-foreground/50 italic">Sin módulos</span>
-                      )}
-                    </div>
-                  </td>
+
                   <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -800,12 +1089,33 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                         <DropdownMenuItem onClick={() => setSelectedCompany(c)} className="cursor-pointer gap-2">
                           <Eye className="w-4 h-4" /> Ver panel detalle
                         </DropdownMenuItem>
+                        <DropdownMenuItem 
+                          onClick={() => onSimulate?.(c.id, c.company_name)} 
+                          className="cursor-pointer gap-2 text-primary focus:text-primary font-bold"
+                        >
+                          <WandSparkles className="w-4 h-4" /> Simular esta empresa
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator className="bg-border/20" />
                         <DropdownMenuItem onClick={() => copyWebhook(c.webhook_id)} className="cursor-pointer gap-2">
                           <Copy className="w-4 h-4" /> Copiar Webhook
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => copyCurlDerivacion(c.id)} className="cursor-pointer gap-2">
                           <Copy className="w-4 h-4" /> cURL Derivación
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copyCurlFactibilidad(c.id)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> cURL Factibilidad
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copyCurlToggleAlert(c.id)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> cURL Toggle Alerta
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copyCurlAlertStatus(c.id)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> cURL Estado Alerta
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copyCurlSistemaAlerta(c.id)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> cURL Sistema Alerta
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copyCurlVerificarTicket(c.id)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> cURL Verificar Ticket
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => copyJsonCoberturaN8n(c.id)} className="cursor-pointer gap-2">
                           <Copy className="w-4 h-4" /> JSON Cobertura n8n
@@ -833,6 +1143,65 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
           </table>
         </div>
       )}
+
+      {/* Import Zones Dialog */}
+      <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
+        <DialogContent className="border-border/30 bg-card max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileUp className="w-5 h-5 text-primary" />
+              Importar Zonas Masivamente
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="bg-primary/5 border border-primary/10 p-3 rounded-lg flex gap-3">
+              <AlertCircle className="w-5 h-5 text-primary shrink-0" />
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                <strong className="text-foreground">¡Atención!</strong> Al importar, se <span className="text-destructive font-bold">borrarán todas las zonas actuales</span> de esta empresa para reemplazarlas por las nuevas. El formato debe ser un array de objetos JSON con <code className="bg-secondary px-1 rounded">name</code> y <code className="bg-secondary px-1 rounded">polygon</code> como [[lng, lat], ...].
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase opacity-60">Pega el JSON aquí</Label>
+              <Textarea
+                placeholder='[{"name": "Zona A", "polygon": [[-70.6, -33.4], ...]}]'
+                className="min-h-[250px] font-mono text-[11px] bg-secondary/30"
+                value={importJson}
+                onChange={(e) => setImportJson(e.target.value)}
+              />
+            </div>
+
+            {(() => {
+              try {
+                const parsed = JSON.parse(importJson);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  return (
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded text-center">
+                      <span className="text-[11px] font-bold text-emerald-500">
+                        DETECTADAS: {parsed.length} ZONAS PARA IMPORTAR
+                      </span>
+                    </div>
+                  );
+                }
+              } catch (e) {}
+              return null;
+            })()}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="ghost" onClick={() => setImportDialogOpen(false)} disabled={isImporting}>
+              Cancelar
+            </Button>
+            <Button 
+              onClick={handleImportZones} 
+              disabled={isImporting || !importJson.trim()}
+              className="font-bold gap-2"
+            >
+              {isImporting ? <RotateCw className="w-4 h-4 animate-spin" /> : <FileUp className="w-4 h-4" />}
+              Confirmar e Importar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -108,6 +108,10 @@ export default function CompanyTeamManager({
   onOpenResetPassword,
   onSimulate 
 }: Props) {
+  useEffect(() => {
+    console.log(`[Diagnostic] CompanyTeamManager montado: ${companyName} (${companyId})`);
+  }, [companyId, companyName]);
+
   const [users, setUsers] = useState<CompanyUser[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -495,7 +499,7 @@ export default function CompanyTeamManager({
 
       {/* Create dialog */}
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl bg-card border-border/20 shadow-2xl overflow-y-auto max-h-[90vh]">
           <DialogHeader>
             <DialogTitle>Nuevo Usuario</DialogTitle>
           </DialogHeader>
@@ -510,7 +514,24 @@ export default function CompanyTeamManager({
             </div>
             <div>
               <Label className="text-xs font-bold uppercase tracking-wider opacity-60">RUT <span className="text-destructive">*</span></Label>
-              <Input className="mt-1" value={newRut} onChange={e => setNewRut(e.target.value)} placeholder="12.345.678-9" required />
+              <Input 
+                className="mt-1" 
+                value={newRut} 
+                onChange={e => {
+                  const raw = e.target.value.replace(/[^0-9kK]/g, '').toUpperCase();
+                  let formatted = raw;
+                  if (raw.length > 1) {
+                    const body = raw.slice(0, -1);
+                    const dv = raw.slice(-1);
+                    formatted = `${body}-${dv}`;
+                  }
+                  setNewRut(formatted);
+                }} 
+                placeholder="12345678-9" 
+                required 
+                maxLength={11}
+              />
+              <p className="text-[9px] text-muted-foreground mt-0.5">El guión se agrega automáticamente</p>
             </div>
             <div>
               <Label className="text-xs font-bold uppercase tracking-wider opacity-60">Teléfono <span className="text-destructive">*</span></Label>
@@ -626,7 +647,7 @@ export default function CompanyTeamManager({
 
       {/* Edit dialog */}
       <Dialog open={showEdit} onOpenChange={setShowEdit}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl bg-card border-border/20 shadow-2xl overflow-y-auto max-h-[90vh]">
           <DialogHeader>
             <DialogTitle>Editar Usuario</DialogTitle>
           </DialogHeader>

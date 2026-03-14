@@ -32,7 +32,7 @@ interface DashboardSidebarProps {
 }
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  administrador: ["team", "inbox", "coverage", "tickets", "usage"],
+  administrador: ["team", "inbox", "coverage", "tickets"],
   supervisor: ["inbox", "tickets"],
   operador: ["inbox", "tickets"],
 };
@@ -128,7 +128,6 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
               <SidebarMenu className="space-y-0.5">
                 <NavItem view="home" icon={Home} label="Inicio" />
                 <NavItem view="users" icon={Users} label="Empresas" />
-                <NavItem view="usage" icon={Activity} label="Uso" />
                 <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />
                 <NavItem view="tickets" icon={Ticket} label="Tickets" />
                 <NavItem view="coverage" icon={MapPin} label="Coberturas" />
@@ -148,7 +147,6 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 {hasPermission("inbox") && <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />}
                 {hasPermission("tickets") && <NavItem view="tickets" icon={Ticket} label="Tickets" />}
                 {hasPermission("coverage") && <NavItem view="coverage" icon={MapPin} label="Coberturas" />}
-                {hasPermission("usage") && <NavItem view="usage" icon={Activity} label="Mi Uso" />}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -187,7 +185,6 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
                 <NavItem view="home" icon={Home} label="Inicio" />
-                <NavItem view="usage" icon={Activity} label="Mi Uso" />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

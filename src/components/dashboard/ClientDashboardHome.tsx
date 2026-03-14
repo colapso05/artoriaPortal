@@ -15,6 +15,7 @@ interface ClientDashboardProps {
   userName: string;
   userRole?: string;
   operatorRoles?: string[];
+  onConversationClick?: (conversationId: string) => void;
 }
 
 interface TicketStats {
@@ -31,7 +32,7 @@ const cardVariants = {
   }),
 };
 
-export default function ClientDashboardHome({ companyId, companyName, userId, userName, userRole, operatorRoles }: ClientDashboardProps) {
+export default function ClientDashboardHome({ companyId, companyName, userId, userName, userRole, operatorRoles, onConversationClick }: ClientDashboardProps) {
   const [ticketStats, setTicketStats] = useState<TicketStats>({ open: 0, inProgress: 0, resolved: 0 });
   const [recentConversations, setRecentConversations] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
@@ -218,6 +219,7 @@ export default function ClientDashboardHome({ companyId, companyName, userId, us
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: 0.3 + i * 0.05 }}
                       className="flex items-center justify-between py-3 px-3 rounded-xl hover:bg-secondary/30 transition-all duration-200 cursor-pointer group"
+                      onClick={() => onConversationClick?.(c.id)}
                     >
                       <div className="min-w-0 flex-1 flex items-center gap-3">
                         <div className="w-9 h-9 rounded-full bg-emerald-500/10 flex items-center justify-center flex-shrink-0">

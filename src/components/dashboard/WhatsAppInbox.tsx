@@ -257,9 +257,11 @@ interface WhatsAppInboxProps {
   userName?: string;
   userRole?: string;
   operatorRoles?: string[];
+  initialConversationId?: string;
+  onConversationOpened?: () => void;
 }
 
-export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles }: WhatsAppInboxProps) {
+export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, onConversationOpened }: WhatsAppInboxProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -268,7 +270,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [chatFilter, setChatFilter] = useState<'all' | 'open' | 'mine' | 'closed'>('all');
+  const [chatFilter, setChatFilter] = useState<'all' | 'open' | 'mine' | 'closed' | 'en_progreso'>('all');
   const [isTicketModalOpen, setIsTicketModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [transferRole, setTransferRole] = useState("soporte_tecnico");
@@ -354,6 +356,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     return () => { supabase.removeChannel(channel); };
   }, [companyId, chatFilter, userRole, operatorRoles, userId]);
 
+  // Handle initialConversationId
+  useEffect(() => {
+    if (initialConversationId && conversations.length > 0) {
+      const target = conversations.find(c => c.id === initialConversationId);
+      if (target) {
+        handleConvSelect(target);
+        setChatFilter('all'); // Ensure it's visible
+        onConversationOpened?.();
+      }
+    }
+  }, [initialConversationId, conversations]);
+
   useEffect(() => {
     if (!selectedConv) return;
     loadMessages(selectedConv.id);
@@ -399,7 +413,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   }, [selectedConv]);
 
   const loadConversations = async () => {
-    let query = supabase.from("conversations").select("*");
+    let query: any = supabase.from("conversations").select("*");
     if (companyId) {
       query = query.eq("company_id", companyId);
     }
@@ -505,7 +519,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     if (!selectedConv) return;
     const { error } = await supabase
       .from("conversations")
-      .update({ taken_by: userId, taken_at: new Date().toISOString() })
+      .update({ taken_by: userId, taken_at: new Date().toISOString() } as any)
       .eq("id", selectedConv.id);
     if (!error) {
       toast({ title: "Caso asignado", description: "Ahora eres el responsable de este ticket." });
@@ -654,7 +668,21 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           .update({ status: 'cerrado', closed_at: now, closed_by: userId })
           .eq("id", tId)
           .eq("status", "abierto");
+          
+        // Sincronizar memoria del agente en background
+        (supabase as any).rpc('sync_ticket_memory', {
+          p_conversation_id: selectedConv.id,
+          p_ticket_id: tId
+        }).then(({ data, error: rpcError }: any) => {
+          if (rpcError) console.error('[SyncMemory] Error:', rpcError);
+          else console.log('[SyncMemory] Mensajes sincronizados:', data);
+        }).catch(console.error);
       }
+
+      // Activar el bot para que maneje la próxima interacción
+      await supabase.from("conversations")
+        .update({ is_agent_active: true })
+        .eq("id", selectedConv.id);
 
       toast({ title: "Chat Cerrado" });
       setIsCloseModalOpen(false);
@@ -734,6 +762,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
     if (chatFilter === 'open') return c.unread_count > 0 || !c.is_agent_active;
     if (chatFilter === 'mine') return c.taken_by === userId;
+    if (chatFilter === 'en_progreso') return c.status === 'en_progreso';
 
     return true;
   }).sort((a, b) => {
@@ -838,6 +867,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'mine' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
             >
               Míos
+            </button>
+            <button
+              onClick={() => setChatFilter('en_progreso')}
+              className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'en_progreso' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
+            >
+              Proceso
             </button>
             <button
               onClick={() => setChatFilter('closed')}
