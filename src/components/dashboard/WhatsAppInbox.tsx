@@ -982,10 +982,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex flex-col">
-                    <span className="font-bold text-[15px] tracking-wide text-foreground">
-                      {selectedConv.profile_name || selectedConv.wa_id}
+                    <span className="font-bold text-[14px] tracking-wide text-foreground leading-snug">
+                      {selectedConv.profile_name || "Contacto Desconocido"}
                     </span>
-                    <div className="scale-75 origin-left -mt-1">
+                    <span className="text-[11px] text-muted-foreground font-mono font-medium leading-none mb-0.5">
+                      {selectedConv.wa_id}
+                    </span>
+                    <div className="scale-75 origin-left -mt-0.5">
                       <StatusBadge status={selectedConv.status} />
                     </div>
                   </div>
@@ -1157,7 +1160,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               </AvatarFallback>
             </Avatar>
             <h3 className="font-bold text-[18px] tracking-tight relative z-10">{selectedConv.profile_name || "Contacto Desconocido"}</h3>
-            <p className="text-[11px] text-muted-foreground mt-1 tracking-widest uppercase font-semibold relative z-10">{selectedConv.wa_id}</p>
+            <p className="text-[12px] text-muted-foreground/80 mt-0.5 font-mono font-medium relative z-10">{selectedConv.wa_id}</p>
           </div>
 
           <div className="p-5 space-y-6">
