@@ -1,0 +1,1 @@
+ALTER TABLE public.modules ADD COLUMN agent_table_id text DEFAULT NULL;
