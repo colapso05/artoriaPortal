@@ -17,6 +17,7 @@ import CompanyTeamManager from "@/components/dashboard/CompanyTeamManager";
 import AdminDashboardHome from "@/components/dashboard/AdminDashboardHome";
 import ClientDashboardHome from "@/components/dashboard/ClientDashboardHome";
 import AdminAgentReports from "@/components/dashboard/AdminAgentReports";
+import ShortcutsManager from "@/components/dashboard/ShortcutsManager";
 
 
 
@@ -284,6 +285,9 @@ export default function Dashboard() {
               )}
               {activeView === "team" && hasPermission("team") && effectiveCompanyId && (
                 <CompanyTeamManager companyId={effectiveCompanyId} companyName={effectiveCompanyName} />
+              )}
+              {activeView === "shortcuts" && (
+                <ShortcutsManager companyId={effectiveCompanyId || undefined} />
               )}
 
 

@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   Users, Database, FolderKanban, Home,
-  HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle,
+  HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle, Zap,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -130,6 +130,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 <NavItem view="users" icon={Users} label="Empresas" />
                 <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />
                 <NavItem view="tickets" icon={Ticket} label="Tickets" />
+                <NavItem view="shortcuts" icon={Zap} label="Atajos" />
                 <NavItem view="coverage" icon={MapPin} label="Coberturas" />
                 <NavItem view="reports" icon={AlertCircle} label="Reportes IA" />
               </SidebarMenu>
@@ -147,6 +148,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 {hasPermission("team") && <NavItem view="team" icon={UserCog} label="Equipo" />}
                 {hasPermission("inbox") && <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />}
                 {hasPermission("tickets") && <NavItem view="tickets" icon={Ticket} label="Tickets" />}
+                {hasPermission("inbox") && <NavItem view="shortcuts" icon={Zap} label="Atajos" />}
                 {hasPermission("coverage") && <NavItem view="coverage" icon={MapPin} label="Coberturas" />}
               </SidebarMenu>
             </SidebarGroupContent>

@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { getShortcuts, type Shortcut } from "@/components/dashboard/ShortcutsManager";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -291,6 +292,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
+  // Slash command autocomplete
+  const [slashShortcuts, setSlashShortcuts] = useState<Shortcut[]>([]);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -1465,6 +1470,34 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 )
               )}
 
+              {/* Slash command popup */}
+              {slashOpen && slashShortcuts.length > 0 && (
+                <div className="max-w-4xl mx-auto w-full mb-1">
+                  <div className="bg-card border border-border/40 rounded-xl shadow-xl overflow-hidden">
+                    <div className="px-3 py-1.5 border-b border-border/20 flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-primary uppercase tracking-wider">Atajos</span>
+                      <span className="text-[10px] text-muted-foreground/50">↑↓ navegar · Enter/Tab insertar · Esc cerrar</span>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      {slashShortcuts.map((s, i) => (
+                        <button
+                          key={s.id}
+                          className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors ${i === slashIndex ? "bg-primary/10 text-foreground" : "hover:bg-secondary/60 text-foreground/80"}`}
+                          onMouseEnter={() => setSlashIndex(i)}
+                          onMouseDown={(e) => { e.preventDefault(); setNewMessage(s.message); setSlashOpen(false); }}
+                        >
+                          <span className="font-mono text-[11px] text-primary bg-primary/10 px-1.5 py-0.5 rounded shrink-0 mt-0.5">/{s.trigger}</span>
+                          <div className="min-w-0">
+                            {s.title !== s.trigger && <p className="text-[11px] font-semibold truncate">{s.title}</p>}
+                            <p className="text-[11px] text-muted-foreground truncate">{s.message}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-end gap-3 max-w-4xl mx-auto relative group">
                 <div className={`relative flex-1 bg-white/5 border border-white/10 ${puedeEnviar ? 'group-focus-within:border-primary/50 group-focus-within:bg-white/10' : 'opacity-40'} rounded-full flex items-center shadow-xl transition-all min-h-[48px] px-2`}>
                   <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
@@ -1481,8 +1514,24 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                   </Button>
                   <textarea
                     value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    placeholder={!puedeEnviar ? "Respuesta bloqueada (Fuera de la ventana de 24h)" : selectedConv.is_agent_active ? "Inyectar comando (Pausa IA Automáticamente)..." : "Redactar transmisión de un Especialista..."}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNewMessage(val);
+                      // Slash command: activar si empieza con /
+                      if (val.startsWith("/")) {
+                        const query = val.slice(1).toLowerCase();
+                        const all = getShortcuts(companyId);
+                        const matches = all.filter(s =>
+                          s.trigger.startsWith(query) || s.title.toLowerCase().includes(query)
+                        );
+                        setSlashShortcuts(matches);
+                        setSlashOpen(matches.length > 0);
+                        setSlashIndex(0);
+                      } else {
+                        setSlashOpen(false);
+                      }
+                    }}
+                    placeholder={!puedeEnviar ? "Respuesta bloqueada (Fuera de la ventana de 24h)" : selectedConv.is_agent_active ? "Inyectar comando (Pausa IA Automáticamente)..." : "Escribe un mensaje o / para atajos..."}
                     disabled={!puedeEnviar}
                     className="w-full bg-transparent border-0 focus:ring-0 resize-none py-3.5 px-2 text-[13.5px] tracking-wide placeholder:text-muted-foreground/40 max-h-32 min-h-[48px]"
                     rows={1}
@@ -1492,6 +1541,23 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
                     }}
                     onKeyDown={(e) => {
+                      if (slashOpen) {
+                        if (e.key === "ArrowDown") { e.preventDefault(); setSlashIndex(i => Math.min(i + 1, slashShortcuts.length - 1)); return; }
+                        if (e.key === "ArrowUp") { e.preventDefault(); setSlashIndex(i => Math.max(i - 1, 0)); return; }
+                        if (e.key === "Escape") { e.preventDefault(); setSlashOpen(false); return; }
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          const s = slashShortcuts[slashIndex];
+                          if (s) { setNewMessage(s.message); setSlashOpen(false); }
+                          return;
+                        }
+                        if (e.key === "Tab") {
+                          e.preventDefault();
+                          const s = slashShortcuts[slashIndex];
+                          if (s) { setNewMessage(s.message); setSlashOpen(false); }
+                          return;
+                        }
+                      }
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         sendMessage();
