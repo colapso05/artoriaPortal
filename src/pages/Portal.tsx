@@ -111,19 +111,14 @@ export default function Portal() {
     startCooldown(newCount === 1 ? 30 : 60);
   };
 
-  const handleVerifyCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setCodeError("");
-    if (code.trim().length !== 6) {
-      setCodeError("El código debe tener 6 dígitos.");
-      return;
-    }
-    // Solo verificamos localmente que tenga formato — la validación real ocurre al cambiar contraseña
-    setView("reset");
-  };
-
+  // Código + nueva contraseña en un solo submit — el backend valida el código y cambia la contraseña atómicamente
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCodeError("");
+    if (code.trim().length < 6) {
+      setCodeError("Ingresa el código completo de 6 dígitos.");
+      return;
+    }
     if (newPassword !== confirmPassword) {
       toast({ title: "Las contraseñas no coinciden", variant: "destructive" });
       return;
@@ -140,17 +135,13 @@ export default function Portal() {
 
     if (error || data?.error) {
       const msg = data?.error || error?.message || "Código inválido o expirado";
-      // Si el código es inválido, volver al paso de código
+      setCodeError(msg);
       toast({ title: "Error", description: msg, variant: "destructive" });
-      if (msg.includes("inválido") || msg.includes("expirado")) {
-        setCodeError(msg);
-        setView("code");
-      }
       return;
     }
 
     setResetDone(true);
-    toast({ title: "✅ Contraseña actualizada", description: "Ahora puedes iniciar sesión con tu nueva contraseña." });
+    toast({ title: "✅ Contraseña actualizada", description: "Ahora puedes iniciar sesión." });
     setTimeout(() => {
       setView("login");
       setResetDone(false);
@@ -163,8 +154,7 @@ export default function Portal() {
 
   const goBack = () => {
     if (view === "forgot") setView("login");
-    else if (view === "code") setView("forgot");
-    else if (view === "reset") setView("code");
+    else if (view === "code" || view === "reset") setView("forgot");
     else navigate("/");
   };
 
@@ -257,66 +247,17 @@ export default function Portal() {
             </>
           )}
 
-          {/* ── CODE ── */}
-          {view === "code" && (
+          {/* ── CÓDIGO + NUEVA CONTRASEÑA (fusionado) ── */}
+          {(view === "code" || view === "reset") && (
             <>
               <div className="flex items-center gap-2 mb-2">
                 <Lock className="w-5 h-5 text-primary" />
-                <h1 className="text-xl font-display font-bold gradient-text">Código de verificación</h1>
+                <h1 className="text-xl font-display font-bold gradient-text">Restablecer contraseña</h1>
               </div>
               <p className="text-muted-foreground text-sm mb-1">
-                Ingresa el código de 6 dígitos que enviamos a:
+                Ingresa el código enviado a:
               </p>
-              <p className="font-semibold text-sm text-foreground mb-6 truncate">{forgotEmail}</p>
-
-              <form onSubmit={handleVerifyCode} className="space-y-4">
-                <div>
-                  <Label htmlFor="code">Código</Label>
-                  <Input
-                    id="code"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    value={code}
-                    onChange={e => { setCode(e.target.value.replace(/\D/g, "")); setCodeError(""); }}
-                    placeholder="123456"
-                    className="mt-1 text-center text-2xl font-mono tracking-[0.5em] py-6"
-                    autoFocus
-                  />
-                  {codeError && <p className="text-sm text-destructive mt-1.5">⚠ {codeError}</p>}
-                </div>
-
-                <Button type="submit" disabled={code.length !== 6} className="w-full glow-box">
-                  <Lock className="w-4 h-4 mr-2" />
-                  Verificar código
-                </Button>
-
-                {/* Reenviar */}
-                <div className="text-center">
-                  <button
-                    type="button"
-                    onClick={handleResend}
-                    disabled={resendCooldown > 0}
-                    className="text-sm text-muted-foreground hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 mx-auto"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    {resendCooldown > 0
-                      ? `Reenviar en ${resendCooldown}s`
-                      : "Reenviar código"}
-                  </button>
-                </div>
-              </form>
-            </>
-          )}
-
-          {/* ── RESET ── */}
-          {view === "reset" && (
-            <>
-              <div className="flex items-center gap-2 mb-2">
-                <Lock className="w-5 h-5 text-primary" />
-                <h1 className="text-xl font-display font-bold gradient-text">Nueva contraseña</h1>
-              </div>
-              <p className="text-muted-foreground text-sm mb-6">Elige una contraseña segura.</p>
+              <p className="font-semibold text-sm text-foreground mb-5 truncate">{forgotEmail}</p>
 
               {resetDone ? (
                 <div className="flex flex-col items-center text-center gap-3 py-4">
@@ -326,6 +267,35 @@ export default function Portal() {
                 </div>
               ) : (
                 <form onSubmit={handleReset} className="space-y-4">
+                  {/* Campo código */}
+                  <div>
+                    <Label htmlFor="code">Código de verificación</Label>
+                    <Input
+                      id="code"
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={code}
+                      onChange={e => { setCode(e.target.value.replace(/\D/g, "")); setCodeError(""); }}
+                      placeholder="123456"
+                      className="mt-1 text-center text-2xl font-mono tracking-[0.5em] py-5"
+                      autoFocus
+                    />
+                    {codeError && <p className="text-sm text-destructive mt-1.5">⚠ {codeError}</p>}
+                    <div className="text-right mt-1">
+                      <button
+                        type="button"
+                        onClick={handleResend}
+                        disabled={resendCooldown > 0}
+                        className="text-xs text-muted-foreground hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        {resendCooldown > 0 ? `Reenviar en ${resendCooldown}s` : "Reenviar código"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Nueva contraseña */}
                   <div>
                     <Label htmlFor="new-password">Nueva contraseña</Label>
                     <div className="relative mt-1">
@@ -344,6 +314,8 @@ export default function Portal() {
                       </Button>
                     </div>
                   </div>
+
+                  {/* Confirmar contraseña */}
                   <div>
                     <Label htmlFor="confirm-password">Confirmar contraseña</Label>
                     <div className="relative mt-1">
@@ -365,14 +337,20 @@ export default function Portal() {
                       <p className="text-sm text-destructive mt-1.5">⚠ Las contraseñas no coinciden</p>
                     )}
                   </div>
+
                   <Button
                     type="submit"
-                    disabled={resetLoading || (!!newPassword && !!confirmPassword && newPassword !== confirmPassword)}
+                    disabled={
+                      resetLoading ||
+                      code.length < 6 ||
+                      !newPassword ||
+                      (!!newPassword && !!confirmPassword && newPassword !== confirmPassword)
+                    }
                     className="w-full glow-box"
                   >
                     {resetLoading
-                      ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Actualizando...</>
-                      : <><Lock className="w-4 h-4 mr-2" /> Establecer contraseña</>}
+                      ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Verificando y actualizando...</>
+                      : <><Lock className="w-4 h-4 mr-2" /> Restablecer contraseña</>}
                   </Button>
                 </form>
               )}
