@@ -7,7 +7,6 @@ import { Label } from "@/components/ui/label";
 import { LogIn, ArrowLeft, Eye, EyeOff, Mail, Lock, CheckCircle2, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const WEBHOOK_URL = "https://bot.dropptelecom.cl/webhook/artoriaweb";
 
 type View = "login" | "forgot" | "reset";
 
@@ -73,7 +72,7 @@ export default function Portal() {
     setForgotLoading(true);
 
     try {
-      // 1. Verificar si existe cuenta con ese correo (vía edge function con service role)
+      // check-email verifica existencia, genera el link y lo manda al webhook todo en uno
       const { data: checkData, error: checkError } = await supabase.functions.invoke("check-email", {
         body: { email: forgotEmail.trim().toLowerCase() },
       });
@@ -83,18 +82,6 @@ export default function Portal() {
         setForgotLoading(false);
         return;
       }
-
-      // 2. Disparar reset de contraseña de Supabase (genera link seguro)
-      await supabase.auth.resetPasswordForEmail(forgotEmail.trim(), {
-        redirectTo: `${window.location.origin}/portal`,
-      });
-
-      // 3. Notificar al webhook (fire & forget)
-      fetch(WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "password_reset", email: forgotEmail.trim() }),
-      }).catch(() => {});
 
       setForgotSent(true);
     } catch {
