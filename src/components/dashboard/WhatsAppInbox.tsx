@@ -1378,8 +1378,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                               </div>
                             )}
 
+                            {/* Sticker: mostrar etiqueta en lugar de burbuja vacía */}
+                            {msg.message_type === 'sticker' && (
+                              <span className="text-[12px] text-muted-foreground italic">🎭 Sticker</span>
+                            )}
+
                             {/* Mostrar texto solo si no hay multimedia o si el texto no es el placeholder de sistema [Multimedia] */}
-                            {msg.content && (() => {
+                            {msg.message_type !== 'sticker' && msg.content && (() => {
                               // 1. Limpieza de etiquetas técnicas [video] y palabras redundantes solas
                               let clean = msg.content.replace(/\[(video|image|audio|document|sticker|short_video)\]/gi, '').trim();
 
