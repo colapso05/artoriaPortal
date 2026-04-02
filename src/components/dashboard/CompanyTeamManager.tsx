@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import PasswordStrengthBar, { isPasswordValid } from "@/components/ui/PasswordStrengthBar";
 import {
   Dialog,
   DialogContent,
@@ -191,6 +192,10 @@ export default function CompanyTeamManager({
   const handleCreate = async () => {
     if (!newEmail || !newName || !newRut || !newPhone) {
       toast.error("Por favor, completa todos los campos obligatorios (Nombre, Email, RUT y Teléfono).");
+      return;
+    }
+    if (newPassword && !isPasswordValid(newPassword)) {
+      toast.error("La contraseña no cumple los requisitos de seguridad.");
       return;
     }
     if (newRole === "operador" && operatorRoles.length === 0) {
@@ -568,7 +573,7 @@ export default function CompanyTeamManager({
                   type={showPassword ? "text" : "password"}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Contraseña Temporal"
+                  placeholder="Ej: Usuario1_2024"
                   className="pr-10"
                 />
                 <Button
@@ -581,6 +586,7 @@ export default function CompanyTeamManager({
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </Button>
               </div>
+              {newPassword && <PasswordStrengthBar password={newPassword} />}
             </div>
             <div className="col-span-2">
               <Label className="text-xs font-bold uppercase tracking-wider opacity-60">Rango Horario de Acceso</Label>

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LogIn, ArrowLeft, Eye, EyeOff, Mail, Lock, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import PasswordStrengthBar, { isPasswordValid } from "@/components/ui/PasswordStrengthBar";
 
 type View = "login" | "forgot" | "code" | "reset";
 
@@ -123,8 +124,8 @@ export default function Portal() {
       toast({ title: "Las contraseñas no coinciden", variant: "destructive" });
       return;
     }
-    if (newPassword.length < 6) {
-      toast({ title: "La contraseña debe tener al menos 6 caracteres", variant: "destructive" });
+    if (!isPasswordValid(newPassword)) {
+      toast({ title: "La contraseña no cumple los requisitos de seguridad", variant: "destructive" });
       return;
     }
     setResetLoading(true);
@@ -273,11 +274,11 @@ export default function Portal() {
                     <Input
                       id="code"
                       type="text"
-                      inputMode="numeric"
+                      inputMode="text"
                       maxLength={6}
                       value={code}
-                      onChange={e => { setCode(e.target.value.replace(/\D/g, "")); setCodeError(""); }}
-                      placeholder="123456"
+                      onChange={e => { setCode(e.target.value.toUpperCase().slice(0, 6)); setCodeError(""); }}
+                      placeholder="A3B7X2"
                       className="mt-1 text-center text-2xl font-mono tracking-[0.5em] py-5"
                       autoFocus
                     />
@@ -304,7 +305,7 @@ export default function Portal() {
                         type={showNew ? "text" : "password"}
                         value={newPassword}
                         onChange={e => setNewPassword(e.target.value)}
-                        placeholder="Mínimo 6 caracteres"
+                        placeholder="Ej: Segura1_2024"
                         required className="pr-10"
                       />
                       <Button type="button" variant="ghost" size="icon"
@@ -313,6 +314,7 @@ export default function Portal() {
                         {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </Button>
                     </div>
+                    <PasswordStrengthBar password={newPassword} />
                   </div>
 
                   {/* Confirmar contraseña */}
@@ -343,8 +345,8 @@ export default function Portal() {
                     disabled={
                       resetLoading ||
                       code.length < 6 ||
-                      !newPassword ||
-                      (!!newPassword && !!confirmPassword && newPassword !== confirmPassword)
+                      !isPasswordValid(newPassword) ||
+                      newPassword !== confirmPassword
                     }
                     className="w-full glow-box"
                   >

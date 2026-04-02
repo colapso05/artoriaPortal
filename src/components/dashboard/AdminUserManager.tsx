@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import PasswordStrengthBar, { isPasswordValid } from "@/components/ui/PasswordStrengthBar";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -120,6 +121,10 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
 
     if (!newYcloudKey || !newYcloudPhone) {
       toast({ title: "WhatsApp Obligatorio", description: "Debes configurar la API Key y el teléfono de la empresa.", variant: "destructive" });
+      return;
+    }
+    if (!isPasswordValid(newPassword)) {
+      toast({ title: "Contraseña insegura", description: "La contraseña no cumple los requisitos de seguridad.", variant: "destructive" });
       return;
     }
 
@@ -567,7 +572,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                         type={showPassword ? "text" : "password"}
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
-                        placeholder="Contraseña segura"
+                        placeholder="Ej: Empresa1_2024"
                         required
                         className="pr-10"
                       />
@@ -592,6 +597,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                       <RotateCw className="w-4 h-4" />
                     </Button>
                   </div>
+                  <PasswordStrengthBar password={newPassword} />
                 </div>
               </div>
 
