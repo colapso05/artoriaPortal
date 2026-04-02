@@ -73,14 +73,12 @@ export default function Portal() {
     setForgotLoading(true);
 
     try {
-      // 1. Verificar si existe cuenta con ese correo
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("id")
-        .eq("email", forgotEmail.trim().toLowerCase())
-        .maybeSingle();
+      // 1. Verificar si existe cuenta con ese correo (vía edge function con service role)
+      const { data: checkData, error: checkError } = await supabase.functions.invoke("check-email", {
+        body: { email: forgotEmail.trim().toLowerCase() },
+      });
 
-      if (!profile) {
+      if (checkError || !checkData?.exists) {
         setForgotError("No existe una cuenta asociada a ese correo.");
         setForgotLoading(false);
         return;
