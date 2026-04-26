@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense, lazy } from "react";
+const ScheduleTab = lazy(() => import("./schedule/ScheduleTab"));
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { getShortcuts, type Shortcut } from "@/components/dashboard/ShortcutsManager";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { useSidebar, SidebarTrigger } from "@/components/ui/sidebar";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -12,7 +14,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Send, Search, ArrowLeft, Bot, Monitor,
   Phone, FileText, CheckCheck, Check, Clock,
-  Ticket, User, Info, AlertCircle, XCircle, MessageCircle, X, Loader2, Download, Hand, Forward
+  Ticket, User, Info, AlertCircle, XCircle, MessageCircle, X, Loader2, Download, Hand, Forward, SlidersHorizontal, Menu,
+  ChevronDown, Copy, MapPin, Flame, StickyNote
 } from "lucide-react";
 import { format, isToday, isYesterday } from "date-fns";
 import { es } from "date-fns/locale";
@@ -80,19 +83,25 @@ function formatWhatsAppText(text: string) {
 
 function formatConvDate(dateStr: string) {
   const date = new Date(dateStr);
-  if (isToday(date)) return format(date, "HH:mm");
-  if (isYesterday(date)) return "Ayer";
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return "ahora";
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH}h`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD < 7) return `${diffD}d`;
   return format(date, "dd/MM");
 }
 
 function getSenderBadge(senderType?: string, senderName?: string | null) {
   switch (senderType) {
     case "agent":
-      return { icon: Bot, label: "IA" };
+      return { icon: Bot, label: senderName || "ARTORIA" };
     case "specialist":
       return { icon: Phone, label: senderName || "Especialista" };
     case "platform":
-      return { icon: Monitor, label: "Plataforma" };
+      return { icon: Monitor, label: senderName || "Plataforma" };
     default:
       return null;
   }
@@ -109,11 +118,10 @@ function StatusIcon({ status }: { status: string | null }) {
   }
 }
 
-function StatusBadge({ status, className = "" }: { status: 'abierto' | 'en_progreso' | 'cerrado', className?: string }) {
-  const configs = {
+function StatusBadge({ status, className = "" }: { status: string, className?: string }) {
+  const configs: Record<string, { label: string; color: string; bg: string; pulse: string }> = {
     abierto: { label: 'ACTIVO', color: 'text-green-500', bg: 'bg-green-500', pulse: 'bg-green-400' },
     en_progreso: { label: 'En proceso', color: 'text-yellow-500', bg: 'bg-yellow-500', pulse: 'bg-yellow-400' },
-    cerrado: { label: 'Cerrado', color: 'text-red-500', bg: 'bg-red-500', pulse: 'bg-red-400' },
   };
 
   const config = configs[status] || configs.en_progreso;
@@ -129,6 +137,35 @@ function StatusBadge({ status, className = "" }: { status: 'abierto' | 'en_progr
       </span>
     </div>
   );
+}
+
+// Badge dinámico: Prioriza etiqueta de ticket (si no es resuelto), sino muestra EN VIVO (agente)
+function ConvStatusBadge({ conv, ticketStatus, labels }: {
+  conv: Conversation;
+  ticketStatus?: string;
+  labels: Array<{ key: string; name: string; color: string }>;
+}) {
+  const tsLabel = ticketStatus ? labels.find(l => l.key === ticketStatus) : null;
+
+  if (tsLabel) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[9px] font-bold tracking-wider uppercase px-2 py-0.5 rounded border shadow-sm" style={{ color: tsLabel.color, borderColor: tsLabel.color + '40', backgroundColor: tsLabel.color + '15' }}>
+        <span className="w-1.5 h-1.5 rounded-full shadow-sm" style={{ backgroundColor: tsLabel.color, boxShadow: `0 0 6px ${tsLabel.color}` }} />
+        {tsLabel.name}
+      </span>
+    );
+  }
+
+  if (conv.is_agent_active) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-green-500/30 bg-green-500/10 shadow-sm">
+        <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_6px_#22c55e]" />
+        <span className="text-[9px] font-black tracking-widest uppercase text-green-500 drop-shadow-sm">EN VIVO</span>
+      </span>
+    );
+  }
+
+  return null;
 }
 
 function getMediaType(mediaUrl: string, messageType?: string): 'image' | 'audio' | 'video' | 'document' {
@@ -284,36 +321,83 @@ interface WhatsAppInboxProps {
   operatorRoles?: string[];
   initialConversationId?: string;
   onConversationOpened?: () => void;
+  isSimulating?: boolean;
+  simulatedUserName?: string;
+  onNavigateToSchedule?: () => void;
 }
 
-export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, onConversationOpened }: WhatsAppInboxProps) {
+export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, onConversationOpened, isSimulating, simulatedUserName, onNavigateToSchedule }: WhatsAppInboxProps) {
+  // En vista simulada el admin escribe como el usuario simulado, así el historial queda correcto
+  const effectiveSenderName = (isSimulating && simulatedUserName) ? simulatedUserName : userName;
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState("");
+  const [hasContent, setHasContent] = useState(false);
+  const [showMobilePanel, setShowMobilePanel] = useState(false);
+  const { setOpenMobile: setSidebarOpen } = useSidebar();
   const [sending, setSending] = useState(false);
+  const [ticketRefreshCounter, setTicketRefreshCounter] = useState(0);
   // Slash command autocomplete
   const [slashShortcuts, setSlashShortcuts] = useState<Shortcut[]>([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const msgTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const slashStartRef = useRef<number>(-1);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
-  const [chatFilter, setChatFilter] = useState<'all' | 'open' | 'mine' | 'closed' | 'en_progreso'>('all');
+  const [chatFilter, setChatFilter] = useState<string>('all');
+  const [ticketStatusByConvId, setTicketStatusByConvId] = useState<Record<string, string>>({});
+  const [ticketLabels, setTicketLabels] = useState<Array<{key: string; name: string; color: string; is_initial?: boolean; is_final?: boolean}>>([
+    { key: 'abierto', name: 'Abierto', color: '#22c55e', is_initial: true },
+    { key: 'en_proceso', name: 'En Proceso', color: '#3b82f6' },
+    { key: 'esperando_respuesta', name: 'Esperando Respuesta', color: '#f59e0b' },
+    { key: 'resuelto', name: 'Resuelto', color: '#a855f7', is_final: true },
+  ]);
+  const [filterCounts, setFilterCounts] = useState<Array<{key: string; label: string; color: string; is_initial: boolean; is_final: boolean; total_convs: number; unread_convs: number}>>([]);
+  const [filteredConvIds, setFilteredConvIds] = useState<Set<string> | null>(null);
   const [isTicketModalOpen, setIsTicketModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [transferRole, setTransferRole] = useState("soporte_tecnico");
   const [activeTicket, setActiveTicket] = useState<any>(null);
-  
+  const [nocodbEnabled, setNocodbEnabled] = useState(false);
+
   const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [closeSummaryData, setCloseSummaryData] = useState<any>(null);
   const [closeSummaryText, setCloseSummaryText] = useState("");
+  const [pendingCloseStatus, setPendingCloseStatus] = useState<string | null>(null);
 
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportType, setReportType] = useState("informacion_incorrecta");
   const [reportWrong, setReportWrong] = useState("");
   const [reportExpected, setReportExpected] = useState("");
+
+  // Panel lateral — secciones colapsables
+  const [clientInfoOpen, setClientInfoOpen] = useState(true);
+  const [quickActionsOpen, setQuickActionsOpen] = useState(false);
+  const [ticketStatusOpen, setTicketStatusOpen] = useState(false);
+  const [derivedCaseOpen, setDerivedCaseOpen] = useState(false);
+  const [ticketSearchOpen, setTicketSearchOpen] = useState(false);
+  const [rightPanelTab, setRightPanelTab] = useState<'caso' | 'acciones' | 'agenda'>('caso');
+
+  // Notas de conversación (compartidas en BD, por conversation_id)
+  const [convNotes, setConvNotes] = useState<Record<string, string>>({});
+  const [noteInput, setNoteInput] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+
+  // Dirección y correo del cliente (desde tabla clientes)
+  const [clientAddress, setClientAddress] = useState<string | null>(null);
+  const [clientEmail, setClientEmail] = useState<string | null>(null);
+
+  // Motivo del caso derivado — expandible
+  const [motivoExpanded, setMotivoExpanded] = useState(false);
+
+  // Tooltip flotante para notas en lista de chats
+  const [tooltipConvId, setTooltipConvId] = useState<string | null>(null);
+  const [tooltipRect, setTooltipRect] = useState<DOMRect | null>(null);
+  const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Estado: selector de plantilla para ventana de 24h ───────────────────────
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
@@ -354,10 +438,38 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   };
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const selectedConvRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const retryMapRef = useRef<Record<string, boolean>>({});
+
+  // Helper: insertar atajo reemplazando solo la parte "/query", conservando texto anterior y posterior
+  const insertShortcut = useCallback((message: string) => {
+    const ta = msgTextareaRef.current;
+    if (!ta) return;
+    const slashPos = slashStartRef.current;
+    const cursorPos = ta.selectionStart ?? ta.value.length;
+    const before = slashPos >= 0 ? ta.value.slice(0, slashPos) : "";
+    const after = ta.value.slice(cursorPos);
+    ta.value = before + message + after;
+    setHasContent(ta.value.trim().length > 0);
+    slashStartRef.current = -1;
+  }, []);
+
+  // Helper: resize textarea to fit content (called after programmatic message changes)
+  const resizeTextarea = useCallback(() => {
+    const el = msgTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  }, []);
+
+
+  // Cerrar panel móvil al cambiar o cerrar conversación
+  useEffect(() => {
+    setShowMobilePanel(false);
+  }, [selectedConv?.id]);
 
   // Debounced keyword search
   useEffect(() => {
@@ -425,9 +537,35 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         table: "conversations",
         ...(filter ? { filter } : {})
       }, () => loadConversations())
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "tickets",
+      }, (payload) => {
+        loadConversations();
+        // Si el ticket pertenece a la conversación activa, refrescar activeTicket en tiempo real
+        const convId = (payload.new as any)?.conversation_id;
+        if (convId && convId === selectedConvRef.current) {
+          setTicketRefreshCounter(c => c + 1);
+        }
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [companyId, chatFilter, userRole, operatorRoles, userId]);
+
+  // Handle chatFilter using RPC
+  useEffect(() => {
+    if (!chatFilter.startsWith('ticket:') || !companyId) { 
+      setFilteredConvIds(null); 
+      return; 
+    }
+    const status = chatFilter.replace('ticket:', '');
+    (supabase as any).rpc('get_conversations_by_ticket_status', {
+      p_company_id: companyId, p_status: status
+    }).then(({ data }: any) => {
+      setFilteredConvIds(new Set((data || []).map((r: any) => r.conversation_id).filter(Boolean)));
+    });
+  }, [chatFilter, companyId]);
 
   // Handle initialConversationId
   useEffect(() => {
@@ -497,7 +635,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     const timer = setTimeout(() => {
       setMessages((currentMessages) => {
         if (currentMessages.length === 0) {
-          console.log("[Msg Retry] No messages loads after 2s. Retrying...", convId);
           retryMapRef.current[convId] = true;
           loadMessages(convId);
         }
@@ -509,27 +646,198 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   }, [selectedConv?.id, loading]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const timer = setTimeout(() => {
+      const wrapper = messagesContainerRef.current;
+      if (!wrapper) return;
+      const viewport = wrapper.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+      if (viewport) {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
+    }, 50);
+    return () => clearTimeout(timer);
   }, [messages, selectedConv?.id]);
 
   useEffect(() => {
     selectedConvRef.current = selectedConv ? selectedConv.id : null;
     if (selectedConv) {
       (async () => {
-        const { data: ticketData } = await supabase
-          .from("tickets")
-          .select("id, customer_rut, customer_name, description, category, assigned_role, status")
-          .eq("conversation_id", selectedConv.id)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        const fetchFallbacks = async () => {
+          const finalStatuses = new Set(['cerrado', ...ticketLabels.filter(l => l.is_final).map(l => l.key)]);
+          
+          // 1. Fallback primario: buscar por conversation_id
+          const { data: byConv } = await supabase
+            .from("tickets")
+            .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status")
+            .eq("conversation_id", selectedConv.id)
+            .is("deleted_at", null)
+            .order("created_at", { ascending: false })
+            .limit(10);
+            
+          const activeByConv = byConv?.find(t => !finalStatuses.has(t.status)) || null;
+          if (activeByConv) {
+            setActiveTicket(activeByConv);
+            return;
+          }
 
-        setActiveTicket(ticketData);
+          // 2. Fallback secundario: buscar por teléfono
+          const cleanPhone = selectedConv.wa_id.replace(/^\+/, '');
+          const { data: byPhone } = await supabase
+            .from("tickets")
+            .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status")
+            .or(`customer_phone.eq.${cleanPhone},customer_phone.eq.+${cleanPhone}`)
+            .is("conversation_id", null)
+            .is("deleted_at", null)
+            .order("created_at", { ascending: false })
+            .limit(10);
+            
+          const activeByPhone = byPhone?.find(t => !finalStatuses.has(t.status)) || null;
+          setActiveTicket(activeByPhone);
+        };
+
+        try {
+          const { data, error } = await supabase.functions.invoke('check-ticket', {
+            body: {
+              conversation_id: selectedConv.id,
+              company_id: companyId,
+              wa_id: selectedConv.wa_id,
+            }
+          });
+
+          if (!error && data?.tiene_ticket) {
+            const { data: ticketDetails } = await supabase
+              .from("tickets")
+              .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status")
+              .eq("id", data.ticket_id)
+              .single();
+
+            if (ticketDetails) {
+              setActiveTicket(ticketDetails);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn("[check-ticket] Failed, using fallback", e);
+        }
+
+        // Siempre caer en los fallbacks manuales si la función falló o retornó false
+        await fetchFallbacks();
       })();
     } else {
       setActiveTicket(null);
     }
-  }, [selectedConv]);
+  }, [selectedConv?.id, ticketRefreshCounter]);
+
+  // ── Resetear secciones colapsables al cambiar de conversación ────────────────
+  useEffect(() => {
+    setClientInfoOpen(true);
+    setTicketStatusOpen(false);
+    setDerivedCaseOpen(false);
+    setQuickActionsOpen(false);
+    setTicketSearchOpen(false);
+    setMotivoExpanded(false);
+    setRightPanelTab('caso');
+  }, [selectedConv?.id]);
+
+  // ── Cargar config de empresa (nocodb_enabled) ────────────────────────────────
+  useEffect(() => {
+    if (!companyId) return;
+    supabase.from('company_config')
+      .select('nocodb_enabled')
+      .eq('id', companyId)
+      .maybeSingle()
+      .then(({ data }) => setNocodbEnabled(!!data?.nocodb_enabled));
+  }, [companyId]);
+
+  // ── Cargar todas las notas de la empresa + Realtime para toda la lista ───────
+  useEffect(() => {
+    if (!companyId) return;
+
+    // Carga inicial
+    supabase.from('conversation_notes')
+      .select('conversation_id, content')
+      .eq('company_id', companyId)
+      .then(({ data }) => {
+        if (!data) return;
+        const map: Record<string, string> = {};
+        data.forEach(n => { if (n.content?.trim()) map[n.conversation_id] = n.content; });
+        setConvNotes(map);
+      });
+
+    // Realtime: cualquier cambio de nota en la empresa actualiza el mapa de tooltips
+    const channel = supabase.channel(`company-notes-${companyId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'conversation_notes',
+        filter: `company_id=eq.${companyId}`,
+      }, (payload) => {
+        const convId = (payload.new as any)?.conversation_id || (payload.old as any)?.conversation_id;
+        const content = (payload.new as any)?.content || '';
+        if (!convId) return;
+        setConvNotes(prev => {
+          if (!content.trim()) {
+            const next = { ...prev };
+            delete next[convId];
+            return next;
+          }
+          return { ...prev, [convId]: content };
+        });
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [companyId]);
+
+  // ── Cargar nota de la conversación activa + Realtime ─────────────────────
+  useEffect(() => {
+    if (!selectedConv) { setNoteInput(''); return; }
+    const convId = selectedConv.id;
+
+    // Cargar nota actual
+    supabase.from('conversation_notes')
+      .select('content')
+      .eq('conversation_id', convId)
+      .maybeSingle()
+      .then(({ data }) => setNoteInput(data?.content || ''));
+
+    // Suscripción Realtime: si otro agente guarda/edita la nota, la vemos al instante
+    const channel = supabase.channel(`conv-note-${convId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'conversation_notes',
+        filter: `conversation_id=eq.${convId}`,
+      }, (payload) => {
+        const content = (payload.new as any)?.content || '';
+        setNoteInput(content);
+        setConvNotes(prev => ({ ...prev, [convId]: content }));
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [selectedConv?.id]);
+
+  // ── Reset inmediato al cambiar de conversación (evita mostrar datos del chat anterior) ──
+  useEffect(() => {
+    setActiveTicket(null);
+    setClientAddress(null);
+    setClientEmail(null);
+  }, [selectedConv?.id]);
+
+  // ── Cargar dirección y correo desde clientes (siempre al cambiar conv) ──────
+  useEffect(() => {
+    if (!selectedConv || !companyId) return;
+
+    const convId = selectedConv.id;
+    const phone = selectedConv.wa_id.replace(/^\+/, '');
+    supabase.from('clientes')
+      .select('rut, nombre, direccion, email')
+      .eq('company_id', companyId)
+      .eq('numero', phone)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        // Ignorar si el usuario ya cambió de conversación
+        if (error || convId !== selectedConvRef.current) return;
+        setClientAddress((data as any)?.direccion || null);
+        setClientEmail((data as any)?.email || null);
+      });
+  }, [selectedConv?.id, companyId]);
 
   // ── Cargar plantilla guardada (localStorage) cuando cambia la empresa ───────
   useEffect(() => {
@@ -652,6 +960,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           templateLanguage: selectedTemplate.language || "es",
           templateComponents: components,
           templateContent: renderedContent,
+          senderName: effectiveSenderName,
         },
       });
       if (error) throw error;
@@ -677,32 +986,78 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       query = query.eq("company_id", companyId);
     }
 
-    if (chatFilter === 'closed') {
-      query = query.eq("status", "cerrado");
-      if (userRole === "operador" && userId) {
-        query = query.eq("taken_by", userId);
+    // Siempre excluir cerrados
+    query = query.neq("status", "cerrado");
+    if (userRole === "operador" && userId) {
+      let orConditions = [`taken_by.eq.${userId}`];
+      if (operatorRoles && operatorRoles.length > 0) {
+        orConditions.push(`and(assigned_role.in.(${operatorRoles.join(',')}),taken_by.is.null)`);
       }
-    } else {
-      query = query.neq("status", "cerrado");
-      if (userRole === "operador" && userId) {
-        let orConditions = [`taken_by.eq.${userId}`];
-        if (operatorRoles && operatorRoles.length > 0) {
-          orConditions.push(`and(assigned_role.in.(${operatorRoles.join(',')}),taken_by.is.null)`);
-        }
-        query = query.or(orConditions.join(','));
-      }
+      query = query.or(orConditions.join(','));
     }
 
-    const { data } = await query;
+    // Lanzar conversaciones y RPC de etiquetas en paralelo para que ticketLabels
+    // esté disponible antes de construir el mapa de tickets.
+    const [{ data }, rpcResult] = await Promise.all([
+      query,
+      companyId
+        ? (supabase as any).rpc('get_inbox_filter_counts', { p_company_id: companyId })
+        : Promise.resolve({ data: null }),
+    ]);
+
+    // Actualizar etiquetas primero (necesarias para finalStatuses)
+    let freshFinalStatuses = new Set<string>(['cerrado']);
+    if (rpcResult?.data && rpcResult.data.length > 0) {
+      setFilterCounts(rpcResult.data);
+      const freshLabels = rpcResult.data.map((r: any) => ({
+        key: r.key,
+        name: r.label,
+        color: r.color,
+        is_initial: r.is_initial,
+        is_final: r.is_final,
+      }));
+      setTicketLabels(freshLabels);
+      freshLabels.filter((l: any) => l.is_final).forEach((l: any) => freshFinalStatuses.add(l.key));
+    }
+
     if (data) {
-      const enriched = data.map(c => ({
+      const enriched = data.map((c: any) => ({
         ...c,
-        status: (c as any).status === 'cerrado' ? 'cerrado' : (c.is_agent_active ? 'abierto' : 'en_progreso')
+        status: c.is_agent_active ? 'abierto' : 'en_progreso'
       }));
       setConversations(enriched as unknown as Conversation[]);
       if (selectedConvRef.current) {
-        const updated = enriched.find(c => c.id === selectedConvRef.current);
+        const updated = enriched.find((c: any) => c.id === selectedConvRef.current);
         if (updated) setSelectedConv(updated as unknown as Conversation);
+      }
+
+      // Construir mapa convId → ticketStatus usando finalStatuses ya actualizados
+      if (companyId) {
+        const { data: ticketData } = await supabase
+          .from("tickets")
+          .select("conversation_id, status, customer_phone")
+          .eq("company_id", companyId)
+          .is("deleted_at", null)
+          .neq("status", "cerrado")
+          .order("created_at", { ascending: false });
+
+        const map: Record<string, string> = {};
+        if (ticketData) {
+          for (const t of ticketData) {
+            if (freshFinalStatuses.has(t.status)) continue;
+
+            if (t.conversation_id && !map[t.conversation_id]) {
+              map[t.conversation_id] = t.status;
+            } else if (!t.conversation_id) {
+              const phone = t.customer_phone?.replace(/^\+/, '') || '';
+              const matchedConv = enriched.find((c: any) => c.wa_id.replace(/^\+/, '') === phone);
+              if (matchedConv && !map[matchedConv.id]) {
+                map[matchedConv.id] = t.status;
+              }
+            }
+          }
+        }
+        setTicketStatusByConvId(map);
       }
     }
     setLoading(false);
@@ -711,10 +1066,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const loadMessages = async (convId: string) => {
     const { data, error } = await supabase.from("messages").select("*").eq("conversation_id", convId).order("created_at", { ascending: true });
 
-    console.log("[loadMessages] convId:", convId);
-    console.log("[loadMessages] total:", data?.length, "error:", error);
-    console.log("[loadMessages] outbound:", data?.filter((m: any) => m.direction === 'outbound').length);
-
     if (data) {
       setMessages(data as unknown as Message[]);
     }
@@ -722,7 +1073,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   };
 
   const sendMessage = async () => {
-    if (!newMessage.trim() || !selectedConv || sending) return;
+    const text = msgTextareaRef.current?.value.trim() ?? "";
+    if (!text || !selectedConv || sending) return;
     if (!puedeEnviar) {
       toast({ title: "Envío Bloqueado", description: "Han pasado más de 24 horas desde el último mensaje del cliente.", variant: "destructive" });
       return;
@@ -733,15 +1085,20 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         await handleToggleBot(false); // Auto intervenir
       }
       const { error } = await supabase.functions.invoke("ycloud-send", {
-        body: { 
-          to: selectedConv.wa_id, 
-          message: newMessage.trim(), 
+        body: {
+          to: selectedConv.wa_id,
+          message: text,
           conversationId: selectedConv.id,
-          senderName: userName
+          senderName: effectiveSenderName
         },
       });
       if (error) throw error;
-      setNewMessage("");
+      // Limpiar textarea sin re-render
+      if (msgTextareaRef.current) {
+        msgTextareaRef.current.value = "";
+        msgTextareaRef.current.style.height = "48px";
+      }
+      setHasContent(false);
     } catch (err: any) {
       toast({ title: "Error al enviar", description: err.message, variant: "destructive" });
     } finally {
@@ -753,33 +1110,102 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     if (!selectedConv) return;
     try {
       const action = activate ? 'activate_bot' : 'deactivate_bot';
-      const loadingToast = toast({ title: "Procesando...", description: "Actualizando estado del bot en YCloud y sistema local" });
+      toast({ title: "Procesando...", description: "Actualizando estado del bot en YCloud y sistema local" });
 
-      const { error } = await supabase.functions.invoke("ycloud-toggle-bot", {
-        body: { conversationId: selectedConv.id, action },
-      });
-
-      if (error) throw error;
-
-      // Forzar la actualización local en la base de datos en caso de que Edge Functions falle silenciosamente
-      await supabase.from("conversations").update({ 
+      // Actualizar BD siempre, independiente del resultado de la edge function
+      await supabase.from("conversations").update({
         is_agent_active: activate,
         assigned_user_id: activate ? null : userId
       }).eq("id", selectedConv.id);
 
-      toast({ title: activate ? "¡IA Activada!" : "¡Interviniendo!", description: "El estado se ha actualizado con éxito." });
+      // Actualizar estado local inmediatamente (no esperar realtime)
       const newStatus = activate ? 'abierto' : 'en_progreso';
-      const updatedConv = { 
-        ...selectedConv, 
-        is_agent_active: activate, 
+      const updatedConv = {
+        ...selectedConv,
+        is_agent_active: activate,
         status: newStatus as any,
-        assigned_user_id: activate ? null : (userId || selectedConv.assigned_user_id) 
+        assigned_user_id: activate ? null : (userId || selectedConv.assigned_user_id)
       };
       setSelectedConv(updatedConv);
       setConversations(prev => prev.map(c => c.id === selectedConv.id ? updatedConv : c));
+
+      // Sincronizar con YCloud (apaga/enciende el bot en el contacto)
+      const { error: toggleErr } = await supabase.functions.invoke("ycloud-toggle-bot", {
+        body: { conversationId: selectedConv.id, action },
+      });
+      if (toggleErr) console.warn("[ycloud-toggle-bot] Error:", toggleErr);
+
+      // Al intervenir: si no hay ticket activo, crear uno automáticamente
+      if (!activate && !activeTicket) {
+        try {
+          const { data: newTicket, error: ticketErr } = await supabase.functions.invoke("create-ticket", {
+            body: {
+              company_id: selectedConv.company_id || companyId,
+              conversation_id: selectedConv.id,
+              wa_id: selectedConv.wa_id,
+              customer_name: selectedConv.profile_name || null,
+              rut: null,
+              reason: "Intervenido por especialista",
+              category: "soporte_tecnico",
+              skip_nocodb: !nocodbEnabled,
+            },
+          });
+          if (ticketErr) console.warn("[intervenir] No se pudo crear ticket:", ticketErr);
+          else if (newTicket?.ticket) setActiveTicket(newTicket.ticket);
+        } catch (e) {
+          console.warn("[intervenir] Error al crear ticket automático:", e);
+        }
+      }
+
+      toast({ title: activate ? "¡IA Activada!" : "¡Interviniendo!", description: "El estado se ha actualizado con éxito." });
     } catch (err: any) {
       toast({ title: "Error al cambiar estado", description: err.message || "Revisa la consola web para más detalles", variant: "destructive" });
     }
+  };
+
+  const saveNote = async () => {
+    if (!selectedConv || !companyId) return;
+    setSavingNote(true);
+    try {
+      const content = noteInput.trim();
+      const { data: { user } } = await supabase.auth.getUser();
+      await supabase.from('conversation_notes').upsert({
+        conversation_id: selectedConv.id,
+        company_id: companyId,
+        content,
+        author_name: user?.user_metadata?.full_name || user?.email || 'Agente',
+        author_id: user?.id,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'conversation_id' });
+      // Actualizar mapa local de tooltips
+      setConvNotes(prev => {
+        const updated = { ...prev };
+        if (content) updated[selectedConv.id] = content;
+        else delete updated[selectedConv.id];
+        return updated;
+      });
+      toast({ title: content ? '✅ Nota guardada' : 'Nota eliminada' });
+    } catch (err: any) {
+      toast({ title: 'Error al guardar nota', description: err.message, variant: 'destructive' });
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleToggleHighPriority = async (checked: boolean) => {
+    if (!selectedConv) return;
+    const newPriority = checked ? 'alta' : null;
+    const { error } = await supabase.from('conversations')
+      .update({ priority: newPriority } as any)
+      .eq('id', selectedConv.id);
+    if (error) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); return; }
+    if (activeTicket) {
+      await supabase.from('tickets').update({ priority: checked ? 'alta' : 'baja' }).eq('id', activeTicket.id);
+    }
+    const updPriority = newPriority as 'alta' | 'media' | 'baja' | null;
+    setSelectedConv(prev => prev ? { ...prev, priority: updPriority } : null);
+    setConversations(prev => prev.map(c => c.id === selectedConv.id ? { ...c, priority: updPriority } : c));
+    toast({ title: checked ? '🔴 Alta prioridad activada' : 'Prioridad restablecida' });
   };
 
   const handleUpdatePriority = async (newPriority: string) => {
@@ -830,31 +1256,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   };
 
-  const handleCloseChat = async () => {
+  const handleCloseChat = async (statusOverride?: string) => {
     if (!selectedConv) return;
-    const isCurrentlyClosed = selectedConv.status === 'cerrado';
-    
-    if (isCurrentlyClosed) {
-      // Reabrir chat (comportamiento legacy si ya está cerrado)
-      const newStatus = selectedConv.is_agent_active ? 'abierto' : 'en_progreso';
-      const now = new Date().toISOString();
-      
-      const { error } = await supabase
-        .from("conversations")
-        .update({ status: newStatus, closed_at: null } as any)
-        .eq("id", selectedConv.id);
+    setPendingCloseStatus(statusOverride || null);
 
-      if (!error) {
-        toast({ title: "Chat Reabierto" });
-        setSelectedConv(null);
-        setConversations(prev => prev.filter(c => c.id !== selectedConv.id));
-      } else {
-        toast({ title: "Error", description: error.message, variant: "destructive" });
-      }
-      return;
-    }
-
-    // Nuevo flujo para cerrar
+    // Flujo para finalizar ticket + cerrar conversación
     setIsCloseModalOpen(true);
     setIsGeneratingSummary(true);
     setCloseSummaryData({ 
@@ -869,13 +1275,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       const fetchPromise = supabase.functions.invoke("generate-case-summary", {
         body: { conversation_id: selectedConv.id }
       });
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 35000));
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 60000));
       
       const res = await Promise.race([fetchPromise, timeoutPromise]) as any;
 
       if (res.error) throw res.error;
       const data = res.data;
-      console.log("[DEBUG Raw Data]", data);
       
       let parsed = data;
       try {
@@ -903,7 +1308,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         throw new Error(parsed?.error || "Error generating summary");
       }
     } catch (err) {
-      console.log("Error generating summary:", err);
+      console.error("Error generating summary:", err);
       toast({ title: "Automático fallido", description: "No se pudo generar el resumen automáticamente — escribe uno manualmente.", variant: "destructive" });
     } finally {
       setIsGeneratingSummary(false);
@@ -918,13 +1323,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     try {
       const tId = closeSummaryData?.ticket_id || activeTicket?.id;
       
-      console.log("[DEBUG note insert]", { 
-        ticket_id: tId, 
-        content: closeSummaryText?.substring(0, 50), 
-        author_id: userId,
-        tId_type: typeof tId
-      });
-      
       if (tId && closeSummaryText.trim()) {
         const { error: noteError } = await supabase.from("ticket_notes").insert({
           ticket_id: tId,
@@ -933,43 +1331,56 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           is_internal: false
         });
 
-        console.log("[DEBUG note result]", noteError);
-
         if (noteError) {
           console.error("[ERROR ticket_notes]", noteError);
         }
       }
 
-      // Cerrar TICKET
+      // Finalizar TICKET via close-ticket edge function (incluye NocoDB sync)
       if (tId) {
-        await supabase.from("tickets")
-          .update({ status: 'cerrado', closed_at: now, closed_by: userId })
-          .eq("id", tId);
-          
+        const finalKey = pendingCloseStatus || ticketLabels.find(l => l.is_final)?.key || 'resuelto';
+        const { error: closeErr } = await supabase.functions.invoke("close-ticket", {
+          body: { ticket_id: tId, status: finalKey },
+        });
+        if (closeErr) console.error('[handleConfirmClose] close-ticket error:', closeErr);
+
+        // Limpiar nota del equipo al cerrar ticket (próxima derivación empieza en blanco)
+        supabase.from('conversation_notes')
+          .upsert({
+            conversation_id: selectedConv.id,
+            company_id: companyId,
+            content: '',
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'conversation_id' })
+          .then(() => {
+            setNoteInput('');
+            setConvNotes(prev => { const n = { ...prev }; delete n[selectedConv.id]; return n; });
+          });
+
         // Sincronizar memoria del agente en background
         (supabase as any).rpc('sync_ticket_memory', {
           p_conversation_id: selectedConv.id,
           p_ticket_id: tId
-        }).then(({ data, error: rpcError }: any) => {
+        }).then(({ data: d, error: rpcError }: any) => {
           if (rpcError) console.error('[SyncMemory] Error:', rpcError);
-          else console.log('[SyncMemory] Mensajes sincronizados:', data);
         }).catch(console.error);
       }
 
       // Conversación queda ACTIVA con bot ON
       const { error } = await supabase
         .from("conversations")
-        .update({ status: 'activo', is_agent_active: true } as any)
+        .update({ is_agent_active: true } as any)
         .eq("id", selectedConv.id);
 
       if (error) throw error;
 
-      toast({ title: "Chat Cerrado" });
+      const finalKeyLabel = pendingCloseStatus || ticketLabels.find(l => l.is_final)?.key;
+      const finalLabelName = ticketLabels.find(l => l.key === finalKeyLabel)?.name || 'Finalizado';
+      toast({ title: `✅ ${finalLabelName}`, description: "El agente IA ha sido reactivado." });
       setIsCloseModalOpen(false);
-      // Sincronizar con NocoDB en background (solo aplica para empresas con nocodb_enabled)
-      supabase.functions.invoke("nocodb-sync", {
-        body: { conversationId: selectedConv.id, action: "close" },
-      }).catch(() => {});
+      setPendingCloseStatus(null);
+      setActiveTicket(null);
+      setTicketStatusByConvId(prev => { const n = { ...prev }; delete n[selectedConv.id]; return n; });
       setSelectedConv(null);
       setConversations(prev => prev.filter(c => c.id !== selectedConv.id));
     } catch (err: any) {
@@ -1041,12 +1452,15 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     // Keyword message matches bypass tab filter
     if (searchTerm.trim() && matchesContent) return true;
 
-    if (chatFilter === 'closed') return c.status === 'cerrado';
+    // Nunca mostrar cerrados en la bandeja principal
     if (c.status === 'cerrado') return false;
 
-    if (chatFilter === 'open') return c.status === 'abierto';
-    if (chatFilter === 'mine') return c.taken_by === userId;
-    if (chatFilter === 'en_progreso') return c.status === 'en_progreso';
+    // Filtros por estado de ticket — usar ticketStatusByConvId como única fuente de verdad
+    // (misma fuente que usa el badge, evita inconsistencias con el RPC)
+    if (chatFilter.startsWith('ticket:')) {
+      const status = chatFilter.replace('ticket:', '');
+      return ticketStatusByConvId[c.id] === status;
+    }
 
     return true;
   }).sort((a, b) => {
@@ -1061,14 +1475,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   let curDate = "";
   
   const validMessages = messages;
-  console.log(`[DEBUG] Total mensajes DB: ${messages.length}`);
-  console.table(messages.map(m => ({ 
-    id: m.id.slice(0,8), 
-    dir: m.direction, 
-    type: m.sender_type, 
-    content: m.content?.slice(0,40) ?? '(null)', 
-    media: !!m.media_url 
-  })));
   
   validMessages.forEach((msg) => {
     const d = new Date(msg.created_at);
@@ -1126,6 +1532,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           conversationId: selectedConv.id,
           mediaUrl: publicUrl,
           mediaType: ycloudType,
+          senderName: effectiveSenderName,
         },
       });
       if (sendError) throw sendError;
@@ -1143,6 +1550,15 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       {/* 1. Sidebar de Chats */}
       <div className={`tour-inbox-sidebar ${selectedConv ? "hidden md:flex" : "flex"} flex-col w-full md:w-[300px] border-r border-border/10 glass flex-shrink-0 z-10 overflow-hidden`}>
         <div className="p-4 border-b border-border/20 space-y-3 sticky top-0 z-10">
+          <div className="flex items-center gap-2 mb-1">
+            {/* Mobile: abre drawer propio de la bandeja */}
+            <Button variant="ghost" size="icon" className="h-8 w-8 -ml-1 flex-shrink-0 md:hidden" onClick={() => setSidebarOpen(true)}>
+              <Menu className="w-4 h-4" />
+            </Button>
+            {/* Desktop: toggle del sidebar principal */}
+            <SidebarTrigger className="hidden md:flex text-muted-foreground/70 hover:text-foreground transition-colors -ml-1 flex-shrink-0" />
+            <span className="text-sm font-semibold">Bandeja</span>
+          </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
             <Input
@@ -1152,37 +1568,54 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               className="pl-8 h-9 bg-secondary/50 border-border/40 focus-visible:ring-1 text-[13px] rounded-lg shadow-sm"
             />
           </div>
-          <div className="flex bg-secondary/40 p-1 rounded-lg border border-border/20">
-            <button
-              onClick={() => setChatFilter('all')}
-              className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'all' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
-            >
-              Todos
-            </button>
-            <button
-              onClick={() => setChatFilter('open')}
-              className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'open' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
-            >
-              Abiertos
-            </button>
-            <button
-              onClick={() => setChatFilter('mine')}
-              className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'mine' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
-            >
-              Míos
-            </button>
-            <button
-              onClick={() => setChatFilter('en_progreso')}
-              className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'en_progreso' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
-            >
-              Proceso
-            </button>
-            <button
-              onClick={() => setChatFilter('closed')}
-              className={`flex-1 text-[11px] font-medium py-1.5 rounded-md transition-all ${chatFilter === 'closed' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-background/50'}`}
-            >
-              Cerrados
-            </button>
+          {/* ── Filtros unificados: Todos + etiquetas de ticket + Míos + Cerrados ── */}
+          <div className="flex gap-1.5 flex-wrap">
+            {/* Todos */}
+            {(() => {
+              const unread = conversations.filter(c => c.status !== 'cerrado' && c.unread_count > 0).length;
+              const active = chatFilter === 'all';
+              return (
+                <button
+                  onClick={() => setChatFilter('all')}
+                  className={`relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all ${active ? 'bg-foreground text-background border-foreground shadow-sm' : 'text-muted-foreground bg-background/50 border-border/30 hover:text-foreground hover:border-border/60'}`}
+                >
+                  Todos
+                  {unread > 0 && (
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-primary text-[8px] font-black text-white flex items-center justify-center">{unread}</span>
+                  )}
+                </button>
+              );
+            })()}
+
+            {/* Etiqueta de ticket como filtro (oculta las etiquetas finales como "Resuelto") */}
+            {ticketLabels.filter(l => !l.is_final).map(label => {
+              const filterKey = `ticket:${label.key}`;
+              const active = chatFilter === filterKey;
+              // Contar desde ticketStatusByConvId (misma fuente que el filtro y el badge)
+              const count = conversations.filter(c => ticketStatusByConvId[c.id] === label.key).length;
+              const unread = conversations.filter(c => ticketStatusByConvId[c.id] === label.key && c.unread_count > 0).length;
+              return (
+                <button
+                  key={label.key}
+                  onClick={() => setChatFilter(active ? 'all' : filterKey)}
+                  className={`relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all`}
+                  style={active
+                    ? { backgroundColor: label.color, borderColor: label.color, color: '#fff' }
+                    : { backgroundColor: label.color + '18', borderColor: label.color + '50', color: label.color }
+                  }
+                >
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: active ? '#fff' : label.color }} />
+                  {label.name.toUpperCase()}
+                  {count > 0 && (
+                    <span className="text-[9px] opacity-70 ml-0.5">{count}</span>
+                  )}
+                  {unread > 0 && (
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-red-500 text-[8px] font-black text-white flex items-center justify-center">{unread}</span>
+                  )}
+                </button>
+              );
+            })}
+
           </div>
         </div>
 
@@ -1195,7 +1628,22 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             <button
               key={conv.id}
               onClick={() => handleConvSelect(conv)}
-              className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-all border-b border-border/5 ${selectedConv?.id === conv.id ? "bg-primary/10 relative" : ""}`}
+              onMouseEnter={(e) => {
+                const note = convNotes[conv.id];
+                const hasTkt = !!ticketStatusByConvId[conv.id];
+                if (!note?.trim() || !hasTkt) return;
+                const target = e.currentTarget as HTMLElement;
+                tooltipTimeoutRef.current = setTimeout(() => {
+                  setTooltipRect(target.getBoundingClientRect());
+                  setTooltipConvId(conv.id);
+                }, 1000);
+              }}
+              onMouseLeave={() => {
+                if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
+                setTooltipConvId(null);
+                setTooltipRect(null);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-black/5 dark:hover:bg-white/5 transition-all border-b border-border/5 ${selectedConv?.id === conv.id ? "bg-primary/10 relative" : ""}`}
             >
               {selectedConv?.id === conv.id && (
                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary shadow-[0_0_10px_rgba(var(--primary),0.8)]" />
@@ -1208,28 +1656,28 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 </Avatar>
 
               </div>
-              <div className="flex-1 min-w-0 flex flex-col justify-center text-left">
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`font-semibold text-[13px] truncate ${selectedConv?.id === conv.id ? "text-primary" : "text-foreground"} tracking-wide`}>
-                      {conv.profile_name || conv.wa_id}
+              <div className="flex-1 min-w-0 flex flex-col justify-center text-left overflow-hidden" style={{ contain: 'inline-size' }}>
+                <div className="flex items-center gap-2 min-w-0 mb-1">
+                  <span className={`font-semibold text-[13px] truncate ${selectedConv?.id === conv.id ? "text-primary" : "text-foreground"} tracking-wide`}>
+                    {conv.profile_name || conv.wa_id}
+                  </span>
+                  {conv.unread_count > 0 && (
+                    <span className="bg-green-500 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 flex items-center justify-center px-1.5 flex-shrink-0 shadow-sm leading-none">
+                      {conv.unread_count > 99 ? '99+' : conv.unread_count}
                     </span>
-                    {conv.unread_count > 0 && (
-                      <span className="bg-green-500 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 flex items-center justify-center px-1.5 flex-shrink-0 shadow-sm leading-none">
-                        {conv.unread_count > 99 ? '99+' : conv.unread_count}
-                      </span>
-                    )}
-                  </div>
-                  <span className={`text-[10px] flex-shrink-0 ml-2 font-medium tracking-wider ${conv.unread_count > 0 ? "text-primary glow-text" : "text-muted-foreground/50"}`}>
+                  )}
+                  <span className={`text-[10px] flex-shrink-0 ml-auto pl-1 font-semibold ${conv.unread_count > 0 ? "text-primary" : "text-muted-foreground"}`}>
                     {conv.last_message_at ? formatConvDate(conv.last_message_at) : ""}
                   </span>
                 </div>
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <StatusBadge status={conv.status} />
-                    {conv.priority === 'alta' && <Badge variant="destructive" className="text-[9px] h-4 px-1.5 py-0 uppercase">Urgente</Badge>}
-                    {conv.priority === 'media' && <Badge variant="default" className="bg-orange-500 hover:bg-orange-500 text-[9px] h-4 px-1.5 py-0 uppercase">Media</Badge>}
-                    {conv.priority === 'baja' && <Badge variant="secondary" className="text-[9px] h-4 px-1.5 py-0 uppercase">Baja</Badge>}
+                  <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                    <ConvStatusBadge conv={conv} ticketStatus={ticketStatusByConvId[conv.id]} labels={ticketLabels} />
+                    {conv.priority === 'alta' && (
+                      <span className="inline-flex items-center gap-0.5 text-[8px] font-black tracking-widest uppercase px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-500">
+                        <Flame className="w-2 h-2" /> ALTA
+                      </span>
+                    )}
                     {conv.match_content && (
                       <Badge variant="outline" className="text-[9px] h-4 px-1.5 py-0 bg-primary/10 text-primary border-primary/20 font-bold ml-auto">
                         en mensaje
@@ -1298,31 +1746,59 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                     <span className="font-bold text-[14px] tracking-wide text-foreground leading-snug">
                       {selectedConv.profile_name || "Contacto Desconocido"}
                     </span>
-                    <span className="text-[11px] text-muted-foreground font-mono font-medium leading-none mb-0.5">
+                    <span className="text-[11px] text-muted-foreground font-mono font-medium leading-none mb-0.5 flex items-center gap-1">
                       {selectedConv.wa_id}
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(selectedConv.wa_id); toast({ title: 'Teléfono copiado' }); }}
+                        className="h-4 w-4 flex items-center justify-center rounded hover:bg-primary/10 text-muted-foreground/40 hover:text-primary transition-colors"
+                        title="Copiar número"
+                      >
+                        <Copy className="w-2.5 h-2.5" />
+                      </button>
                     </span>
-                    <div className="scale-75 origin-left -mt-0.5">
-                      <StatusBadge status={selectedConv.status} />
+                    <div className="scale-90 origin-left mt-0.5 flex items-center gap-2 whitespace-nowrap">
+                      <ConvStatusBadge
+                        conv={selectedConv}
+                        ticketStatus={activeTicket ? activeTicket.status : undefined}
+                        labels={ticketLabels}
+                      />
+                      {selectedConv.priority === 'alta' && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-500 text-[8px] font-black uppercase tracking-widest">
+                          <Flame className="w-2.5 h-2.5" /> ALTA
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
+                {activeTicket && !ticketLabels.find(l => l.is_final)?.key.includes(activeTicket.status) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleCloseChat()}
+                    className="h-8 gap-2 text-[10px] font-bold tracking-widest uppercase border transition-all border-red-500/50 text-red-500 hover:bg-red-500/10"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">FINALIZAR</span>
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
-                  size="sm"
-                  onClick={handleCloseChat}
-                  className={`h-8 gap-2 text-[10px] font-bold tracking-widest uppercase border transition-all ${selectedConv.status === 'cerrado' ? 'border-green-500/50 text-green-500 hover:bg-green-500/10' : 'border-red-500/50 text-red-500 hover:bg-red-500/10'}`}
+                  size="icon"
+                  className="lg:hidden h-8 w-8 text-muted-foreground hover:text-primary"
+                  onClick={() => setShowMobilePanel(true)}
+                  title="Ver detalles"
                 >
-                  <X className="w-3.5 h-3.5" />
-                  {selectedConv.status === 'cerrado' ? 'Reabrir Chat' : 'Cerrar Chat'}
+                  <SlidersHorizontal className="w-4 h-4" />
                 </Button>
               </div>
             </div>
 
             {/* Messages */}
-            <ScrollArea className="flex-1 px-4 md:px-8 pt-4 pb-0 scroll-smooth">
+            <div ref={messagesContainerRef} className="flex-1 min-h-0">
+            <ScrollArea className="h-full px-4 md:px-8 pt-4 pb-0 scroll-smooth">
               <div className="max-w-4xl mx-auto space-y-1 pb-0">
                 {grouped.map((group) => (
                   <div key={group.date}>
@@ -1333,7 +1809,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                     </div>
                     {group.msgs.map((msg, idx) => {
                       const isOut = msg.direction === "outbound";
-                      const effectiveSenderName = msg.sender_name || (selectedConv.assigned_user_id === userId ? userName : "Especialista");
+                      const effectiveSenderName = msg.sender_name || userName || "Especialista";
                       const badge = isOut ? getSenderBadge(msg.sender_type, effectiveSenderName) : null;
 
                       // Check if previous message is from same sender to chain bubbles ideally
@@ -1343,7 +1819,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       return (
                         <div key={msg.id} className={`flex w-full ${isOut ? "justify-end" : "justify-start"} ${isChained ? "mt-0.5" : "mt-2"}`}>
                           <div className={`
-                            relative max-w-[85%] md:max-w-[70%] lg:max-w-[60%] w-fit px-4 py-2 hover:brightness-110 transition-all shadow-lg
+                            relative max-w-[85%] md:max-w-[70%] lg:max-w-[60%] w-fit min-w-0 overflow-hidden px-4 py-2 hover:brightness-110 transition-all shadow-lg
                             ${isOut ? "rounded-[20px] rounded-br-[4px]" : "rounded-[20px] rounded-tl-[4px]"}
                             ${isChained && isOut ? "!rounded-br-[20px]" : ""}
                             ${isChained && !isOut ? "!rounded-tl-[20px]" : ""}
@@ -1399,7 +1875,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
                               return clean ? (
                                 <div
-                                  className="text-[12.5px] whitespace-pre-wrap break-words leading-snug"
+                                  className="text-[12.5px] whitespace-pre-wrap break-words [overflow-wrap:anywhere] leading-snug"
                                   dangerouslySetInnerHTML={{ __html: formatWhatsAppText(clean) }}
                                 />
                               ) : null;
@@ -1416,9 +1892,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                     })}
                   </div>
                 ))}
-                <div ref={messagesEndRef} />
               </div>
             </ScrollArea>
+            </div>
 
             {/* Input Wrapper */}
             <div className="p-2 md:px-6 py-2 border-t border-border/5 bg-background/50 backdrop-blur-xl z-20 sticky bottom-0">
@@ -1438,7 +1914,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 ) : (
                   <div className="max-w-4xl mx-auto bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl p-3 mb-2 leading-snug font-medium space-y-2">
                     <p className="text-[11px] text-center">
-                      ⚠️ Han pasado más de 24 horas. Solo puedes contactar al cliente con una <strong>plantilla aprobada</strong>.
+                      ⚠️ Han pasado más de 24 horas. Solo puedes contactar al cliente con una <strong>plantilla aprobada</strong> o directamente por WhatsApp.
                     </p>
                     <div className="flex items-center justify-center gap-2 flex-wrap">
                       {selectedTemplate ? (
@@ -1470,6 +1946,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                           Seleccionar plantilla de respuesta
                         </Button>
                       )}
+                      {/* Abrir en WhatsApp Web */}
+                      <a
+                        href={`https://wa.me/${selectedConv.wa_id.replace(/^\+/, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-[11px] font-medium bg-[#25d366]/15 hover:bg-[#25d366]/25 text-[#25d366] border border-[#25d366]/30 transition-colors"
+                      >
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                        </svg>
+                        Abrir en WhatsApp
+                      </a>
                     </div>
                   </div>
                 )
@@ -1489,7 +1977,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                           key={s.id}
                           className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors ${i === slashIndex ? "bg-primary/10 text-foreground" : "hover:bg-secondary/60 text-foreground/80"}`}
                           onMouseEnter={() => setSlashIndex(i)}
-                          onMouseDown={(e) => { e.preventDefault(); setNewMessage(s.message); setSlashOpen(false); }}
+                          onMouseDown={(e) => { e.preventDefault(); insertShortcut(s.message); setSlashOpen(false); setTimeout(resizeTextarea, 0); }}
                         >
                           <span className="font-mono text-[11px] text-primary bg-primary/10 px-1.5 py-0.5 rounded shrink-0 mt-0.5">/{s.trigger}</span>
                           <div className="min-w-0">
@@ -1504,7 +1992,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               )}
 
               <div className="flex items-end gap-3 max-w-4xl mx-auto relative group">
-                <div className={`relative flex-1 bg-white/5 border border-white/10 ${puedeEnviar ? 'group-focus-within:border-primary/50 group-focus-within:bg-white/10' : 'opacity-40'} rounded-full flex items-center shadow-xl transition-all min-h-[48px] px-2`}>
+                <div className={`relative flex-1 bg-white/5 border border-white/10 ${puedeEnviar ? 'group-focus-within:border-primary/50 group-focus-within:bg-white/10' : 'opacity-40'} rounded-2xl flex items-end shadow-xl transition-all min-h-[48px] px-2`}>
                   <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
                   <Button
                     variant="ghost"
@@ -1518,13 +2006,20 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                     )}
                   </Button>
                   <textarea
-                    value={newMessage}
+                    ref={msgTextareaRef}
+                    defaultValue=""
                     onChange={(e) => {
                       const val = e.target.value;
-                      setNewMessage(val);
-                      // Slash command: activar si empieza con /
-                      if (val.startsWith("/")) {
-                        const query = val.slice(1).toLowerCase();
+                      // Actualizar botón enviar solo al cruzar el umbral vacío/no-vacío
+                      const nowHasContent = val.trim().length > 0;
+                      setHasContent(prev => prev !== nowHasContent ? nowHasContent : prev);
+                      // Slash command: detectar /query en la posición del cursor (inicio o tras espacio)
+                      const cursor = e.target.selectionStart ?? val.length;
+                      const textBeforeCursor = val.slice(0, cursor);
+                      const slashMatch = textBeforeCursor.match(/(?:^|\s)\/(\S*)$/);
+                      if (slashMatch) {
+                        const query = slashMatch[1].toLowerCase();
+                        slashStartRef.current = textBeforeCursor.lastIndexOf('/');
                         const all = getShortcuts(companyId);
                         const matches = all.filter(s =>
                           s.trigger.startsWith(query) || s.title.toLowerCase().includes(query)
@@ -1533,17 +2028,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                         setSlashOpen(matches.length > 0);
                         setSlashIndex(0);
                       } else {
+                        slashStartRef.current = -1;
                         setSlashOpen(false);
                       }
                     }}
                     placeholder={!puedeEnviar ? "Respuesta bloqueada (Fuera de la ventana de 24h)" : selectedConv.is_agent_active ? "Inyectar comando (Pausa IA Automáticamente)..." : "Escribe un mensaje o / para atajos..."}
                     disabled={!puedeEnviar}
-                    className="w-full bg-transparent border-0 focus:ring-0 resize-none py-3.5 px-2 text-[13.5px] tracking-wide placeholder:text-muted-foreground/40 max-h-32 min-h-[48px]"
+                    className="w-full bg-transparent border-0 focus:ring-0 focus:outline-none resize-none py-3.5 px-2 text-[13.5px] tracking-wide placeholder:text-muted-foreground/40 max-h-[240px] min-h-[48px] appearance-none"
                     rows={1}
                     onInput={(e) => {
                       const target = e.target as HTMLTextAreaElement;
                       target.style.height = 'auto';
-                      target.style.height = `${Math.min(target.scrollHeight, 128)}px`;
+                      target.style.height = `${Math.min(target.scrollHeight, 240)}px`;
                     }}
                     onKeyDown={(e) => {
                       if (slashOpen) {
@@ -1553,13 +2049,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
                           const s = slashShortcuts[slashIndex];
-                          if (s) { setNewMessage(s.message); setSlashOpen(false); }
+                          if (s) { insertShortcut(s.message); setSlashOpen(false); setTimeout(resizeTextarea, 0); }
                           return;
                         }
                         if (e.key === "Tab") {
                           e.preventDefault();
                           const s = slashShortcuts[slashIndex];
-                          if (s) { setNewMessage(s.message); setSlashOpen(false); }
+                          if (s) { insertShortcut(s.message); setSlashOpen(false); setTimeout(resizeTextarea, 0); }
                           return;
                         }
                       }
@@ -1569,14 +2065,14 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       }
                     }}
                   />
-                  <Button
-                    onClick={sendMessage}
-                    disabled={!newMessage.trim() || !puedeEnviar || sending}
-                    className="h-10 w-10 shrink-0 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_15px_rgba(var(--primary),0.5)] transition-all disabled:opacity-50 disabled:shadow-none ml-1 mr-1"
-                  >
-                    <Send className="w-4 h-4 ml-0.5" />
-                  </Button>
                 </div>
+                <Button
+                  onClick={sendMessage}
+                  disabled={!hasContent || !puedeEnviar || sending}
+                  className="h-10 w-10 shrink-0 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_15px_rgba(var(--primary),0.5)] transition-all disabled:opacity-50 disabled:shadow-none"
+                >
+                  <Send className="w-4 h-4 ml-0.5" />
+                </Button>
               </div>
             </div>
           </div>
@@ -1584,163 +2080,326 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       </div>
 
       {/* 3. Panel Lateral de Gestión */}
+      {/* Backdrop para panel móvil */}
+      {selectedConv && showMobilePanel && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          onClick={() => setShowMobilePanel(false)}
+        />
+      )}
+
       {selectedConv && (
-        <div className="tour-inbox-metadata hidden lg:flex flex-col w-[320px] border-l border-border/10 glass flex-shrink-0 overflow-y-auto z-10">
-          <div className="p-6 flex flex-col items-center justify-center text-center border-b border-border/5 relative overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-b from-primary/10 to-transparent opacity-50 pointer-events-none" />
-            <Avatar className="h-20 w-20 mb-4 shadow-[0_0_30px_rgba(var(--primary),0.2)] ring-1 ring-primary/20 relative z-10 glass">
-              <AvatarFallback className="bg-transparent text-primary text-xl font-bold">
-                {getInitials(selectedConv.profile_name, selectedConv.wa_id)}
-              </AvatarFallback>
-            </Avatar>
-            <h3 className="font-bold text-[18px] tracking-tight relative z-10">{selectedConv.profile_name || "Contacto Desconocido"}</h3>
-            <p className="text-xs text-muted-foreground relative z-10">{selectedConv?.wa_id}</p>
+        <div className={`tour-inbox-metadata ${showMobilePanel ? 'flex fixed right-0 top-0 h-full w-[85vw] max-w-[320px] z-50' : 'hidden lg:flex'} flex-col border-l border-border/10 glass flex-shrink-0 overflow-y-auto lg:relative lg:h-auto lg:w-[320px] lg:z-10`}>
+          {/* Botón cerrar — solo visible en móvil */}
+          <div className="lg:hidden flex justify-between items-center px-4 pt-3 pb-1">
+            <span className="text-xs font-bold text-primary uppercase tracking-widest">Detalles del chat</span>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setShowMobilePanel(false)}>
+              <X className="w-4 h-4" />
+            </Button>
           </div>
 
-          <div className="p-5 space-y-6">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between px-1">
-                <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2">
-                  <div className="w-1 h-1 rounded-full bg-primary" />
-                  Telemetría
-                </h4>
-              </div>
-              <div className="bento-card p-4 space-y-4">
-                <div className="flex justify-between items-center group">
-                  <span className="text-[11px] text-muted-foreground flex items-center gap-2 font-medium">
-                    <Phone className="w-3.5 h-3.5 group-hover:text-primary transition-colors" /> Teléfono Cliente
-                  </span>
-                  <span className="text-[11px] font-bold text-foreground">{selectedConv.wa_id}</span>
-                </div>
-                <div className="flex justify-between items-center group border-t border-white/5 pt-4">
-                  <span className="text-[11px] text-muted-foreground flex items-center gap-2 font-medium">
-                    <Clock className="w-3.5 h-3.5 group-hover:text-primary transition-colors" /> Actividad Local
-                  </span>
-                  <span className="text-[11px] font-bold text-foreground">{selectedConv.last_message_at ? formatConvDate(selectedConv.last_message_at) : 'N/A'}</span>
-                </div>
-                <div className="flex justify-between items-center group border-t border-white/5 pt-4">
-                  <span className="text-[11px] text-muted-foreground flex items-center gap-2 font-medium">
-                    <Bot className="w-3.5 h-3.5 group-hover:text-violet-500 transition-colors" /> Sistema Auto-IA
-                  </span>
-                  <Badge variant="outline" className={`h-5 text-[9px] px-2 font-bold uppercase tracking-widest border-transparent ${selectedConv.is_agent_active ? 'bg-violet-500/20 text-violet-500' : 'bg-secondary text-muted-foreground'}`}>
-                    {selectedConv.is_agent_active ? 'ONLINE' : 'OFFLINE'}
-                  </Badge>
-                </div>
-                {selectedConv.unread_count > 0 && (
-                  <div className="flex justify-between items-center group border-t border-white/5 pt-4">
-                    <span className="text-[11px] text-muted-foreground flex items-center gap-2 font-medium">
-                      <Info className="w-3.5 h-3.5 group-hover:text-primary transition-colors" /> Paquetes Pendientes
-                    </span>
-                    <span className="text-[11px] font-black text-primary bg-primary/10 px-2 py-0.5 rounded-md glow-text">{selectedConv.unread_count}</span>
+          {/* ── Tabs (solo con ticket activo) ── */}
+          {activeTicket && (
+            <div className="flex border-b border-border/20 shrink-0">
+              <button
+                onClick={() => setRightPanelTab('caso')}
+                className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${rightPanelTab === 'caso' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Cliente
+              </button>
+              <button
+                onClick={() => setRightPanelTab('acciones')}
+                className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${rightPanelTab === 'acciones' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Acciones
+              </button>
+              <button
+                onClick={() => setRightPanelTab('agenda')}
+                className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${rightPanelTab === 'agenda' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                Agenda
+              </button>
+            </div>
+          )}
+
+          <div className="p-4 space-y-4 overflow-y-auto flex-1">
+
+            {activeTicket ? (
+              <>
+                {/* ══ TAB 1: CLIENTE ══ */}
+                {rightPanelTab === 'caso' && (() => {
+                  const t = activeTicket as any;
+                  const isNuevo = t.customer_type === 'cliente_nuevo';
+                  const addr = t.customer_address || clientAddress;
+                  const InfoRow = ({ label, value, onCopy }: { label: string; value: string | null | undefined; onCopy?: () => void }) => (
+                    <div className="flex justify-between items-start gap-2 group/field py-2 border-b border-border/10 last:border-0">
+                      <span className="text-[11px] text-muted-foreground shrink-0">{label}</span>
+                      <div className="flex items-center gap-1 min-w-0">
+                        <span className="text-[12px] text-foreground text-right break-words leading-tight">{value || '—'}</span>
+                        {value && onCopy && (
+                          <button onClick={onCopy} className="opacity-0 group-hover/field:opacity-100 transition-opacity h-4 w-4 flex items-center justify-center rounded hover:bg-primary/10 text-muted-foreground hover:text-primary shrink-0">
+                            <Copy className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                  return (
+                    <div className="space-y-4">
+                      {/* ── Información del cliente ── */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2">
+                            <div className="w-1 h-1 rounded-full bg-primary" />
+                            {isNuevo ? 'Cliente Nuevo' : 'Información del cliente'}
+                          </h4>
+                          {t.customer_type && (
+                            <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full ${isNuevo ? 'bg-emerald-500/15 text-emerald-500' : 'bg-blue-500/15 text-blue-500'}`}>
+                              {isNuevo ? 'Nuevo' : 'Cliente'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="bento-card px-3 py-1">
+                          <InfoRow label="Nombre" value={t.customer_name} onCopy={() => { navigator.clipboard.writeText(t.customer_name); toast({ title: 'Nombre copiado' }); }} />
+                          {isNuevo ? (
+                            <>
+                              <InfoRow label="Correo" value={t.customer_email} onCopy={() => { navigator.clipboard.writeText(t.customer_email); toast({ title: 'Correo copiado' }); }} />
+                              <InfoRow label="Plan a contratar" value={t.customer_plan} />
+                              <InfoRow label="Dirección" value={addr} onCopy={addr ? () => { navigator.clipboard.writeText(addr); toast({ title: 'Dirección copiada' }); } : undefined} />
+                              <InfoRow label="RUT" value={t.customer_rut} onCopy={t.customer_rut ? () => { navigator.clipboard.writeText(t.customer_rut); toast({ title: 'RUT copiado' }); } : undefined} />
+                              <InfoRow label="N° de TV" value={t.customer_tv_count != null ? String(t.customer_tv_count) : null} />
+                            </>
+                          ) : (
+                            <>
+                              <InfoRow label="RUT" value={t.customer_rut} onCopy={t.customer_rut ? () => { navigator.clipboard.writeText(t.customer_rut); toast({ title: 'RUT copiado' }); } : undefined} />
+                              <InfoRow label="Dirección" value={addr} onCopy={addr ? () => { navigator.clipboard.writeText(addr); toast({ title: 'Dirección copiada' }); } : undefined} />
+                              <InfoRow label="Plan" value={t.customer_plan} />
+                            </>
+                          )}
+                          {/* Categoría */}
+                          <div className="flex justify-between items-center py-2 border-b border-border/10">
+                            <span className="text-[11px] text-muted-foreground">Categoría</span>
+                            <Badge variant="outline" className="text-[9px]">
+                              {{ soporte_tecnico: "Soporte Técnico", ventas: "Ventas", pagos: "Pagos", consulta_comercial: "Consulta Comercial" }[t.category as string] || t.category || 'General'}
+                            </Badge>
+                          </div>
+                          {/* IA */}
+                          <div className="flex items-center justify-between py-2 border-b border-border/10">
+                            <span className="text-[11px] text-muted-foreground flex items-center gap-2">
+                              <Bot className="w-3.5 h-3.5" /> IA
+                            </span>
+                            <span className={`text-[10px] font-bold tracking-widest flex items-center gap-1.5 ${selectedConv.is_agent_active ? 'text-emerald-400' : 'text-muted-foreground/50'}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${selectedConv.is_agent_active ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_#34d399]' : 'bg-muted-foreground/30'}`} />
+                              {selectedConv.is_agent_active ? 'Activada' : 'Apagada'}
+                            </span>
+                          </div>
+                          {/* Motivo */}
+                          <div className="py-2 space-y-1">
+                            <span className="text-[11px] text-muted-foreground block">Motivo</span>
+                            <p className={`text-[12px] text-foreground leading-relaxed break-words ${motivoExpanded ? '' : 'line-clamp-3'}`}>
+                              {t.description || '—'}
+                            </p>
+                            {t.description && t.description.length > 80 && (
+                              <button onClick={() => setMotivoExpanded(v => !v)} className="text-[9px] text-primary/60 hover:text-primary transition-colors font-medium">
+                                {motivoExpanded ? '▲ Ver menos' : '▼ Ver más'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* ── Estado del ticket ── */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                          <div className="w-1 h-1 rounded-full bg-primary" />
+                          Estado del Ticket
+                        </h4>
+                        <Select
+                          value={activeTicket.status || 'abierto'}
+                          onValueChange={async (newStatus) => {
+                            if (!activeTicket) return;
+                            const isFinal = ticketLabels.find(l => l.key === newStatus)?.is_final === true;
+                            if (isFinal) { handleCloseChat(newStatus); return; }
+                            const { error } = await supabase.functions.invoke("close-ticket", { body: { ticket_id: activeTicket.id, status: newStatus } });
+                            if (error) { toast({ title: "Error al actualizar", description: error.message, variant: "destructive" }); return; }
+                            setActiveTicket((prev: any) => prev ? { ...prev, status: newStatus } : null);
+                            if (selectedConv) setTicketStatusByConvId(prev => ({ ...prev, [selectedConv.id]: newStatus }));
+                            toast({ title: "✅ Estado actualizado", description: `Ticket: ${ticketLabels.find(l => l.key === newStatus)?.name || newStatus}` });
+                            setTimeout(() => loadConversations(), 100);
+                          }}
+                        >
+                          <SelectTrigger className="h-9 text-[11px] font-medium bg-background/50 border-input">
+                            <SelectValue placeholder="Cambiar estado..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ticketLabels.map(label => (
+                              <SelectItem key={label.key} value={label.key}>
+                                <span className="font-bold flex items-center gap-1.5">
+                                  <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: label.color }} />
+                                  {label.name}
+                                </span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* ── Nota del caso ── */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                          <div className="w-1 h-1 rounded-full bg-primary" />
+                          Nota del caso
+                        </h4>
+                        <textarea
+                          value={noteInput}
+                          onChange={e => setNoteInput(e.target.value)}
+                          placeholder="Escribe una nota interna sobre este caso..."
+                          className="w-full bg-background/50 border border-input rounded-lg px-3 py-2 text-[11px] resize-none min-h-[76px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                          rows={3}
+                        />
+                        <Button onClick={saveNote} disabled={savingNote} size="sm" variant="outline" className="w-full h-8 text-[10px] font-bold uppercase tracking-wider gap-1.5">
+                          {savingNote ? <Loader2 className="w-3 h-3 animate-spin" /> : <StickyNote className="w-3 h-3" />}
+                          Guardar nota
+                        </Button>
+                        <div className="flex items-center justify-between px-1 pt-1">
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <Flame className={`w-3.5 h-3.5 transition-colors ${selectedConv.priority === 'alta' ? 'text-amber-500' : 'text-muted-foreground/40'}`} />
+                            <span className="text-[11px] font-semibold text-muted-foreground">Alta prioridad</span>
+                          </label>
+                          <button type="button" role="switch" aria-checked={selectedConv.priority === 'alta'} onClick={() => handleToggleHighPriority(selectedConv.priority !== 'alta')} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none ${selectedConv.priority === 'alta' ? 'bg-amber-500' : 'bg-muted-foreground/20'}`}>
+                            <span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${selectedConv.priority === 'alta' ? 'translate-x-5' : 'translate-x-1'}`} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ══ TAB 3: AGENDA ══ */}
+                {rightPanelTab === 'agenda' && companyId && userId && (
+                  <Suspense fallback={<div className="flex justify-center py-8"><span className="w-5 h-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" /></div>}>
+                    <ScheduleTab
+                      companyId={companyId}
+                      userId={userId}
+                      clientPhone={activeTicket?.customer_phone || selectedConv?.wa_id}
+                      clientName={activeTicket?.customer_name || undefined}
+                      clientRut={activeTicket?.customer_rut || undefined}
+                      clientAddress={(activeTicket as any)?.customer_address || undefined}
+                      conversationId={selectedConv?.id}
+                      onOpenFullSchedule={onNavigateToSchedule}
+                    />
+                  </Suspense>
+                )}
+
+                {/* ══ TAB 2: ACCIONES ══ */}
+                {rightPanelTab === 'acciones' && (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                        <div className="w-1 h-1 rounded-full bg-primary" /> Ejecución Rápida
+                      </h4>
+                      <div className="space-y-2">
+                        <Button onClick={() => setIsTicketModalOpen(true)} className="w-full justify-center text-[11px] h-10 gap-2.5 rounded-xl shadow-[0_0_15px_rgba(var(--primary),0.3)] bg-primary hover:bg-primary/90 text-primary-foreground font-bold uppercase tracking-wider transition-all hover:scale-[1.02]" variant="default">
+                          <Ticket className="w-3.5 h-3.5" /> Escalar a Ticket Central
+                        </Button>
+                        {!selectedConv.taken_by && (
+                          <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10 font-bold uppercase tracking-wider" variant="outline">
+                            <Hand className="w-3.5 h-3.5" /> Tomar Caso
+                          </Button>
+                        )}
+                        {selectedConv.is_agent_active ? (
+                          <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:bg-accent hover:text-accent-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
+                            <User className="w-3.5 h-3.5" /> Intervenir
+                          </Button>
+                        ) : (
+                          <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:bg-violet-500/10 font-bold uppercase tracking-wider" variant="outline">
+                            <Bot className="w-3.5 h-3.5" /> Activar IA
+                          </Button>
+                        )}
+                        <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 font-bold uppercase tracking-wider" variant="outline">
+                          <Forward className="w-3.5 h-3.5" /> Transferir Chat
+                        </Button>
+                        <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:bg-orange-500/10 font-bold uppercase tracking-wider" variant="outline">
+                          ⚠️ Reportar Error IA
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="space-y-2 border-t border-border/10 pt-2">
+                      <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                        <div className="w-1 h-1 rounded-full bg-primary" /> Buscador de Tickets
+                      </h4>
+                      <CustomerTicketsSearch key={activeTicket?.id || 'empty'} defaultRut={activeTicket?.customer_rut || ""} companyId={companyId} />
+                    </div>
                   </div>
                 )}
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between px-1">
-                <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2">
-                   <div className="w-1 h-1 rounded-full bg-primary" />
-                   Prioridad del Caso
-                </h4>
-              </div>
-              <Select value={selectedConv.priority || 'ninguna'} onValueChange={handleUpdatePriority}>
-                <SelectTrigger className="h-9 text-[11px] font-medium bg-background/50 border-input">
-                  <SelectValue placeholder="Asignar prioridad..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ninguna">Sin prioridad</SelectItem>
-                  <SelectItem value="alta"><span className="text-red-500 font-bold">🔴 Urgente (Alta)</span></SelectItem>
-                  <SelectItem value="media"><span className="text-orange-500 font-bold">🟠 Media</span></SelectItem>
-                  <SelectItem value="baja"><span className="text-blue-500 font-bold">🔵 Baja</span></SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between px-1">
-                <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2">
-                  <div className="w-1 h-1 rounded-full bg-primary" />
-                  Ejecución Rápida
-                </h4>
-              </div>
-              <div className="space-y-2.5">
-                <Button onClick={() => setIsTicketModalOpen(true)} className="w-full justify-center text-[11px] h-10 gap-2.5 rounded-xl shadow-[0_0_15px_rgba(var(--primary),0.3)] bg-primary hover:bg-primary/90 text-primary-foreground font-bold uppercase tracking-wider transition-all hover:scale-[1.02]" variant="default">
-                  <Ticket className="w-3.5 h-3.5" /> Escalar a Ticket Central
-                </Button>
-
-                <div className="space-y-2.5">
-                  {!selectedConv.taken_by && (
-                    <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10 font-bold uppercase tracking-wider" variant="outline">
-                      <Hand className="w-3.5 h-3.5" /> Tomar Caso
-                    </Button>
-                  )}
-                  {selectedConv.is_agent_active ? (
-                    <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:bg-accent hover:text-accent-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
-                      <User className="w-3.5 h-3.5" /> Intervenir
-                    </Button>
-                  ) : (
-                    <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:bg-violet-500/10 font-bold uppercase tracking-wider" variant="outline">
-                      <Bot className="w-3.5 h-3.5" /> Activar IA
-                    </Button>
-                  )}
-                  <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 font-bold uppercase tracking-wider" variant="outline">
-                    <Forward className="w-3.5 h-3.5" /> Transferir Chat
-                  </Button>
-                  <Button onClick={handleCloseChat} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-red-500/30 text-red-500 hover:bg-red-500/10 font-bold uppercase tracking-wider" variant="outline">
-                    <XCircle className="w-3.5 h-3.5" /> {selectedConv.status === 'cerrado' ? 'Reabrir Chat' : 'Cerrar Chat'}
-                  </Button>
-                  <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:bg-orange-500/10 font-bold uppercase tracking-wider" variant="outline">
-                    ⚠️ Reportar Error IA
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {activeTicket && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between px-1">
-                  <h4 className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest flex items-center gap-2">
-                    <div className="w-1 h-1 rounded-full bg-emerald-500" />
-                    Caso Derivado
+              </>
+            ) : (
+              /* ══ SIN TICKET: solo acciones ══ */
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                    <div className="w-1 h-1 rounded-full bg-primary" /> Ejecución Rápida
                   </h4>
+                  <div className="space-y-2">
+                    <Button onClick={() => setIsTicketModalOpen(true)} className="w-full justify-center text-[11px] h-10 gap-2.5 rounded-xl shadow-[0_0_15px_rgba(var(--primary),0.3)] bg-primary hover:bg-primary/90 text-primary-foreground font-bold uppercase tracking-wider transition-all hover:scale-[1.02]" variant="default">
+                      <Ticket className="w-3.5 h-3.5" /> Escalar a Ticket Central
+                    </Button>
+                    {!selectedConv.taken_by && (
+                      <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10 font-bold uppercase tracking-wider" variant="outline">
+                        <Hand className="w-3.5 h-3.5" /> Tomar Caso
+                      </Button>
+                    )}
+                    {selectedConv.is_agent_active ? (
+                      <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:bg-accent hover:text-accent-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
+                        <User className="w-3.5 h-3.5" /> Intervenir
+                      </Button>
+                    ) : (
+                      <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:bg-violet-500/10 font-bold uppercase tracking-wider" variant="outline">
+                        <Bot className="w-3.5 h-3.5" /> Activar IA
+                      </Button>
+                    )}
+                    <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 font-bold uppercase tracking-wider" variant="outline">
+                      <Forward className="w-3.5 h-3.5" /> Transferir Chat
+                    </Button>
+                    <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:bg-orange-500/10 font-bold uppercase tracking-wider" variant="outline">
+                      ⚠️ Reportar Error IA
+                    </Button>
+                  </div>
                 </div>
-                <div className="bento-card p-4 space-y-3 border-emerald-500/20 bg-emerald-500/5">
-                  <div className="space-y-1">
-                    <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">👤 Cliente</span>
-                    <p className="text-[12px] font-medium">{activeTicket.customer_name || 'No especificado'}</p>
-                  </div>
-                  <div className="space-y-1 border-t border-border/10 pt-2">
-                    <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">🪪 RUT</span>
-                    <p className="text-[12px] font-medium text-emerald-600 dark:text-emerald-400">{activeTicket.customer_rut || 'No especificado'}</p>
-                  </div>
-                  <div className="space-y-1 border-t border-border/10 pt-2">
-                    <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider">📋 Motivo</span>
-                    <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3">{activeTicket.description || 'Sin descripción'}</p>
-                  </div>
-                  <div className="space-y-1 border-t border-border/10 pt-2 grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">🏷️ Categoría</span>
-                      <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-600">
-                        {{
-                          soporte_tecnico: "Soporte Técnico",
-                          ventas: "Ventas",
-                          pagos: "Pagos",
-                          consulta_comercial: "Consulta Comercial"
-                        }[activeTicket.category as string] || activeTicket.category || 'General'}
-                      </Badge>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block mb-1">🔵 Estado</span>
-                      <Badge variant="default" className="text-[9px] uppercase">{activeTicket.status || 'abierto'}</Badge>
-                    </div>
-                  </div>
+                <div className="space-y-2 border-t border-border/10 pt-2">
+                  <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                    <div className="w-1 h-1 rounded-full bg-primary" /> Buscador de Tickets
+                  </h4>
+                  <CustomerTicketsSearch key="no-ticket" defaultRut="" companyId={companyId} />
                 </div>
               </div>
             )}
 
-            <CustomerTicketsSearch key={activeTicket?.id || 'empty'} defaultRut={activeTicket?.customer_rut || ""} />
+          </div>
+        </div>
+      )}
 
+      {/* ── Tooltip flotante de nota (position:fixed, escapa overflow:hidden del sidebar) ── */}
+      {tooltipConvId && tooltipRect && convNotes[tooltipConvId] && (
+        <div
+          className="pointer-events-none fixed z-[9999] w-[260px] rounded-xl shadow-2xl animate-in fade-in slide-in-from-left-2 duration-200 overflow-hidden border border-border bg-popover backdrop-blur-xl"
+          style={{
+            left: Math.min(tooltipRect.right + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 276),
+            top: tooltipRect.top + tooltipRect.height / 2,
+            transform: 'translateY(-50%)',
+          }}
+        >
+          {/* Franja lateral amber */}
+          <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-400 rounded-l-xl" />
+          {/* Contenido */}
+          <div className="pl-4 pr-3.5 py-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <StickyNote className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span className="text-[11px] font-semibold text-amber-500 uppercase tracking-wider">Nota del caso</span>
+            </div>
+            <p className="text-[13px] font-semibold text-foreground leading-relaxed break-words line-clamp-8 uppercase">
+              {convNotes[tooltipConvId]}
+            </p>
           </div>
         </div>
       )}
@@ -1748,7 +2407,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       {selectedConv && (
         <CreateTicketDialog
           open={isTicketModalOpen}
-          onOpenChange={setIsTicketModalOpen}
+          onOpenChange={(op) => {
+            setIsTicketModalOpen(op);
+            if (!op) setTicketRefreshCounter(c => c + 1);
+          }}
           conversation={selectedConv}
         />
       )}

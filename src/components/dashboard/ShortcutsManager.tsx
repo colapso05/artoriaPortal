@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,15 +8,16 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2, Zap, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, Zap, Search, Loader2 } from "lucide-react";
 
 export interface Shortcut {
   id: string;
-  trigger: string;   // sin /, ej: "bienvenida"
-  title: string;     // nombre descriptivo
-  message: string;   // texto predefinido
+  trigger: string;
+  title: string;
+  message: string;
 }
 
+/* ─── localStorage cache (used by WhatsAppInbox synchronously) ────────────── */
 export const shortcutsKey = (companyId?: string) => `shortcuts_${companyId || "global"}`;
 
 export function getShortcuts(companyId?: string): Shortcut[] {
@@ -26,25 +28,62 @@ export function getShortcuts(companyId?: string): Shortcut[] {
   }
 }
 
-function saveShortcuts(list: Shortcut[], companyId?: string) {
+function writeCache(list: Shortcut[], companyId?: string) {
   localStorage.setItem(shortcutsKey(companyId), JSON.stringify(list));
 }
 
+/* ─── Supabase helpers ────────────────────────────────────────────────────── */
+async function fetchFromSupabase(companyId?: string): Promise<Shortcut[]> {
+  let q = (supabase.from as any)("shortcuts")
+    .select("id, trigger, title, message")
+    .order("created_at", { ascending: true });
+  if (companyId) {
+    q = q.eq("company_id", companyId);
+  } else {
+    q = q.is("company_id", null);
+  }
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data as Shortcut[]) || [];
+}
+
+/** Call this from Dashboard on startup so WhatsAppInbox cache is warm */
+export async function syncShortcutsCache(companyId?: string) {
+  try {
+    const list = await fetchFromSupabase(companyId);
+    writeCache(list, companyId);
+  } catch {
+    // silently fall back to existing cache
+  }
+}
+
+/* ─── Component ──────────────────────────────────────────────────────────── */
 export default function ShortcutsManager({ companyId }: { companyId?: string }) {
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Shortcut | null>(null);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ trigger: "", title: "", message: "" });
   const { toast } = useToast();
 
+  /* Load from Supabase on mount and sync to localStorage cache */
   useEffect(() => {
-    setShortcuts(getShortcuts(companyId));
+    loadShortcuts();
   }, [companyId]);
 
-  const persist = (updated: Shortcut[]) => {
-    setShortcuts(updated);
-    saveShortcuts(updated, companyId);
+  const loadShortcuts = async () => {
+    setLoading(true);
+    try {
+      const list = await fetchFromSupabase(companyId);
+      setShortcuts(list);
+      writeCache(list, companyId);
+    } catch (err: any) {
+      toast({ title: "Error al cargar atajos", description: err.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openCreate = () => {
@@ -59,7 +98,7 @@ export default function ShortcutsManager({ companyId }: { companyId?: string }) 
     setDialogOpen(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const trigger = form.trigger.replace(/^\/+/, "").trim().toLowerCase().replace(/\s+/g, "_");
     if (!trigger || !form.message.trim()) {
       toast({ title: "Faltan datos", description: "El atajo y el mensaje son obligatorios.", variant: "destructive" });
@@ -70,19 +109,43 @@ export default function ShortcutsManager({ companyId }: { companyId?: string }) 
       toast({ title: "Atajo duplicado", description: `/${trigger} ya existe.`, variant: "destructive" });
       return;
     }
-    if (editing) {
-      persist(shortcuts.map(s => s.id === editing.id ? { ...s, trigger, title: form.title || trigger, message: form.message } : s));
-      toast({ title: "Atajo actualizado" });
-    } else {
-      persist([...shortcuts, { id: crypto.randomUUID(), trigger, title: form.title || trigger, message: form.message }]);
-      toast({ title: "✅ Atajo creado" });
+
+    setSaving(true);
+    try {
+      if (editing) {
+        const { error } = await (supabase.from as any)("shortcuts")
+          .update({ trigger, title: form.title || trigger, message: form.message })
+          .eq("id", editing.id);
+        if (error) throw error;
+        toast({ title: "Atajo actualizado" });
+      } else {
+        const { error } = await (supabase.from as any)("shortcuts").insert({
+          company_id: companyId || null,
+          trigger,
+          title: form.title || trigger,
+          message: form.message,
+        });
+        if (error) throw error;
+        toast({ title: "✅ Atajo creado" });
+      }
+      setDialogOpen(false);
+      await loadShortcuts();
+    } catch (err: any) {
+      toast({ title: "Error al guardar", description: err.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
     }
-    setDialogOpen(false);
   };
 
-  const handleDelete = (id: string) => {
-    persist(shortcuts.filter(s => s.id !== id));
-    toast({ title: "Atajo eliminado" });
+  const handleDelete = async (id: string) => {
+    try {
+      const { error } = await (supabase.from as any)("shortcuts").delete().eq("id", id);
+      if (error) throw error;
+      toast({ title: "Atajo eliminado" });
+      await loadShortcuts();
+    } catch (err: any) {
+      toast({ title: "Error al eliminar", description: err.message, variant: "destructive" });
+    }
   };
 
   const filtered = shortcuts.filter(s =>
@@ -125,7 +188,11 @@ export default function ShortcutsManager({ companyId }: { companyId?: string }) 
 
       {/* List */}
       <ScrollArea className="flex-1">
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/40" />
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground/50">
             <Zap className="w-12 h-12 mb-3 opacity-20" />
             <p className="font-semibold">{search ? "Sin resultados" : "Aún no hay atajos"}</p>
@@ -223,9 +290,9 @@ export default function ShortcutsManager({ companyId }: { companyId?: string }) 
             </div>
           </div>
           <DialogFooter className="gap-2 mt-2">
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
-            <Button onClick={handleSave} className="gap-1.5">
-              <Zap className="w-3.5 h-3.5" />
+            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>Cancelar</Button>
+            <Button onClick={handleSave} className="gap-1.5" disabled={saving}>
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
               {editing ? "Guardar cambios" : "Crear atajo"}
             </Button>
           </DialogFooter>

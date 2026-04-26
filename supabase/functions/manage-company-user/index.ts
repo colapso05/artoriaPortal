@@ -72,7 +72,7 @@ serve(async (req) => {
 
     switch (action) {
       case "create": {
-        const { email, display_name, password, role } = body;
+        const { email, display_name, password, role, operator_roles, rut, phone, start_hour, end_hour } = body;
 
         // Create auth user
         const { data: newUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
@@ -97,12 +97,22 @@ serve(async (req) => {
           role: "user",
         });
 
-        // Add to company with specified role
-        await supabaseAdmin.from("company_users").insert({
+        // Add to company with specified role + operator_roles
+        const { error: insertMemberError } = await supabaseAdmin.from("company_users").insert({
           company_id,
           user_id: userId,
           role: role || "operador",
+          operator_roles: operator_roles || [],
         });
+
+        if (insertMemberError) {
+          // Roll back the created user so we don't leave orphaned auth accounts
+          await supabaseAdmin.auth.admin.deleteUser(userId);
+          return new Response(JSON.stringify({ error: insertMemberError.message }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
 
         // Update profile
         await supabaseAdmin
@@ -226,10 +236,10 @@ serve(async (req) => {
       }
 
       case "list": {
-        // Get all users in company
+        // Get all users in company (including operator_roles)
         const { data: members } = await supabaseAdmin
           .from("company_users")
-          .select("user_id, role, created_at")
+          .select("user_id, role, operator_roles, created_at")
           .eq("company_id", company_id);
 
         if (!members || members.length === 0) {
@@ -240,17 +250,31 @@ serve(async (req) => {
         }
 
         const userIds = members.map(m => m.user_id);
+
+        // Profiles: display_name + must_change_password (no email column in profiles)
         const { data: profiles } = await supabaseAdmin
           .from("profiles")
-          .select("user_id, email, display_name, must_change_password")
+          .select("user_id, display_name, must_change_password")
           .in("user_id", userIds);
+
+        // Emails come from auth.admin (source of truth)
+        const emailMap: Record<string, string> = {};
+        await Promise.all(
+          userIds.map(async (uid) => {
+            try {
+              const { data: { user } } = await supabaseAdmin.auth.admin.getUserById(uid);
+              if (user?.email) emailMap[uid] = user.email;
+            } catch { /* ignore individual failures */ }
+          })
+        );
 
         const users = members.map(m => {
           const profile = profiles?.find(p => p.user_id === m.user_id);
           return {
             user_id: m.user_id,
             role: m.role,
-            email: profile?.email || "",
+            operator_roles: m.operator_roles || [],
+            email: emailMap[m.user_id] || "",
             display_name: profile?.display_name || "",
             must_change_password: profile?.must_change_password || false,
             created_at: m.created_at,

@@ -209,7 +209,7 @@ export default function AdminDashboardHome() {
   return (
     <div className="flex flex-col space-y-6 pt-2 pb-12">
       {/* Header */}
-      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="flex-shrink-0">
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }} className="flex-shrink-0 tour-home-welcome">
         <h2 className="text-3xl font-extrabold tracking-tight font-display">
           SISTEMA <span className="gradient-text">CORE</span>
         </h2>

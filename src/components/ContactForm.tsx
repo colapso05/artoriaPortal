@@ -5,21 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-
-const budgetRanges = [
-  { value: "starter", label: "$150.000 - $300.000 CLP (Starter)" },
-  { value: "professional", label: "$300.000 - $500.000 CLP (Profesional)" },
-  { value: "enterprise", label: "$500.000 - $1.000.000 CLP (Empresarial)" },
-];
 
 export function ContactForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -29,7 +16,6 @@ export function ContactForm() {
     company: "",
     email: "",
     whatsapp: "",
-    budget: "",
     message: "",
   });
   const { toast } = useToast();
@@ -47,7 +33,6 @@ export function ContactForm() {
           empresa: formData.company,
           email: formData.email,
           whatsapp: formData.whatsapp || "No proporcionado",
-          presupuesto: budgetRanges.find((r) => r.value === formData.budget)?.label || formData.budget,
           mensaje: formData.message,
           fecha: new Date().toISOString(),
         },
@@ -168,22 +153,6 @@ export function ContactForm() {
                   className="bg-background/50 border-border focus:border-primary"
                 />
               </div>
-            </div>
-
-            <div>
-              <Label className="mb-1.5 block text-sm text-muted-foreground">Rango de inversión *</Label>
-              <Select required onValueChange={(value) => handleInputChange("budget", value)}>
-                <SelectTrigger className="bg-background/50 border-border">
-                  <SelectValue placeholder="Selecciona un rango" />
-                </SelectTrigger>
-                <SelectContent>
-                  {budgetRanges.map((range) => (
-                    <SelectItem key={range.value} value={range.value}>
-                      {range.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
 
             <div>

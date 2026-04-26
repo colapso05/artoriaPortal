@@ -33,20 +33,20 @@ export function CreateTicketDialog({ open, onOpenChange, conversation }: CreateT
 
         setLoading(true);
         try {
-            const { error } = await supabase.from("tickets").insert({
-                company_id: conversation.company_id,
-                conversation_id: conversation.id,
-                title: motivo,
-                description: `Ticket escalado desde chat. \n\nRUT: ${rut}`,
-                customer_rut: rut,
-                customer_phone: conversation.wa_id,
-                customer_name: conversation.profile_name,
-                status: "abierto",
-                priority: "media",
-                category: "soporte_tecnico",
+            const { data, error } = await supabase.functions.invoke("create-ticket", {
+                body: {
+                    company_id: conversation.company_id,
+                    conversation_id: conversation.id,
+                    wa_id: conversation.wa_id,
+                    customer_name: conversation.profile_name,
+                    rut: rut,
+                    reason: motivo,
+                    category: "soporte_tecnico",
+                },
             });
 
             if (error) throw error;
+            if (data?.error) throw new Error(data.error);
 
             toast({ title: "Ticket Creado", description: `Se ha escalado el ticket para el RUT ${rut} con éxito.` });
             setRut("");

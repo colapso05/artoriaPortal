@@ -91,12 +91,16 @@ Deno.serve(async (req) => {
       .update({ must_change_password: true, display_name: company_name })
       .eq("user_id", userId);
 
+    // Generate a unique webhook path for alert notifications (UUID)
+    const alertWebhookPath = crypto.randomUUID();
+
     // Create Company Config (Strict requirement)
     const { error: configError } = await supabaseAdmin.from("company_config").insert({
       user_id: userId,
       company_name: company_name,
       ycloud_api_key: ycloud_api_key,
       ycloud_phone: phone_number,
+      alert_webhook_path: alertWebhookPath,
     });
 
     if (configError) {

@@ -3,13 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-import { Search, Ticket, Loader2, ArrowRight } from "lucide-react";
+import { Search, Ticket, Loader2, ArrowRight, Phone, CreditCard } from "lucide-react";
 import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 
-export function CustomerTicketsSearch({ defaultRut = "" }: { defaultRut?: string }) {
-    const [rut, setRut] = useState(defaultRut);
+export function CustomerTicketsSearch({ defaultRut = "", companyId }: { defaultRut?: string; companyId?: string }) {
+    const [query, setQuery] = useState(defaultRut);
     const [tickets, setTickets] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [searched, setSearched] = useState(false);
@@ -19,25 +19,68 @@ export function CustomerTicketsSearch({ defaultRut = "" }: { defaultRut?: string
     const [loadingNotes, setLoadingNotes] = useState(false);
     const { toast } = useToast();
 
+    // Detecta si el input es un número de teléfono o un RUT
+    const isPhone = (val: string) => {
+        const cleaned = val.replace(/\s/g, '');
+        return cleaned.startsWith('+') || /^\d{9,}$/.test(cleaned);
+    };
+
     const formatRut = (value: string) => {
         const cleaned = value.replace(/[^0-9kK]/g, '').toUpperCase();
         if (cleaned.length <= 1) return cleaned;
         return `${cleaned.slice(0, -1)}-${cleaned.slice(-1)}`;
     };
 
+    const handleInput = (value: string) => {
+        // Si empieza con + o es todo números largos, no formatear como RUT
+        if (value.startsWith('+') || /^\d{7,}/.test(value.replace(/\s/g, ''))) {
+            setQuery(value);
+        } else {
+            setQuery(formatRut(value));
+        }
+    };
+
     const searchTickets = async () => {
-        if (!rut.trim()) return;
+        if (!query.trim()) return;
         setLoading(true);
         setSearched(true);
         try {
-            const { data, error } = await supabase
-                .from("tickets")
-                .select("*")
-                .eq("customer_rut", rut.trim())
-                .order("created_at", { ascending: false });
+            let results: any[] = [];
 
-            if (error) throw error;
-            setTickets(data || []);
+            if (isPhone(query.trim())) {
+                // Normalizar el número: con y sin prefijo +
+                const raw = query.trim().replace(/\s/g, '');
+                const withPlus = raw.startsWith('+') ? raw : `+${raw}`;
+                const withoutPlus = raw.startsWith('+') ? raw.slice(1) : raw;
+
+                // Dos queries separadas para evitar problemas de encoding del "+" en OR string
+                const base = () => supabase.from("tickets").select("*").eq("company_id", companyId || "");
+
+                const [r1, r2, r3, r4] = await Promise.all([
+                    base().eq("wa_id", withPlus),
+                    base().eq("wa_id", withoutPlus),
+                    base().eq("customer_phone", withPlus),
+                    base().eq("customer_phone", withoutPlus),
+                ]);
+
+                // Merge deduplicando por id
+                const seen = new Set<string>();
+                for (const r of [r1, r2, r3, r4]) {
+                    for (const t of r.data || []) {
+                        if (!seen.has(t.id)) { seen.add(t.id); results.push(t); }
+                    }
+                }
+                results.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+            } else {
+                // Buscar por RUT
+                let dbQuery: any = supabase.from("tickets").select("*").eq("customer_rut", query.trim());
+                if (companyId) dbQuery = dbQuery.eq("company_id", companyId);
+                const { data, error } = await dbQuery.order("created_at", { ascending: false });
+                if (error) throw error;
+                results = data || [];
+            }
+
+            setTickets(results);
             setOpenSheet(true);
         } catch (err: any) {
             toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -80,34 +123,35 @@ export function CustomerTicketsSearch({ defaultRut = "" }: { defaultRut?: string
         }
     };
 
+    const searchMode = isPhone(query) ? 'phone' : 'rut';
+
     return (
         <>
             <div className="space-y-3">
-                <div className="flex items-center justify-between px-1">
-                    <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2">
-                        <div className="w-1 h-1 rounded-full bg-primary" />
-                        Buscador de Tickets
-                    </h4>
-                </div>
                 <div className="bento-card p-4 space-y-3">
                     <div className="flex gap-2">
                         <div className="relative flex-1">
-                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
+                            {searchMode === 'phone'
+                                ? <Phone className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-primary/50" />
+                                : <CreditCard className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
+                            }
                             <Input
-                                placeholder="Buscar por RUT..."
-                                value={rut}
-                                onChange={(e) => setRut(formatRut(e.target.value))}
+                                placeholder="Buscar por RUT o número (+56...)"
+                                value={query}
+                                onChange={(e) => handleInput(e.target.value)}
                                 onKeyDown={(e) => e.key === "Enter" && searchTickets()}
                                 className="pl-9 h-9 text-[12px] bg-card border-border/50 hover:border-primary/20 focus-visible:ring-primary"
                             />
                         </div>
-                        <Button onClick={searchTickets} disabled={loading || !rut.trim()} size="icon" className="h-9 w-9 shrink-0">
+                        <Button onClick={searchTickets} disabled={loading || !query.trim()} size="icon" className="h-9 w-9 shrink-0">
                             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
                         </Button>
                     </div>
 
                     {searched && !loading && tickets.length === 0 && (
-                        <p className="text-[11px] text-muted-foreground text-center py-2">No se encontraron tickets para este RUT.</p>
+                        <p className="text-[11px] text-muted-foreground text-center py-2">
+                            No se encontraron tickets para {searchMode === 'phone' ? 'este número' : 'este RUT'}.
+                        </p>
                     )}
 
                     {searched && !loading && tickets.length > 0 && (
@@ -124,7 +168,8 @@ export function CustomerTicketsSearch({ defaultRut = "" }: { defaultRut?: string
                     <SheetHeader className="mb-6">
                         <SheetTitle>Historial de Tickets</SheetTitle>
                         <SheetDescription>
-                            Mostrando tickets asociados al RUT <strong className="text-foreground">{rut}</strong>
+                            {tickets.length} ticket{tickets.length !== 1 ? 's' : ''} asociados a{' '}
+                            <strong className="text-foreground">{query}</strong>
                         </SheetDescription>
                     </SheetHeader>
 
@@ -141,6 +186,13 @@ export function CustomerTicketsSearch({ defaultRut = "" }: { defaultRut?: string
                                         {ticket.status.replace("_", " ")}
                                     </Badge>
                                 </div>
+
+                                {(ticket.customer_name || ticket.customer_rut) && (
+                                    <div className="flex gap-3 text-[11px] text-muted-foreground">
+                                        {ticket.customer_name && <span>{ticket.customer_name}</span>}
+                                        {ticket.customer_rut && <span className="font-mono">RUT: {ticket.customer_rut}</span>}
+                                    </div>
+                                )}
 
                                 <p className={`text-[12px] text-muted-foreground leading-relaxed ${expandedTicketId === ticket.id ? '' : 'line-clamp-3'}`}>
                                     {ticket.description}

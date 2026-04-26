@@ -38,6 +38,13 @@
 
     --glow: 280 100% 60%;
     --glow-secondary: 320 100% 55%;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 10% 10%;
+    --sidebar-border: 240 6% 87%;
+    --sidebar-accent: 240 5% 93%;
+    --sidebar-accent-foreground: 240 10% 10%;
+    --sidebar-ring: 280 100% 60%;
   }
 
   .dark {
@@ -71,6 +78,13 @@
 
     --glow: 271 91% 65%;
     --glow-secondary: 189 94% 43%;
+
+    --sidebar-background: 0 0% 6%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-border: 0 0% 16%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-ring: 271 91% 65%;
   }
 }
 

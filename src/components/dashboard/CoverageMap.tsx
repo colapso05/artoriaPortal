@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useTheme } from "next-themes";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import AlertZonesMap from "./AlertZonesMap";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,6 +40,7 @@ import {
   CheckCircle2,
   MousePointerClick,
   RotateCw,
+  ShieldAlert,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import L from "leaflet";
@@ -205,6 +207,7 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
     return localStorage.getItem('coverage_tutorial_done') === null;
   });
   const [activeTab, setActiveTab] = useState("map");
+  const [showAlertMap, setShowAlertMap] = useState(false);
 
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("#2563eb");
@@ -465,9 +468,37 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
     if (data) {
       const formatted = (data as any[]).map(c => ({
         ...c,
-        alert_zones: c.alert_zones || []
+        alert_zones: c.alert_zones || [],
       }));
       setCompanies(formatted);
+    }
+  };
+
+  /* ─── Send alert via backend edge function (avoids CORS / direct fetch) ── */
+  const sendAlertWebhook = async (tipo: "actualizacion" | "ultimo") => {
+    const targetCompanyId = companyId || companies[0]?.id;
+    if (!targetCompanyId) return;
+
+    const { data, error } = await supabase.functions.invoke("send-alert-webhook", {
+      body: {
+        company_id: targetCompanyId,
+        tipo,
+        message: localAlertMessage,
+      },
+    });
+
+    if (error || data?.error) {
+      toast({ title: "Error al enviar webhook", description: data?.error || error?.message, variant: "destructive" });
+      return;
+    }
+
+    // Reload to reflect any DB changes the backend made (e.g. alert_active=false on "ultimo")
+    await loadCompanies();
+
+    if (tipo === "ultimo") {
+      toast({ title: "✅ Mensaje final enviado y alerta finalizada" });
+    } else {
+      toast({ title: "✅ Mensaje actualizado y notificación enviada" });
     }
   };
 
@@ -582,29 +613,25 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
   };
 
   const updateGlobalAlert = async (updates: Partial<CompanyOption>) => {
-    console.log("[Alert] Actualizando:", updates, "company:", companyId);
     if (!companyId && companies.length > 1 && !companies[0]?.id) {
       toast({ title: "Seleccione una empresa primero", variant: "destructive" });
       return;
     }
 
     const targetCompanyId = companyId || companies[0]?.id;
-    console.log("[Alert] Target company_id:", targetCompanyId);
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("company_config")
       .update(updates as any)
-      .eq("id", targetCompanyId)
-      .select();
-
-    console.log("[Alert] Resultado:", data, "Error:", error);
+      .eq("id", targetCompanyId);
 
     if (error) {
       toast({ title: "Error al actualizar alerta", description: error.message, variant: "destructive" });
-    } else {
-      await loadCompanies();
-      toast({ title: "Configuración de alerta actualizada" });
+      return;
     }
+
+    await loadCompanies();
+    toast({ title: "Configuración de alerta actualizada" });
   };
 
   const toggleZoneInAlert = (zoneId: string) => {
@@ -900,8 +927,8 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
             </AnimatePresence>
           </div>
 
-          {/* Map area: Estructura absoluta para evitar colapso flex */}
-          <div className="relative flex-1 bg-muted/10 overflow-hidden">
+          {/* Map area: isolate crea stacking context propio para que Leaflet no tape el header */}
+          <div className="relative flex-1 bg-muted/10 overflow-hidden isolate">
             <div ref={mapRef} className="absolute inset-0 z-0" />
 
             {/* Capa de interfaces sobre el mapa */}
@@ -1080,107 +1107,170 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
         </div>
       </div>
 
-      <div style={{ display: activeTab === 'alerts' ? 'block' : 'none' }} className="flex-1 mt-0 m-0 min-h-0">
-        <div className="h-full rounded-xl border border-border/20 bg-card shadow-lg p-6 overflow-y-auto">
-          {(() => {
-            const company = companies.find(c => companyId ? c.id === companyId : true);
-            if (!company) return (
-              <div className="flex items-center justify-center h-full text-muted-foreground italic">
-                Cargando configuración de empresa...
-              </div>
-            );
-
-            return (
-              <div className="max-w-4xl mx-auto space-y-8">
-                <div className="flex justify-between items-start border-b border-border/10 pb-6">
-                  <div>
-                    <h3 className="text-xl font-bold tracking-tight mb-1">Sistema Global de Alertas</h3>
-                    <p className="text-sm text-muted-foreground">Configure una única alerta para múltiples zonas de cobertura.</p>
-                  </div>
-                  <div className="flex items-center gap-3 bg-secondary/20 px-4 py-2 rounded-2xl border border-border/40">
-                    <Label className="text-xs font-bold uppercase tracking-wider cursor-pointer" htmlFor="global-alert">Estado Global</Label>
-                    <Switch
-                      id="global-alert"
-                      checked={company.alert_active}
-                      onCheckedChange={(val) => updateGlobalAlert({ alert_active: val })}
-                    />
-                  </div>
+      <div style={{ display: activeTab === 'alerts' ? 'flex' : 'none' }} className="flex-1 mt-0 m-0 min-h-0 flex-col">
+        {/* When showAlertMap is true, show the drawing map inline */}
+        {showAlertMap ? (
+          <div className="flex-1 min-h-0">
+            <AlertZonesMap
+              companyId={companyId}
+              onClose={() => setShowAlertMap(false)}
+              coverageZones={zones.map(z => ({ polygon: z.polygon, color: z.color, name: z.name }))}
+            />
+          </div>
+        ) : (
+          <div className="flex-1 rounded-xl border border-border/20 bg-card shadow-lg p-6 overflow-y-auto">
+            {(() => {
+              const company = companies.find(c => companyId ? c.id === companyId : true);
+              if (!company) return (
+                <div className="flex items-center justify-center h-full text-muted-foreground italic">
+                  Cargando configuración de empresa...
                 </div>
+              );
 
-                <div className="grid md:grid-cols-2 gap-8">
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <Bell className="h-4 w-4 text-primary" />
-                      </div>
-                      <h4 className="font-bold text-sm uppercase tracking-wide">Mensaje de Alerta</h4>
-                    </div>
-                    {/* Control local del estado para evitar warnings y permitir edición correcta */}
-                    <Textarea
-                      value={localAlertMessage}
-                      onChange={(e) => setLocalAlertMessage(e.target.value)}
-                      onBlur={() => updateGlobalAlert({ alert_message: localAlertMessage })}
-                      placeholder="Ej: Estamos experimentando intermitencias técnicas en su sector. Las brigadas están trabajando en terreno."
-                      className="min-h-[180px] text-sm bg-muted/10 border-border/20 focus:border-primary/50 transition-all resize-none rounded-xl"
-                    />
-                    <p className="text-[10px] text-muted-foreground italic">Este mensaje se enviará automáticamente si el cliente se encuentra en alguna de las zonas marcadas.</p>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <MapPin className="h-4 w-4 text-primary" />
-                      </div>
-                      <h4 className="font-bold text-sm uppercase tracking-wide">Zonas Afectadas</h4>
-                    </div>
-
-                    <div className="bg-muted/5 border border-border/20 rounded-xl overflow-hidden">
-                      <ScrollArea className="h-[200px]">
-                        <div className="p-4 grid gap-2">
-                          {zones.map(zone => (
-                            <div
-                              key={zone.id}
-                              className={`flex items-center gap-3 p-2.5 rounded-lg border transition-all cursor-pointer ${company.alert_zones?.includes(zone.id)
-                                ? 'bg-primary/10 border-primary/30'
-                                : 'bg-background/50 border-transparent hover:border-border/30'
-                                }`}
-                              onClick={() => toggleZoneInAlert(zone.id)}
-                            >
-                              <div className="h-4 w-4 rounded-full" style={{ backgroundColor: zone.color }} />
-                              <span className="text-xs font-semibold flex-1">{zone.name}</span>
-                              <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${company.alert_zones?.includes(zone.id) ? 'bg-primary border-primary' : 'border-muted-foreground/30'
-                                }`}>
-                                {company.alert_zones?.includes(zone.id) && <Save className="w-3 h-3 text-white" />}
-                              </div>
-                            </div>
-                          ))}
-                          {zones.length === 0 && (
-                            <div className="py-8 text-center text-muted-foreground text-xs italic">
-                              No hay zonas creadas aún.
-                            </div>
-                          )}
-                        </div>
-                      </ScrollArea>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground italic text-right">Haga clic en una zona para incluirla o excluirla de la alerta activa.</p>
-                  </div>
-                </div>
-
-                {company.alert_active && company.alert_zones.length > 0 && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in fade-in zoom-in duration-300">
-                    <div className="h-10 w-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
-                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                    </div>
+              return (
+                <div className="max-w-4xl mx-auto space-y-8">
+                  <div className="flex justify-between items-start border-b border-border/10 pb-6">
                     <div>
-                      <p className="text-xs font-bold text-emerald-500 uppercase tracking-wide">Alerta Activa</p>
-                      <p className="text-[11px] text-emerald-500/80">Actualmente notificando en {company.alert_zones.length} sectores.</p>
+                      <h3 className="text-xl font-bold tracking-tight mb-1">Sistema Global de Alertas</h3>
+                      <p className="text-sm text-muted-foreground">Configure una única alerta para múltiples zonas de cobertura.</p>
+                    </div>
+                    <div className="flex items-center gap-3 bg-secondary/20 px-4 py-2 rounded-2xl border border-border/40">
+                      <Label className="text-xs font-bold uppercase tracking-wider cursor-pointer" htmlFor="global-alert">Estado Global</Label>
+                      <Switch
+                        id="global-alert"
+                        checked={company.alert_active}
+                        onCheckedChange={(val) => updateGlobalAlert({ alert_active: val })}
+                      />
                     </div>
                   </div>
-                )}
-              </div>
-            );
-          })()}
-        </div>
+
+                  <div className="grid md:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                          <Bell className="h-4 w-4 text-primary" />
+                        </div>
+                        <h4 className="font-bold text-sm uppercase tracking-wide">Mensaje de Alerta</h4>
+                      </div>
+                      <Textarea
+                        value={localAlertMessage}
+                        onChange={(e) => setLocalAlertMessage(e.target.value)}
+                        placeholder="Ej: Estamos experimentando intermitencias técnicas en su sector. Las brigadas están trabajando en terreno."
+                        className="min-h-[180px] text-sm bg-muted/10 border-border/20 focus:border-primary/50 transition-all resize-none rounded-xl"
+                      />
+                      <p className="text-[10px] text-muted-foreground italic">Este mensaje se enviará automáticamente si el cliente se encuentra en alguna de las zonas marcadas.</p>
+
+                      {/* Acciones de notificación webhook — el backend guarda + notifica */}
+                      <div className="flex flex-col gap-2 pt-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full gap-2 text-xs border-primary/30 hover:bg-primary/10 hover:text-primary"
+                          onClick={() => sendAlertWebhook("actualizacion")}
+                          disabled={!localAlertMessage.trim()}
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          Actualizar mensaje
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="w-full gap-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                          onClick={() => sendAlertWebhook("ultimo")}
+                          disabled={!localAlertMessage.trim()}
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Enviar último mensaje y finalizar alerta
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                          <MapPin className="h-4 w-4 text-primary" />
+                        </div>
+                        <h4 className="font-bold text-sm uppercase tracking-wide">Zonas Afectadas</h4>
+                      </div>
+
+                      <div className="bg-muted/5 border border-border/20 rounded-xl overflow-hidden">
+                        <ScrollArea className="h-[200px]">
+                          <div className="p-4 grid gap-2">
+                            {zones.map(zone => (
+                              <div
+                                key={zone.id}
+                                className={`flex items-center gap-3 p-2.5 rounded-lg border transition-all cursor-pointer ${company.alert_zones?.includes(zone.id)
+                                  ? 'bg-primary/10 border-primary/30'
+                                  : 'bg-background/50 border-transparent hover:border-border/30'
+                                  }`}
+                                onClick={() => toggleZoneInAlert(zone.id)}
+                              >
+                                <div className="h-4 w-4 rounded-full" style={{ backgroundColor: zone.color }} />
+                                <span className="text-xs font-semibold flex-1">{zone.name}</span>
+                                <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${company.alert_zones?.includes(zone.id) ? 'bg-primary border-primary' : 'border-muted-foreground/30'
+                                  }`}>
+                                  {company.alert_zones?.includes(zone.id) && <Save className="w-3 h-3 text-white" />}
+                                </div>
+                              </div>
+                            ))}
+                            {zones.length === 0 && (
+                              <div className="py-8 text-center text-muted-foreground text-xs italic">
+                                No hay zonas creadas aún.
+                              </div>
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground italic text-right">Haga clic en una zona para incluirla o excluirla de la alerta activa.</p>
+                    </div>
+                  </div>
+
+                  {company.alert_active && company.alert_zones.length > 0 && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in fade-in zoom-in duration-300">
+                      <div className="h-10 w-10 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
+                        <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-emerald-500 uppercase tracking-wide">Alerta Activa</p>
+                        <p className="text-[11px] text-emerald-500/80">Actualmente notificando en {company.alert_zones.length} sectores.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Zonas de alerta dibujadas ── */}
+                  <div className="border-t border-border/10 pt-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h4 className="font-bold text-sm uppercase tracking-wide flex items-center gap-2">
+                          <ShieldAlert className="h-4 w-4 text-red-500" />
+                          Zonas de Alerta en Mapa
+                        </h4>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Dibuja zonas personalizadas sobre el mapa. Cuando un cliente esté dentro, se activa la alerta.
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="gap-2 bg-red-500 hover:bg-red-600 text-white shadow-md shadow-red-500/20"
+                        onClick={() => setShowAlertMap(true)}
+                      >
+                        <ShieldAlert className="h-4 w-4" />
+                        Abrir mapa para dibujar
+                      </Button>
+                    </div>
+                    <div className="rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3 text-xs text-muted-foreground flex items-start gap-2">
+                      <WandSparkles className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                      <span>
+                        Las zonas dibujadas trabajan junto con las zonas de cobertura marcadas arriba,
+                        bajo el mismo mensaje y estado global.
+                      </span>
+                    </div>
+                  </div>
+
+                </div>
+              );
+            })()}
+          </div>
+        )}
       </div>
       <style>{`
         /* Evitar que el contenedor base de Leaflet quede invisible */

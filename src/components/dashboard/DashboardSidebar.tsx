@@ -1,3 +1,4 @@
+import React from "react";
 import {
   Sidebar,
   SidebarContent,
@@ -12,7 +13,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   Users, Database, FolderKanban, Home,
-  HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle, Zap,
+  HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle, Zap, CreditCard, ClipboardList, BadgeDollarSign, CalendarDays,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -29,12 +30,15 @@ interface DashboardSidebarProps {
   toggles?: UserToggle[];
   companyRole?: string | null;
   companyName?: string;
+  isSimulating?: boolean;
+  creditsEnabled?: boolean;
+  iconSize?: number;
 }
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  administrador: ["team", "inbox", "coverage", "tickets"],
-  supervisor: ["inbox", "tickets"],
-  operador: ["inbox", "tickets"],
+  administrador: ["team", "inbox", "coverage", "tickets", "schedule"],
+  supervisor:    ["inbox", "tickets", "schedule"],
+  operador:      ["inbox", "tickets"],
 };
 
 const iconMap: Record<string, any> = {
@@ -57,8 +61,8 @@ const toggleItemClass = `
   hover:bg-secondary/60 hover:translate-x-0.5
 `;
 
-export default function DashboardSidebar({ isAdmin, activeView, onViewChange, toggles = [], companyRole, companyName }: DashboardSidebarProps) {
-  const { state, setOpen, isMobile } = useSidebar();
+export default function DashboardSidebar({ isAdmin, activeView, onViewChange, toggles = [], companyRole, companyName, isSimulating = false, creditsEnabled = false, iconSize = 24 }: DashboardSidebarProps) {
+  const { state, setOpenMobile, isMobile, setOpen } = useSidebar();
   const collapsed = state === "collapsed";
 
   const hasPermission = (view: string): boolean => {
@@ -78,24 +82,24 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
       <SidebarMenuButton
         onClick={() => {
           onViewChange(view);
-          if (isMobile) {
-            setOpen(false); // only close if it's acting as a real drawer
-          } else {
-            setOpen(false); // auto-collapse sidebar on desktop when navigating to leave more room
-          }
+          if (isMobile) setOpenMobile(false);
+          if (view === 'inbox') setOpen(false);
         }}
         isActive={activeView === view}
         tooltip={label}
         className={className}
       >
-        <Icon className="w-[18px] h-[18px] flex-shrink-0 opacity-80" />
-        <span>{label}</span>
+        <Icon
+          className="flex-shrink-0 opacity-80 transition-all duration-200"
+          style={collapsed ? undefined : { width: 18, height: 18 }}
+        />
+        <span className="group-data-[state=collapsed]:hidden">{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
   );
 
   return (
-    <Sidebar className="border-r border-border/20 bg-gradient-to-b from-card/60 to-card/40 backdrop-blur-xl z-50" collapsible="icon">
+    <Sidebar className="border-r border-border/20 bg-card dark:bg-gradient-to-b dark:from-card/60 dark:to-card/40 backdrop-blur-xl z-50" collapsible="icon" style={{ '--sidebar-icon-size': `${iconSize}px` } as React.CSSProperties}>
       {/* Logo */}
       <div className="h-16 flex items-center px-4 border-b border-border/20">
         <div className="flex items-center gap-3 overflow-hidden">
@@ -127,12 +131,14 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
                 <NavItem view="home" icon={Home} label="Inicio" />
-                <NavItem view="users" icon={Users} label="Empresas" />
-                <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />
-                <NavItem view="tickets" icon={Ticket} label="Tickets" />
+                <div className="tour-sidebar-empresas"><NavItem view="users" icon={Users} label="Empresas" /></div>
+                <div className="tour-sidebar-bandeja"><NavItem view="inbox" icon={MessageCircle} label="Bandeja" /></div>
+                <div className="tour-sidebar-tickets"><NavItem view="tickets" icon={Ticket} label="Tickets" /></div>
                 <NavItem view="shortcuts" icon={Zap} label="Atajos" />
-                <NavItem view="coverage" icon={MapPin} label="Coberturas" />
+                <div className="tour-sidebar-coberturas"><NavItem view="coverage" icon={MapPin} label="Coberturas" /></div>
+                <NavItem view="schedule" icon={CalendarDays} label="Agenda" />
                 <NavItem view="reports" icon={AlertCircle} label="Reportes IA" />
+                <NavItem view="credit-requests" icon={BadgeDollarSign} label="Solicitudes Créditos" />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -146,10 +152,13 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
               <SidebarMenu className="space-y-0.5">
                 <NavItem view="home" icon={Home} label="Inicio" />
                 {hasPermission("team") && <NavItem view="team" icon={UserCog} label="Equipo" />}
-                {hasPermission("inbox") && <NavItem view="inbox" icon={MessageCircle} label="Bandeja" />}
-                {hasPermission("tickets") && <NavItem view="tickets" icon={Ticket} label="Tickets" />}
-                {hasPermission("inbox") && <NavItem view="shortcuts" icon={Zap} label="Atajos" />}
+                {hasPermission("inbox") && <div className="tour-sidebar-bandeja"><NavItem view="inbox" icon={MessageCircle} label="Bandeja" /></div>}
+                {hasPermission("tickets") && <div className="tour-sidebar-tickets"><NavItem view="tickets" icon={Ticket} label="Tickets" /></div>}
+                {hasPermission("inbox") && <div className="tour-sidebar-atajos"><NavItem view="shortcuts" icon={Zap} label="Atajos" /></div>}
                 {hasPermission("coverage") && <NavItem view="coverage" icon={MapPin} label="Coberturas" />}
+                {hasPermission("schedule") && <NavItem view="schedule" icon={CalendarDays} label="Agenda" />}
+                {companyRole === "administrador" && creditsEnabled && <NavItem view="credits" icon={CreditCard} label="Créditos" />}
+                <NavItem view="my-reports" icon={ClipboardList} label="Mis Reportes" />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -166,13 +175,16 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 {toggles.map(tog => (
                   <SidebarMenuItem key={tog.id}>
                     <SidebarMenuButton
-                      onClick={() => onViewChange(`toggle-${tog.id}`, undefined, tog)}
+                      onClick={() => { onViewChange(`toggle-${tog.id}`, undefined, tog); if (isMobile) setOpenMobile(false); }}
                       isActive={activeView === `toggle-${tog.id}`}
                       tooltip={tog.name}
                       className={toggleItemClass}
                     >
-                      <Bot className="w-[18px] h-[18px] flex-shrink-0 opacity-80" />
-                      <span className="truncate">{tog.name}</span>
+                      <Bot
+                          className="flex-shrink-0 opacity-80 transition-all duration-200"
+                          style={collapsed ? undefined : { width: 18, height: 18 }}
+                        />
+                      <span className="truncate group-data-[state=collapsed]:hidden">{tog.name}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
@@ -188,6 +200,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
                 <NavItem view="home" icon={Home} label="Inicio" />
+                <NavItem view="my-reports" icon={ClipboardList} label="Mis Reportes" />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -201,8 +214,11 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
               tooltip="Ayuda"
               className="rounded-xl h-10 gap-3 text-sm text-muted-foreground/70 hover:text-foreground hover:bg-secondary/50 transition-all duration-200"
             >
-              <HelpCircle className="w-[18px] h-[18px] flex-shrink-0" />
-              <span>Ayuda</span>
+              <HelpCircle
+                className="flex-shrink-0 transition-all duration-200"
+                style={collapsed ? undefined : { width: 18, height: 18 }}
+              />
+              <span className="group-data-[state=collapsed]:hidden">Ayuda</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

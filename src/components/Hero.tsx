@@ -98,72 +98,37 @@ export function Hero() {
             </motion.div>
           </motion.div>
 
-          {/* Right: Solar System */}
+          {/* Right: Video animación espada — blended */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
+            initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.8, delay: 0.3 }}
-            className="flex justify-center"
+            transition={{ duration: 1.1, delay: 0.3 }}
+            className="relative flex justify-center items-center"
           >
-            <div className="relative w-[340px] h-[340px] lg:w-[480px] lg:h-[480px]">
-              {/* Orbit rings */}
-              <div
-                className="absolute rounded-full border border-primary/15"
-                style={{ width: "58%", height: "58%", top: "21%", left: "21%" }}
-              />
-              <div
-                className="absolute rounded-full border border-primary/10"
-                style={{ width: "78%", height: "78%", top: "11%", left: "11%" }}
-              />
-              <div
-                className="absolute rounded-full border border-primary/8"
-                style={{ width: "98%", height: "98%", top: "1%", left: "1%" }}
-              />
+            {/* Glow ambiental que emana desde el centro — capas múltiples */}
+            <div className="absolute inset-0 m-auto w-64 h-64 rounded-full bg-primary/25 blur-[80px] pointer-events-none" />
+            <div className="absolute inset-0 m-auto w-40 h-40 rounded-full bg-violet-500/20 blur-[50px] pointer-events-none" />
+            <div className="absolute inset-0 m-auto w-24 h-24 rounded-full bg-primary/30 blur-[30px] pointer-events-none animate-pulse" />
 
-              {/* Central orb glow */}
-              <motion.div
-                className="absolute inset-0 m-auto w-40 h-40 lg:w-48 lg:h-48 rounded-full bg-gradient-to-br from-primary/40 to-accent/20 blur-2xl"
-                animate={{ scale: [1, 1.15, 1], opacity: [0.6, 0.9, 0.6] }}
-                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+            {/* Video sin caja — blend mode hace el negro transparente */}
+            <div className="relative w-full max-w-[420px] lg:w-[620px] xl:w-[680px]">
+              <video
+                src="/animacion_espada.mp4"
+                autoPlay
+                loop
+                muted
+                playsInline
+                disablePictureInPicture
+                className="w-full h-auto"
+                style={{
+                  mixBlendMode: "screen",
+                  filter: "contrast(1.6) brightness(1.0) saturate(1.4)",
+                  maskImage: "radial-gradient(ellipse 60% 70% at 50% 48%, black 20%, rgba(0,0,0,0.8) 45%, transparent 72%)",
+                  WebkitMaskImage: "radial-gradient(ellipse 60% 70% at 50% 48%, black 20%, rgba(0,0,0,0.8) 45%, transparent 72%)",
+                }}
               />
-              {/* Central orb */}
-              <motion.div
-                className="absolute inset-0 m-auto w-28 h-28 lg:w-36 lg:h-36 rounded-full bg-gradient-to-br from-primary via-primary/80 to-accent"
-                animate={{ scale: [1, 1.08, 1] }}
-                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-              />
-
-              {/* Orbiting elements */}
-              {[0, 1, 2].map((i) => {
-                const radii = [110, 150, 190];
-                const sizes = [18, 14, 12];
-                const durations = [12, 18, 24];
-                return (
-                  <div
-                    key={i}
-                    className="absolute animate-orbit"
-                    style={{
-                      width: 0,
-                      height: 0,
-                      top: "50%",
-                      left: "50%",
-                      animationDuration: `${durations[i]}s`,
-                      animationDelay: `${i * -4}s`,
-                      ["--orbit-radius" as string]: `${radii[i]}px`,
-                    }}
-                  >
-                    <div
-                      className="rounded-full bg-primary/80"
-                      style={{
-                        width: `${sizes[i]}px`,
-                        height: `${sizes[i]}px`,
-                        marginTop: `-${sizes[i] / 2}px`,
-                        marginLeft: `-${sizes[i] / 2}px`,
-                      }}
-                    />
-                  </div>
-                );
-              })}
+              {/* Capa transparente encima — bloquea controles nativos del navegador */}
+              <div className="absolute inset-0" style={{ zIndex: 1 }} />
             </div>
           </motion.div>
         </div>

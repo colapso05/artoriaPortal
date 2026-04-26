@@ -4,9 +4,12 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { LogIn, ArrowLeft, Eye, EyeOff, Mail, Lock, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
+import { LogIn, ArrowLeft, Eye, EyeOff, Mail, Lock, CheckCircle2, Loader2, RefreshCw, ShieldAlert, ShieldX } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import PasswordStrengthBar, { isPasswordValid } from "@/components/ui/PasswordStrengthBar";
+import { motion, AnimatePresence } from "framer-motion";
+
+const MAX_ATTEMPTS = 5;
 
 type View = "login" | "forgot" | "code" | "reset";
 
@@ -16,6 +19,9 @@ export default function Portal() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loginAttempts, setLoginAttempts] = useState(0);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const attemptsRef = useRef(0);
 
   // Forgot
   const [view, setView] = useState<View>("login");
@@ -67,12 +73,26 @@ export default function Portal() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError(null);
     setLoading(true);
+
+    // Intentar login directamente — Supabase devuelve error si el email no existe
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      attemptsRef.current += 1;
+      const attempts = attemptsRef.current;
+      setLoginAttempts(attempts);
+      const remaining = MAX_ATTEMPTS - attempts;
+      if (remaining <= 0) {
+        setLoginError("blocked");
+      } else {
+        setLoginError(`invalid:${remaining}`);
+      }
     } else {
+      attemptsRef.current = 0;
+      setLoginAttempts(0);
+      setLoginError(null);
       navigate("/dashboard");
     }
   };
@@ -161,6 +181,12 @@ export default function Portal() {
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      {/* Suprimir el ojo nativo del navegador (Edge/IE/Chrome) en campos password */}
+      <style>{`
+        input[type="password"]::-ms-reveal,
+        input[type="password"]::-ms-clear { display: none; }
+        input::-webkit-credentials-auto-fill-button { display: none !important; }
+      `}</style>
       <div className="w-full max-w-sm">
         <button
           onClick={goBack}
@@ -180,7 +206,7 @@ export default function Portal() {
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
                   <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} required className="mt-1" />
+                  <Input id="email" type="email" value={email} onChange={e => { setEmail(e.target.value); setLoginError(null); }} required className="mt-1" />
                 </div>
                 <div>
                   <Label htmlFor="password">Contraseña</Label>
@@ -199,7 +225,72 @@ export default function Portal() {
                     </Button>
                   </div>
                 </div>
-                <Button type="submit" disabled={loading} className="w-full glow-box">
+                {/* Error de login visual */}
+                <AnimatePresence mode="wait">
+                  {loginError && (
+                    <motion.div
+                      key={loginError}
+                      initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.97 }}
+                      transition={{ duration: 0.2 }}
+                      className={`rounded-xl border px-4 py-3.5 flex gap-3 items-start ${
+                        loginError === "blocked"
+                          ? "bg-red-500/10 border-red-500/30"
+                          : "bg-amber-500/10 border-amber-500/30"
+                      }`}
+                    >
+                      {loginError === "blocked" || loginError === "no_account" ? (
+                        <ShieldX className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                      ) : (
+                        <ShieldAlert className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                      )}
+                      <div className="min-w-0">
+                        {loginError === "no_account" ? (
+                          <>
+                            <p className="text-sm font-bold text-red-500">Correo no registrado</p>
+                            <p className="text-xs text-red-400/80 mt-0.5 leading-relaxed">
+                              No existe ninguna cuenta asociada a este correo electrónico.
+                            </p>
+                          </>
+                        ) : loginError === "blocked" ? (
+                          <>
+                            <p className="text-sm font-bold text-red-500">Cuenta bloqueada temporalmente</p>
+                            <p className="text-xs text-red-400/80 mt-0.5 leading-relaxed">
+                              Superaste el límite de intentos. Por seguridad, usa la opción de recuperación de contraseña.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-sm font-bold text-amber-500">Contraseña incorrecta</p>
+                            <p className="text-xs text-amber-400/80 mt-0.5">
+                              Te{" "}
+                              <span className="font-black text-amber-400">
+                                {loginError.split(":")[1] === "1"
+                                  ? "queda 1 intento"
+                                  : `quedan ${loginError.split(":")[1]} intentos`}
+                              </span>{" "}
+                              antes de bloquear tu cuenta.
+                            </p>
+                            {/* Barra de intentos */}
+                            <div className="flex gap-1 mt-2.5">
+                              {Array.from({ length: MAX_ATTEMPTS }).map((_, i) => (
+                                <div
+                                  key={i}
+                                  className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
+                                    i < loginAttempts ? "bg-red-500" : "bg-amber-500/20"
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <Button type="submit" disabled={loading || loginError === "blocked" || loginError === "no_account"} className="w-full glow-box">
                   <LogIn className="w-4 h-4 mr-2" />
                   {loading ? "Ingresando..." : "Ingresar"}
                 </Button>
@@ -208,7 +299,9 @@ export default function Portal() {
                   onClick={() => { setView("forgot"); setForgotEmail(email); setForgotError(""); }}
                   className="w-full text-center text-sm text-muted-foreground hover:text-primary transition-colors"
                 >
-                  ¿Olvidé mi contraseña?
+                  {loginError === "blocked" ? (
+                    <span className="text-red-400 font-semibold hover:text-red-300">→ Recuperar mi contraseña</span>
+                  ) : "¿Olvidé mi contraseña?"}
                 </button>
               </form>
             </>

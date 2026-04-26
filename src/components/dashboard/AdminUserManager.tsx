@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Plus, Trash2, Settings2, Pencil, Building2, KeyRound, Copy, Eye, EyeOff,
   MoreHorizontal, Link2, Phone, Key, RotateCw, ChevronLeft, Map, Users as UsersIcon, Settings,
-  FileUp, AlertCircle, Save, Clock, WandSparkles
+  FileUp, AlertCircle, Save, WandSparkles, Tag
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -46,9 +46,19 @@ interface CompanyConfig {
   user_id: string | null;
   owner_id?: string;
   auto_close_message?: string;
+  alert_webhook_path?: string | null;
+  credits_enabled?: boolean;
 }
 
-export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: string, name: string) => void }) {
+interface SimulateUserPayload {
+  userId: string;
+  name: string;
+  role: string;
+  operatorRoles: string[];
+  companyName?: string;
+}
+
+export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSimulate?: (id: string, name: string) => void; onSimulateUser?: (companyId: string, payload: SimulateUserPayload) => void }) {
   const [companies, setCompanies] = useState<CompanyConfig[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<CompanyConfig | null>(null);
   const [loading, setLoading] = useState(false);
@@ -77,7 +87,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     ycloud_phone: "",
     config_id: null as string | null,
     webhook_id: "",
-    auto_close_message: ""
+    auto_close_message: "",
+    credits_enabled: false as boolean,
   });
 
   // Reset password
@@ -100,9 +111,30 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const { toast } = useToast();
   const webhookBaseUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ycloud-webhook`;
 
+  // Claves sensibles cargadas desde el servidor — nunca hardcodeadas en el bundle
+  const [serviceKey, setServiceKey] = useState<string>("");
+  const [botWebhookUrl, setBotWebhookUrl] = useState<string>("");
+  const [supabaseUrl, setSupabaseUrl] = useState<string>(import.meta.env.VITE_SUPABASE_URL || "");
+
   useEffect(() => {
     fetchCompanies();
+    fetchSecureConfig();
   }, []);
+
+  const fetchSecureConfig = async () => {
+    try {
+      // Fix 1: service_role key — nunca en el bundle
+      const { data: keyData } = await supabase.functions.invoke("get-service-key");
+      if (keyData?.service_key) setServiceKey(keyData.service_key);
+      if (keyData?.supabase_url) setSupabaseUrl(keyData.supabase_url);
+
+      // Fix 2: webhook URL del bot — nunca en el bundle
+      const { data: configData } = await supabase.functions.invoke("get-config");
+      if (configData?.bot_webhook_url) setBotWebhookUrl(configData.bot_webhook_url);
+    } catch (e) {
+      console.warn("No se pudo cargar config segura:", e);
+    }
+  };
 
   const fetchCompanies = async () => {
     setLoading(true);
@@ -123,11 +155,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
       toast({ title: "WhatsApp Obligatorio", description: "Debes configurar la API Key y el teléfono de la empresa.", variant: "destructive" });
       return;
     }
-    if (!isPasswordValid(newPassword)) {
-      toast({ title: "Contraseña insegura", description: "La contraseña no cumple los requisitos de seguridad.", variant: "destructive" });
-      return;
-    }
-
     setLoading(true);
     const fullPhone = `${countryPrefix}${newYcloudPhone.replace(/^\+/, '')}`;
 
@@ -165,6 +192,15 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
           user_id: userId,
           role: "administrador"
         });
+
+        // Seed etiquetas de ticket por defecto
+        await (supabase as any).from("ticket_labels").insert([
+          { company_id: configData.id, key: "abierto",             label: "Abierto",             color: "#22c55e", sort_order: 1, is_initial: true,  is_final: false },
+          { company_id: configData.id, key: "en_proceso",          label: "En Proceso",          color: "#3b82f6", sort_order: 2, is_initial: false, is_final: false },
+          { company_id: configData.id, key: "esperando_respuesta", label: "Esperando Respuesta", color: "#f59e0b", sort_order: 3, is_initial: false, is_final: false },
+          { company_id: configData.id, key: "resuelto",            label: "Resuelto",            color: "#a855f7", sort_order: 4, is_initial: false, is_final: false },
+          { company_id: configData.id, key: "cerrado",             label: "Cerrado",             color: "#64748b", sort_order: 5, is_initial: false, is_final: true  },
+        ]);
       }
 
 
@@ -172,7 +208,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
 
     // Notify external webhook
     try {
-      await fetch("https://bot.dropptelecom.cl/webhook/artoriaweb", {
+      if (!botWebhookUrl) throw new Error("Bot webhook URL no disponible");
+      await fetch(botWebhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -194,6 +231,31 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     setDialogOpen(false);
     fetchCompanies();
     setLoading(false);
+  };
+
+  const seedDefaultLabels = async (companyId: string) => {
+    // Verificar si ya tiene etiquetas para no duplicar
+    const { data: existing } = await (supabase as any)
+      .from("ticket_labels")
+      .select("id")
+      .eq("company_id", companyId)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      toast({ title: "Ya tiene etiquetas", description: "Esta empresa ya tiene etiquetas de ticket configuradas.", variant: "destructive" });
+      return;
+    }
+    const { error } = await (supabase as any).from("ticket_labels").insert([
+      { company_id: companyId, key: "abierto",             label: "Abierto",             color: "#22c55e", sort_order: 1, is_initial: true,  is_final: false },
+      { company_id: companyId, key: "en_proceso",          label: "En Proceso",          color: "#3b82f6", sort_order: 2, is_initial: false, is_final: false },
+      { company_id: companyId, key: "esperando_respuesta", label: "Esperando Respuesta", color: "#f59e0b", sort_order: 3, is_initial: false, is_final: false },
+      { company_id: companyId, key: "resuelto",            label: "Resuelto",            color: "#a855f7", sort_order: 4, is_initial: false, is_final: false },
+      { company_id: companyId, key: "cerrado",             label: "Cerrado",             color: "#64748b", sort_order: 5, is_initial: false, is_final: true  },
+    ]);
+    if (error) {
+      toast({ title: "Error al crear etiquetas", description: error.message, variant: "destructive" });
+    } else {
+      toast({ title: "✅ Etiquetas por defecto creadas" });
+    }
   };
 
   const handleDeleteUser = async (userId: string) => {
@@ -218,7 +280,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
       ycloud_phone: company.ycloud_phone || "",
       config_id: company.id,
       webhook_id: company.webhook_id || "",
-      auto_close_message: company.auto_close_message || ""
+      auto_close_message: company.auto_close_message || "",
+      credits_enabled: company.credits_enabled ?? false,
     });
     setEditUserDialogOpen(true);
   };
@@ -245,7 +308,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
             ycloud_api_key: editUserData.ycloud_api_key,
             ycloud_phone: editUserData.ycloud_phone,
             company_name: editUserData.display_name,
-            auto_close_message: editUserData.auto_close_message
+            auto_close_message: editUserData.auto_close_message,
+            credits_enabled: editUserData.credits_enabled,
           })
           .eq("id", editUserData.config_id);
         if (updateConfigError) throw new Error(updateConfigError.message);
@@ -298,12 +362,30 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
     if (!selectedCompany || !importJson.trim()) return;
     setIsImporting(true);
     try {
-      const data = JSON.parse(importJson);
-      if (!Array.isArray(data)) throw new Error("El JSON debe ser un array de zonas.");
+      const parsed = JSON.parse(importJson);
+
+      // Normalize: accept GeoJSON FeatureCollection OR array of zones
+      let data: any[];
+      if (parsed?.type === "FeatureCollection" && Array.isArray(parsed.features)) {
+        // Convert GeoJSON FeatureCollection → zone array
+        data = parsed.features.map((f: any, i: number) => {
+          const coords = f.geometry?.coordinates?.[0]; // first ring of polygon
+          if (!coords) throw new Error(`Feature ${i + 1} no tiene coordenadas válidas`);
+          return {
+            name: f.properties?.name || f.properties?.nombre || `Zona ${i + 1}`,
+            color: f.properties?.color || "#3b82f6",
+            polygon: coords, // already [lng, lat] pairs, will be inverted below
+          };
+        });
+      } else if (Array.isArray(parsed)) {
+        data = parsed;
+      } else {
+        throw new Error("El JSON debe ser un array de zonas o un GeoJSON FeatureCollection.");
+      }
 
       const zonesToInsert = data.map((z: any) => {
-        if (!z.name || !Array.isArray(z.polygon)) throw new Error(`Zona sin nombre o polígono inválido: ${JSON.stringify(z)}`);
-        
+        if (!Array.isArray(z.polygon)) throw new Error(`Zona sin polígono inválido: ${JSON.stringify(z)}`);
+
         // Invertir [lng, lat] -> [lat, lng]
         const invertedPolygon = z.polygon.map((p: any) => {
           if (!Array.isArray(p) || p.length < 2) return p;
@@ -312,9 +394,9 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
 
         return {
           company_id: selectedCompany.id,
-          name: z.name,
+          name: z.name || "Zona sin nombre",
           polygon: invertedPolygon,
-          color: z.color || "#3b82f6", // Default blue
+          color: z.color || "#3b82f6",
           alert_active: true
         };
       });
@@ -426,15 +508,18 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const copyCurlDerivacion = (companyId: string) => {
     const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/create-ticket" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
   -d '{
     "company_id": "${companyId}",
     "wa_id": "{{ $json.wa_id }}",
     "customer_name": "{{ $json.customer_name }}",
-    "rut": "{{ $json.rut }}",
     "reason": "{{ $json.reason }}",
     "category": "{{ $json.category }}",
-    "assigned_role": "{{ $json.assigned_role }}"
+    "assigned_role": "{{ $json.assigned_role }}",
+    "rut": "{{ $json.rut }}",
+    "customer_address": "{{ $json.customer_address }}",
+    "customer_email": "{{ $json.customer_email }}",
+    "skip_nocodb": true
   }'`;
     navigator.clipboard.writeText(curl);
     toast({ title: "¡Copiado!", description: "cURL de Derivación copiado al portapapeles" });
@@ -443,7 +528,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const copyCurlToggleAlert = (companyId: string) => {
     const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/toggle-alert" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
   -d '{
     "company_id": "${companyId}",
     "active": true,
@@ -457,7 +542,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const copyCurlFactibilidad = (companyId: string) => {
     const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-coverage" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
   -d '{
     "company_id": "${companyId}",
     "lat": -33.5281408,
@@ -471,36 +556,64 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
   const copyCurlAlertStatus = (companyId: string) => {
     const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/get-alert-status" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
   -d '{"company_id": "${companyId}"}'`;
     navigator.clipboard.writeText(curl);
     toast({ title: "¡Copiado!", description: "cURL de Estado Alerta copiado al portapapeles" });
   };
 
   const copyCurlSistemaAlerta = (companyId: string) => {
-    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-coverage" \\
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-alert-zone" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
-  -d '{
-    "company_id": "${companyId}",
-    "lat": -33.5281408,
-    "lng": -70.6984815,
-    "mode": "alert"
-  }'`;
+  -H "Authorization: Bearer ${serviceKey}" \\
+  -d '{"lat": -33.4489, "lng": -70.6693, "company_id": "${companyId}"}'`;
     navigator.clipboard.writeText(curl);
-    toast({ title: "¡Copiado!", description: "cURL de Sistema Alerta copiado al portapapeles" });
+    toast({ title: "¡Copiado!", description: "cURL Sistema de Alerta copiado al portapapeles" });
+  };
+
+  const copyAlertWebhookUrl = (company: any) => {
+    if (!company?.alert_webhook_path) {
+      toast({ title: "Sin webhook configurado", description: "Esta empresa no tiene webhook de alerta. Ejecuta el SQL de migración.", variant: "destructive" });
+      return;
+    }
+    const baseWebhook = (botWebhookUrl || "").replace(/\/[^/]+$/, "");
+    const url = `${baseWebhook}/${company.alert_webhook_path}`;
+    navigator.clipboard.writeText(url);
+    toast({ title: "✅ Webhook de Alertas copiado", description: url });
   };
 
   const copyCurlVerificarTicket = (companyId: string) => {
     const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/check-ticket" \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzEwMzgwMDAsImV4cCI6MTkyODgwNDQwMH0.cJkRSxkbTHXdUBJRT7GMPP2Qid9bROifddFxkMFu_hk" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
   -d '{
     "company_id": "${companyId}",
-    "wa_id": "+56912345678"
+    "rut": "12.345.678-9"
   }'`;
     navigator.clipboard.writeText(curl);
     toast({ title: "¡Copiado!", description: "cURL de Verificar Ticket copiado al portapapeles" });
+  };
+
+  const copyCurlDeductCredit = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/deduct-credit" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
+  -d '{
+    "company_id": "${companyId}",
+    "amount": 1,
+    "description": "Mensaje WhatsApp enviado"
+  }'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Descontar Crédito copiado al portapapeles" });
+  };
+
+  const copyCurlGetCreditBalance = (companyId: string) => {
+    const curl = `curl -X POST "http://192.168.102.3:8000/functions/v1/get-credit-balance" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${serviceKey}" \\
+  -d '{ "company_id": "${companyId}" }'`;
+    navigator.clipboard.writeText(curl);
+    toast({ title: "¡Copiado!", description: "cURL de Ver Saldo de Créditos copiado al portapapeles" });
   };
 
   const copyJsonCoberturaN8n = async (companyId: string) => {
@@ -738,7 +851,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                 <div className="pt-2 border-t border-border/10 mt-2 space-y-2">
                   <Label>Webhook Derivación de Tickets (Dev)</Label>
                   <div className="flex gap-2">
-                    <Input readOnly value={`POST ${import.meta.env.VITE_SUPABASE_URL || 'YOUR_SUPABASE_URL'}/functions/v1/create-ticket`} className="bg-secondary/30 text-[11px] font-mono text-muted-foreground" />
+                    <Input readOnly value={`POST http://192.168.102.3:8000/functions/v1/create-ticket`} className="bg-secondary/30 text-[11px] font-mono text-muted-foreground" />
                   </div>
                   <div className="flex gap-2">
                     <Input readOnly value={`Authorization: Bearer SERVICE_ROLE_KEY`} className="bg-secondary/30 text-[11px] font-mono text-muted-foreground" />
@@ -748,15 +861,20 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                   </div>
                 </div>
               )}
-              <div className="pt-2 border-t border-border/10 mt-2 space-y-2">
-                <Label>Mensaje de cierre automático (72h)</Label>
-                <Textarea 
-                  value={editUserData.auto_close_message} 
-                  onChange={(e) => setEditUserData(prev => ({ ...prev, auto_close_message: e.target.value }))}
-                  placeholder="El mensaje predeterminado se usará si este campo está vacío."
-                  className="min-h-[100px] text-xs"
-                />
-                <p className="text-[10px] text-muted-foreground italic">Este mensaje se enviará automáticamente cuando un ticket lleve 72h sin actividad.</p>
+              <div className="pt-2 border-t border-border/10 mt-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label className="text-sm font-semibold">Créditos WhatsApp</Label>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">Habilita el sistema de créditos para esta empresa. El widget de saldo aparecerá en su panel.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditUserData(prev => ({ ...prev, credits_enabled: !prev.credits_enabled }))}
+                    className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${editUserData.credits_enabled ? "bg-primary" : "bg-secondary/60"}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200 ${editUserData.credits_enabled ? "translate-x-5" : "translate-x-0"}`} />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -827,11 +945,17 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56 bg-card border-border/40">
-                  <DropdownMenuItem 
-                    onClick={() => onSimulate?.(selectedCompany.id, selectedCompany.company_name)} 
+                  <DropdownMenuItem
+                    onClick={() => onSimulate?.(selectedCompany.id, selectedCompany.company_name)}
                     className="cursor-pointer gap-2 text-primary focus:text-primary font-bold"
                   >
                     <WandSparkles className="w-4 h-4" /> Simular esta empresa
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => seedDefaultLabels(selectedCompany.id)}
+                    className="cursor-pointer gap-2"
+                  >
+                    <Tag className="w-4 h-4" /> Crear etiquetas por defecto
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="bg-border/20" />
                   <DropdownMenuItem onClick={() => copyWebhook(selectedCompany.webhook_id)} className="cursor-pointer gap-2">
@@ -852,8 +976,17 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                   <DropdownMenuItem onClick={() => copyCurlSistemaAlerta(selectedCompany.id)} className="cursor-pointer gap-2">
                     <Copy className="w-4 h-4" /> cURL Sistema Alerta
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyAlertWebhookUrl(selectedCompany)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> Webhook Alertas (n8n)
+                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => copyCurlVerificarTicket(selectedCompany.id)} className="cursor-pointer gap-2">
                     <Copy className="w-4 h-4" /> cURL Verificar Ticket
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlDeductCredit(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Descontar Crédito
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => copyCurlGetCreditBalance(selectedCompany.id)} className="cursor-pointer gap-2">
+                    <Copy className="w-4 h-4" /> cURL Ver Saldo Créditos
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => copyJsonCoberturaN8n(selectedCompany.id)} className="cursor-pointer gap-2">
                     <Copy className="w-4 h-4" /> JSON Cobertura n8n
@@ -884,11 +1017,12 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
             </TabsList>
 
             <TabsContent value="equipo" className="space-y-6 outline-none">
-              <CompanyTeamManager 
-                companyId={selectedCompany.id} 
-                companyName={selectedCompany.company_name} 
-                onOpenResetPassword={(userId) => openResetPassword(userId)} // Pass the handler
-                onSimulate={onSimulate} // Pass through if available
+              <CompanyTeamManager
+                companyId={selectedCompany.id}
+                companyName={selectedCompany.company_name}
+                onOpenResetPassword={(userId) => openResetPassword(userId)}
+                onSimulate={onSimulate}
+                onSimulateUser={onSimulateUser ? (payload) => onSimulateUser(selectedCompany.id, { ...payload, companyName: selectedCompany.company_name }) : undefined}
               />
             </TabsContent>
 
@@ -969,22 +1103,6 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                 </div>
               </div>
 
-              <div className="rounded-xl border border-border/30 bg-card p-6 space-y-4">
-                <div className="flex items-center gap-2 border-b border-border/10 pb-3">
-                  <Clock className="w-5 h-5 text-primary" />
-                  <h3 className="font-bold">Automatización de Cierre</h3>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground uppercase">Mensaje de cierre automático (72h)</Label>
-                  <div className="bg-muted/10 rounded-md p-3 border border-border/20 min-h-[80px]">
-                    <p className="text-sm text-muted-foreground whitespace-pre-wrap italic">
-                      {selectedCompany.auto_close_message || "Usando mensaje predeterminado del sistema (72h sin actividad)..."}
-                    </p>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground italic">Este mensaje se enviará automáticamente si el ticket no tiene actividad por 72 horas.</p>
-                </div>
-              </div>
-
               <div className="flex justify-end pt-4">
                 <Button 
                   onClick={() => {
@@ -996,7 +1114,8 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                       ycloud_phone: selectedCompany.ycloud_phone,
                       config_id: selectedCompany.id,
                       webhook_id: selectedCompany.webhook_id,
-                      auto_close_message: selectedCompany.auto_close_message || ""
+                      auto_close_message: selectedCompany.auto_close_message || "",
+                      credits_enabled: (selectedCompany as any).credits_enabled ?? false,
                     });
                     setEditUserDialogOpen(true);
                   }}
@@ -1120,6 +1239,9 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
                         <DropdownMenuItem onClick={() => copyCurlSistemaAlerta(c.id)} className="cursor-pointer gap-2">
                           <Copy className="w-4 h-4" /> cURL Sistema Alerta
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => copyAlertWebhookUrl(c)} className="cursor-pointer gap-2">
+                          <Copy className="w-4 h-4" /> Webhook Alertas (n8n)
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => copyCurlVerificarTicket(c.id)} className="cursor-pointer gap-2">
                           <Copy className="w-4 h-4" /> cURL Verificar Ticket
                         </DropdownMenuItem>
@@ -1163,7 +1285,7 @@ export default function AdminUserManager({ onSimulate }: { onSimulate?: (id: str
             <div className="bg-primary/5 border border-primary/10 p-3 rounded-lg flex gap-3">
               <AlertCircle className="w-5 h-5 text-primary shrink-0" />
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                <strong className="text-foreground">¡Atención!</strong> Al importar, se <span className="text-destructive font-bold">borrarán todas las zonas actuales</span> de esta empresa para reemplazarlas por las nuevas. El formato debe ser un array de objetos JSON con <code className="bg-secondary px-1 rounded">name</code> y <code className="bg-secondary px-1 rounded">polygon</code> como [[lng, lat], ...].
+                <strong className="text-foreground">¡Atención!</strong> Al importar, se <span className="text-destructive font-bold">borrarán todas las zonas actuales</span> de esta empresa. Acepta dos formatos: un <strong>GeoJSON FeatureCollection</strong> (exportado desde geojson.io u otros) o un array de objetos con <code className="bg-secondary px-1 rounded">name</code> y <code className="bg-secondary px-1 rounded">polygon</code> como [[lng, lat], ...].
               </p>
             </div>
             

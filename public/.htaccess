@@ -1,0 +1,64 @@
+# ============================================================
+# Artoria.cl — Security Headers + HTTPS Redirect
+# ============================================================
+
+# ── HTTPS redirect (HTTP → HTTPS, 301 permanente) ───────────
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# ── SPA fallback (React Router) ─────────────────────────────
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ /index.html [L]
+
+# ── Security Headers ─────────────────────────────────────────
+<IfModule mod_headers.c>
+
+  # Fuerza HTTPS por 1 año e incluye subdominios
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+  # Bloquea que la página se cargue en un iframe (clickjacking)
+  Header always set X-Frame-Options "SAMEORIGIN"
+
+  # Evita que el navegador adivine el tipo de contenido (MIME sniffing)
+  Header always set X-Content-Type-Options "nosniff"
+
+  # Controla información del referrer enviada a otros sitios
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+  # Restringe acceso a APIs del navegador
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=()"
+
+  # Content Security Policy — ajustado para Supabase, YCloud y librerías usadas
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://api.ycloud.com https://*.supabase.co; media-src 'self' blob: https:; frame-ancestors 'none';"
+
+  # Elimina header que expone tecnología del servidor
+  Header always unset X-Powered-By
+  Header always unset Server
+
+</IfModule>
+
+# ── Proteger archivos sensibles ──────────────────────────────
+<FilesMatch "(^\.env|\.env\.*|\.git|composer\.(json|lock)|package\.json|package-lock\.json)">
+  Order allow,deny
+  Deny from all
+</FilesMatch>
+
+# ── Cache de assets estáticos ────────────────────────────────
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType text/html "access plus 0 seconds"
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType text/css "access plus 1 year"
+  ExpiresByType image/png "access plus 1 year"
+  ExpiresByType image/jpeg "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 year"
+  ExpiresByType image/x-icon "access plus 1 year"
+  ExpiresByType font/woff2 "access plus 1 year"
+</IfModule>
+
+# ── Compresión gzip ──────────────────────────────────────────
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json
+</IfModule>

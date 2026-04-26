@@ -96,18 +96,27 @@ const ROLE_CONFIG = {
   },
 };
 
+interface SimulateUserPayload {
+  userId: string;
+  name: string;
+  role: string;
+  operatorRoles: string[];
+}
+
 interface Props {
   companyId: string;
   companyName: string;
   onOpenResetPassword?: (userId: string) => void;
   onSimulate?: (userId: string, name: string) => void;
+  onSimulateUser?: (payload: SimulateUserPayload) => void;
 }
 
-export default function CompanyTeamManager({ 
-  companyId, 
+export default function CompanyTeamManager({
+  companyId,
   companyName,
   onOpenResetPassword,
-  onSimulate 
+  onSimulate,
+  onSimulateUser,
 }: Props) {
   useEffect(() => {
     console.log(`[Diagnostic] CompanyTeamManager montado: ${companyName} (${companyId})`);
@@ -227,7 +236,10 @@ export default function CompanyTeamManager({
 
       // Notify external webhook
       try {
-        await fetch("https://bot.dropptelecom.cl/webhook/artoriaweb", {
+        const { data: cfg } = await supabase.functions.invoke("get-config");
+        const webhookUrl = cfg?.bot_webhook_url;
+        if (!webhookUrl) throw new Error("Bot webhook URL no disponible");
+        await fetch(webhookUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -481,11 +493,19 @@ export default function CompanyTeamManager({
                           <KeyRound className="w-4 h-4" /> Restablecer contraseña
                         </DropdownMenuItem>
                         {onSimulate && (
-                          <DropdownMenuItem 
-                            onClick={() => onSimulate(u.user_id, u.display_name)} 
+                          <DropdownMenuItem
+                            onClick={() => onSimulate(u.user_id, u.display_name)}
                             className="cursor-pointer gap-2 text-sm text-primary font-medium focus:text-primary"
                           >
                             <Eye className="w-4 h-4" /> Simular vista empresa
+                          </DropdownMenuItem>
+                        )}
+                        {onSimulateUser && (
+                          <DropdownMenuItem
+                            onClick={() => onSimulateUser({ userId: u.user_id, name: u.display_name, role: u.role, operatorRoles: u.operator_roles || [] })}
+                            className="cursor-pointer gap-2 text-sm text-violet-500 font-medium focus:text-violet-500"
+                          >
+                            <Eye className="w-4 h-4" /> Simular como este usuario
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuItem onClick={() => handleDelete(u.user_id)} className="cursor-pointer gap-2 text-destructive focus:text-destructive">
