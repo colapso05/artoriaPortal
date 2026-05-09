@@ -524,7 +524,7 @@ export default function CompanyTeamManager({
 
       {/* Create dialog */}
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
-        <DialogContent className="max-w-2xl bg-card border-border/20 shadow-2xl overflow-y-auto max-h-[90vh]">
+        <DialogContent className="max-w-2xl bg-card border-border/20 shadow-2xl overflow-y-auto max-h-[90vh]" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Nuevo Usuario</DialogTitle>
           </DialogHeader>
@@ -673,7 +673,7 @@ export default function CompanyTeamManager({
 
       {/* Edit dialog */}
       <Dialog open={showEdit} onOpenChange={setShowEdit}>
-        <DialogContent className="max-w-2xl bg-card border-border/20 shadow-2xl overflow-y-auto max-h-[90vh]">
+        <DialogContent className="max-w-2xl bg-card border-border/20 shadow-2xl overflow-y-auto max-h-[90vh]" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Editar Usuario</DialogTitle>
           </DialogHeader>
@@ -777,7 +777,7 @@ export default function CompanyTeamManager({
 
       {/* Reset password dialog */}
       <Dialog open={showResetPw} onOpenChange={setShowResetPw}>
-        <DialogContent>
+        <DialogContent aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Cambiar Contraseña</DialogTitle>
           </DialogHeader>

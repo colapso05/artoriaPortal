@@ -14,12 +14,33 @@ import { Loader2, Plus, UserCog, Pencil, Power, PowerOff, ChevronLeft, Camera, X
 import { motion, AnimatePresence } from "framer-motion";
 import { type Technician, type TechnicianSchedule, TECH_COLORS, DAY_NAMES } from "./types";
 import TechAvatar from "./TechAvatar";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+const PHONE_PREFIXES = [
+  { value: '+56', label: '🇨🇱 +56' },
+  { value: '+54', label: '🇦🇷 +54' },
+  { value: '+51', label: '🇵🇪 +51' },
+  { value: '+57', label: '🇨🇴 +57' },
+  { value: '+52', label: '🇲🇽 +52' },
+  { value: '+55', label: '🇧🇷 +55' },
+  { value: '+1',  label: '🇺🇸 +1'  },
+  { value: '+34', label: '🇪🇸 +34' },
+];
+
+function splitPhone(full: string): { prefix: string; number: string } {
+  const known = PHONE_PREFIXES.map(p => p.value).sort((a, b) => b.length - a.length);
+  for (const p of known) {
+    if (full.startsWith(p)) return { prefix: p, number: full.slice(p.length) };
+  }
+  return { prefix: '+56', number: full.replace(/^\+/, '') };
+}
 
 interface Props {
   companyId: string;
   open: boolean;
   onClose: () => void;
   onChanged?: () => void;
+  defaultCreate?: boolean;
 }
 
 type ScheduleRow = Omit<TechnicianSchedule, 'id' | 'technician_id'>;
@@ -34,7 +55,7 @@ const DEFAULT_SCHEDULE: ScheduleRow[] = [
   { day_of_week: 0, start_time: '08:00', end_time: '13:00', is_day_off: true  },
 ];
 
-export default function TechnicianManager({ companyId, open, onClose, onChanged }: Props) {
+export default function TechnicianManager({ companyId, open, onClose, onChanged, defaultCreate }: Props) {
   const { toast } = useToast();
   const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [loading, setLoading]         = useState(false);
@@ -44,10 +65,11 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
   const [saving, setSaving]           = useState(false);
 
   // form fields
-  const [name,     setName]     = useState('');
-  const [color,    setColor]    = useState(TECH_COLORS[0]);
-  const [phone,    setPhone]    = useState('');
-  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [name,        setName]        = useState('');
+  const [color,       setColor]       = useState(TECH_COLORS[0]);
+  const [phonePrefix, setPhonePrefix] = useState('+56');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [photoUrl,    setPhotoUrl]    = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -56,7 +78,11 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
   const [deleteHasAppts,   setDeleteHasAppts]   = useState(false);
   const [deleting,         setDeleting]         = useState(false);
 
-  useEffect(() => { if (open) loadTechnicians(); }, [open, companyId]);
+  useEffect(() => { 
+    if (open) {
+      loadTechnicians();
+    }
+  }, [open, companyId, defaultCreate]);
 
   async function loadTechnicians() {
     setLoading(true);
@@ -65,7 +91,23 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
       .select('*')
       .eq('company_id', companyId)
       .order('created_at', { ascending: true });
-    setTechnicians(data || []);
+    
+    const loaded = data || [];
+    setTechnicians(loaded);
+    
+    if (defaultCreate) {
+      setEditTech(null);
+      setName('');
+      setColor(TECH_COLORS[loaded.length % TECH_COLORS.length]);
+      setPhonePrefix('+56');
+      setPhoneNumber('');
+      setPhotoUrl(null);
+      setSchedules(DEFAULT_SCHEDULE);
+      setView('edit');
+    } else {
+      setView('list');
+    }
+    
     setLoading(false);
   }
 
@@ -111,7 +153,8 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
     setEditTech(null);
     setName('');
     setColor(TECH_COLORS[technicians.length % TECH_COLORS.length]);
-    setPhone('');
+    setPhonePrefix('+56');
+    setPhoneNumber('');
     setPhotoUrl(null);
     setSchedules(DEFAULT_SCHEDULE);
     setView('edit');
@@ -121,7 +164,9 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
     setEditTech(t);
     setName(t.name);
     setColor(t.color);
-    setPhone(t.phone || '');
+    const { prefix, number } = splitPhone(t.phone || '');
+    setPhonePrefix(prefix);
+    setPhoneNumber(number);
     setPhotoUrl(t.photo_url || null);
     await loadSchedule(t.id);
     setView('edit');
@@ -178,12 +223,13 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
       return;
     }
     setSaving(true);
+    const fullPhone = phoneNumber.trim() ? `${phonePrefix}${phoneNumber.trim()}` : null;
     let techId = editTech?.id;
 
     if (editTech) {
       await (supabase as any)
         .from('technicians')
-        .update({ name: name.trim(), color, phone: phone || null, photo_url: photoUrl })
+        .update({ name: name.trim(), color, phone: fullPhone, photo_url: photoUrl })
         .eq('id', techId);
     } else {
       const { data } = await (supabase as any)
@@ -192,7 +238,7 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
           company_id: companyId,
           name: name.trim(),
           color,
-          phone: phone || null,
+          phone: fullPhone,
           photo_url: photoUrl,
           is_active: true,
         })
@@ -222,7 +268,7 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-lg bg-card border-border shadow-2xl rounded-2xl p-0 overflow-hidden">
+      <DialogContent className="max-w-lg bg-card border-border shadow-2xl rounded-2xl p-0 overflow-hidden" aria-describedby={undefined}>
         <DialogHeader className="px-6 py-4 border-b border-border bg-muted/20">
           <div className="flex items-center gap-2.5">
             {view === 'edit' && (
@@ -287,7 +333,7 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
                               className="w-full h-full flex items-center justify-center text-white text-[11px] font-bold"
                               style={{ background: t.color }}
                             >
-                              {t.name.slice(0, 2).toUpperCase()}
+                              {(() => { const p = t.name.trim().split(/\s+/); return p.length >= 2 ? (p[0][0]+p[1][0]).toUpperCase() : t.name.slice(0,2).toUpperCase(); })()}
                             </div>
                           )}
                         </div>
@@ -411,7 +457,7 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
                             className="w-full h-full flex items-center justify-center text-white text-xl font-bold"
                             style={{ background: `linear-gradient(135deg, ${color}, ${color}99)` }}
                           >
-                            {name ? name.slice(0, 2).toUpperCase() : '??'}
+                            {name ? (() => { const p = name.trim().split(/\s+/); return p.length >= 2 ? (p[0][0]+p[1][0]).toUpperCase() : name.slice(0,2).toUpperCase(); })() : '??'}
                           </div>
                         )}
                       </div>
@@ -473,12 +519,29 @@ export default function TechnicianManager({ companyId, open, onClose, onChanged 
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-[11px] text-muted-foreground">Teléfono</Label>
-                      <Input
-                        value={phone}
-                        onChange={e => setPhone(e.target.value)}
-                        placeholder="+56 9..."
-                        className="h-9 text-sm rounded-xl"
-                      />
+                      <div className="flex gap-1.5">
+                        <Select value={phonePrefix} onValueChange={setPhonePrefix}>
+                          <SelectTrigger className="w-[100px] h-9 text-sm rounded-xl">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-card border-border/40">
+                            {PHONE_PREFIXES.map(p => (
+                              <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          value={phoneNumber}
+                          onChange={e => setPhoneNumber(e.target.value.replace(/[^0-9]/g, ''))}
+                          placeholder="9 1234 5678"
+                          className="flex-1 h-9 text-sm rounded-xl"
+                        />
+                      </div>
+                      {phoneNumber && (
+                        <p className="text-[10px] text-muted-foreground/60 px-0.5">
+                          Número final: <span className="font-semibold text-foreground">{phonePrefix}{phoneNumber}</span>
+                        </p>
+                      )}
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-[11px] text-muted-foreground">Color en agenda</Label>

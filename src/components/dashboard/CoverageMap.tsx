@@ -1019,7 +1019,7 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
               if (!open) cancelTempDrawing();
             }}
           >
-            <DialogContent className="max-w-md border-border/20 bg-card z-[1100]">
+            <DialogContent className="max-w-md border-border/20 bg-card z-[1100]" aria-describedby={undefined}>
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">

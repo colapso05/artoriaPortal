@@ -48,6 +48,15 @@ interface CompanyConfig {
   auto_close_message?: string;
   alert_webhook_path?: string | null;
   credits_enabled?: boolean;
+  bandeja_template_id?: string | null;
+}
+
+interface WaTemplate {
+  name: string;
+  language?: string;
+  status?: string;
+  category?: string;
+  components?: any[];
 }
 
 interface SimulateUserPayload {
@@ -89,7 +98,12 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
     webhook_id: "",
     auto_close_message: "",
     credits_enabled: false as boolean,
+    bandeja_template_id: "" as string,
+    tech_template_id: "" as string,
+    outbound_template_id: "" as string,
   });
+  const [editTemplates, setEditTemplates] = useState<WaTemplate[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
 
   // Reset password
   const [resetPwDialogOpen, setResetPwDialogOpen] = useState(false);
@@ -271,19 +285,65 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
 
 
   // Edit user/company
-  const openEditUser = (company: CompanyConfig) => {
+  const openEditUser = async (company: CompanyConfig) => {
     setEditUserData({
-      user_id: company.user_id || company.owner_id || "", // Use owner_id if user_id is null
+      user_id: company.user_id || company.owner_id || "",
       display_name: company.company_name || "",
-      email: "", // Email is not directly in company_config, will need to fetch if required for edit
+      email: "",
       ycloud_api_key: company.ycloud_api_key || "",
       ycloud_phone: company.ycloud_phone || "",
       config_id: company.id,
       webhook_id: company.webhook_id || "",
       auto_close_message: company.auto_close_message || "",
       credits_enabled: company.credits_enabled ?? false,
+      bandeja_template_id: company.bandeja_template_id || "",
+      tech_template_id: "",
+      outbound_template_id: (company as any).outbound_template_id || "",
     });
     setEditUserDialogOpen(true);
+
+    // Cargar plantillas usando service key para poder pasar company_id como override
+    setLoadingTemplates(true);
+    try {
+      // Si serviceKey aún no cargó (race condition), lo pedimos aquí
+      let key = serviceKey;
+      if (!key) {
+        const { data: keyData } = await supabase.functions.invoke("get-service-key");
+        key = keyData?.service_key || "";
+        if (key) setServiceKey(key);
+      }
+      // Siempre usar la URL pública (VITE_SUPABASE_URL) — supabaseUrl puede ser la interna de Docker
+      const baseUrl = import.meta.env.VITE_SUPABASE_URL || supabaseUrl || "";
+      const url = `${baseUrl}/functions/v1/ycloud-get-templates-company`;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${key}`,
+        },
+        body: JSON.stringify({ company_id: company.id }),
+      });
+      const data = await resp.json();
+      const tpls = data?.templates || [];
+      setEditTemplates(tpls);
+      if (tpls.length === 0 && data?.error) {
+        toast({ title: "Sin plantillas", description: data.error, variant: "destructive" });
+      }
+    } catch (e: any) {
+      toast({ title: "Error cargando plantillas", description: e.message, variant: "destructive" });
+    } finally {
+      setLoadingTemplates(false);
+    }
+    try {
+      const { data: schedData } = await (supabase as any)
+        .from("schedule_settings")
+        .select("tech_template_id")
+        .eq("company_id", company.id)
+        .maybeSingle();
+      if (schedData?.tech_template_id) {
+        setEditUserData(prev => ({ ...prev, tech_template_id: schedData.tech_template_id }));
+      }
+    } catch (_) {}
   };
 
   const handleUpdateUser = async () => {
@@ -310,9 +370,18 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
             company_name: editUserData.display_name,
             auto_close_message: editUserData.auto_close_message,
             credits_enabled: editUserData.credits_enabled,
+            bandeja_template_id: editUserData.bandeja_template_id || null,
+            outbound_template_id: editUserData.outbound_template_id || null,
           })
           .eq("id", editUserData.config_id);
         if (updateConfigError) throw new Error(updateConfigError.message);
+
+        // 3. Update schedule_settings tech_template_id (upsert por si no existe fila)
+        await (supabase as any).from("schedule_settings")
+          .upsert({
+            company_id: editUserData.config_id,
+            tech_template_id: editUserData.tech_template_id || null,
+          }, { onConflict: "company_id", ignoreDuplicates: false });
       } else {
         // This case should ideally not happen if editing an existing company
         // but if it does, create a new config (though user_id is required)
@@ -876,6 +945,85 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
                   </button>
                 </div>
               </div>
+
+            </div>
+
+            {/* Plantillas automáticas */}
+            <div className="space-y-4 pt-2">
+              <div className="flex items-center gap-2 pb-1 border-b border-border/20">
+                <WandSparkles className="w-4 h-4 text-primary" />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/80">Plantillas Automáticas</span>
+              </div>
+              <p className="text-[10px] text-muted-foreground -mt-1">Las plantillas seleccionadas se usan automáticamente — los usuarios de esta empresa no tendrán que elegirlas.</p>
+
+              {/* Bandeja 24h */}
+              <div className="space-y-1">
+                <Label className="text-xs">Plantilla bandeja (24h expirada)</Label>
+                {loadingTemplates ? (
+                  <div className="h-9 rounded-md border border-border/30 bg-muted/20 animate-pulse" />
+                ) : (
+                  <Select
+                    value={editUserData.bandeja_template_id || "__none__"}
+                    onValueChange={(v) => setEditUserData(prev => ({ ...prev, bandeja_template_id: v === "__none__" ? "" : v }))}
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue placeholder="Sin plantilla configurada" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-card border-border/40 max-h-52">
+                      <SelectItem value="__none__" className="text-xs text-muted-foreground">— Sin plantilla —</SelectItem>
+                      {editTemplates.map(t => (
+                        <SelectItem key={t.name} value={t.name} className="text-xs">{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              {/* Técnicos agenda */}
+              <div className="space-y-1">
+                <Label className="text-xs">Plantilla técnicos (agenda)</Label>
+                {loadingTemplates ? (
+                  <div className="h-9 rounded-md border border-border/30 bg-muted/20 animate-pulse" />
+                ) : (
+                  <Select
+                    value={editUserData.tech_template_id || "__none__"}
+                    onValueChange={(v) => setEditUserData(prev => ({ ...prev, tech_template_id: v === "__none__" ? "" : v }))}
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue placeholder="Sin plantilla configurada" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-card border-border/40 max-h-52">
+                      <SelectItem value="__none__" className="text-xs text-muted-foreground">— Sin plantilla —</SelectItem>
+                      {editTemplates.map(t => (
+                        <SelectItem key={t.name} value={t.name} className="text-xs">{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              {/* Nueva conversación outbound */}
+              <div className="space-y-1">
+                <Label className="text-xs">Plantilla nueva conversación (outbound)</Label>
+                {loadingTemplates ? (
+                  <div className="h-9 rounded-md border border-border/30 bg-muted/20 animate-pulse" />
+                ) : (
+                  <Select
+                    value={editUserData.outbound_template_id || "__none__"}
+                    onValueChange={(v) => setEditUserData(prev => ({ ...prev, outbound_template_id: v === "__none__" ? "" : v }))}
+                  >
+                    <SelectTrigger className="h-9 text-xs">
+                      <SelectValue placeholder="Sin plantilla configurada" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-card border-border/40 max-h-52">
+                      <SelectItem value="__none__" className="text-xs text-muted-foreground">— Sin plantilla —</SelectItem>
+                      {editTemplates.map(t => (
+                        <SelectItem key={t.name} value={t.name} className="text-xs">{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
             </div>
 
             <div className="pt-2 sticky bottom-0 bg-card/90 backdrop-blur-sm pb-1">
@@ -1104,21 +1252,8 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
               </div>
 
               <div className="flex justify-end pt-4">
-                <Button 
-                  onClick={() => {
-                    setEditUserData({
-                      user_id: selectedCompany.user_id || selectedCompany.owner_id || "",
-                      display_name: selectedCompany.company_name,
-                      email: "", // We don't have email in config directly, but we can fetch it if needed
-                      ycloud_api_key: selectedCompany.ycloud_api_key,
-                      ycloud_phone: selectedCompany.ycloud_phone,
-                      config_id: selectedCompany.id,
-                      webhook_id: selectedCompany.webhook_id,
-                      auto_close_message: selectedCompany.auto_close_message || "",
-                      credits_enabled: (selectedCompany as any).credits_enabled ?? false,
-                    });
-                    setEditUserDialogOpen(true);
-                  }}
+                <Button
+                  onClick={() => openEditUser(selectedCompany)}
                   className="gap-2"
                 >
                   <Pencil className="w-4 h-4" /> Editar Configuración Real

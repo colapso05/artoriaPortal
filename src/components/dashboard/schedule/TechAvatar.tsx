@@ -15,6 +15,12 @@ interface Props {
   className?: string;
 }
 
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
 export default function TechAvatar({ tech, size = 'sm', className = '' }: Props) {
   const cls = SIZE_CLS[size];
 
@@ -35,7 +41,7 @@ export default function TechAvatar({ tech, size = 'sm', className = '' }: Props)
       className={`${cls} rounded-full flex-shrink-0 flex items-center justify-center text-white font-bold select-none ${className}`}
       style={{ background: `linear-gradient(135deg, ${tech.color}, ${tech.color}99)` }}
     >
-      {tech.name.slice(0, 2).toUpperCase()}
+      {initials(tech.name)}
     </div>
   );
 }

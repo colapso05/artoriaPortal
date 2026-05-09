@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { LogOut, Bell, ChevronDown, Settings, Sparkles, Bug, Map, Zap, LayoutDashboard, CreditCard, ClipboardList, MessageCircle } from "lucide-react";
+import { LogOut, Bell, ChevronDown, Settings, Sparkles, Bug, Map, Zap, LayoutDashboard, CreditCard, ClipboardList, MessageCircle, Calendar } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -13,10 +13,17 @@ import {
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { motion, AnimatePresence } from "framer-motion";
 
-const CHANGELOG_VERSION = "v2026-04-24";
+const CHANGELOG_VERSION = "v2026-04-28";
 const SEEN_KEY = `changelog_seen_${CHANGELOG_VERSION}`;
 
 const changelog = [
+  {
+    icon: Calendar,
+    color: "text-violet-500",
+    bg: "bg-violet-500/10",
+    title: "¡Nueva Agenda Inteligente y Jornadas!",
+    desc: "Administra a tus técnicos visualmente, revisa su disponibilidad al instante y asigna citas haciendo clic directamente en la grilla del calendario. También agregamos la lista de 'En espera' para técnicos ocupados.",
+  },
   {
     icon: MessageCircle,
     color: "text-primary",
@@ -63,9 +70,10 @@ interface DashboardHeaderProps {
   simulatedUserName?: string;
   simulatedUserRole?: string | null;
   onStopSimulation?: () => void;
+  onAgendaClick?: () => void;
 }
 
-export default function DashboardHeader({ email, displayName, onLogout, onSettings, simulatedCompanyName, simulatedUserName, simulatedUserRole, onStopSimulation }: DashboardHeaderProps) {
+export default function DashboardHeader({ email, displayName, onLogout, onSettings, simulatedCompanyName, simulatedUserName, simulatedUserRole, onStopSimulation, onAgendaClick }: DashboardHeaderProps) {
   const [notifSeen, setNotifSeen] = useState(() => !!localStorage.getItem(SEEN_KEY));
   const [notifOpen, setNotifOpen] = useState(false);
 
@@ -164,17 +172,29 @@ export default function DashboardHeader({ email, displayName, onLogout, onSettin
 
               {/* Changelog items */}
               <div className="divide-y divide-border/10 max-h-[420px] overflow-y-auto">
-                {changelog.map((item, i) => (
-                  <div key={i} className="px-5 py-3.5 flex gap-3 hover:bg-secondary/20 transition-colors">
-                    <div className={`w-8 h-8 rounded-xl ${item.bg} flex items-center justify-center flex-shrink-0 mt-0.5`}>
-                      <item.icon className={`w-4 h-4 ${item.color}`} />
+                {changelog.map((item, i) => {
+                  const isAgenda = item.title.includes("Agenda");
+                  return (
+                    <div 
+                      key={i} 
+                      className={`px-5 py-3.5 flex gap-3 transition-colors ${isAgenda ? 'cursor-pointer hover:bg-violet-500/5' : 'hover:bg-secondary/20'}`}
+                      onClick={() => {
+                        if (isAgenda && onAgendaClick) {
+                          onAgendaClick();
+                          setNotifOpen(false);
+                        }
+                      }}
+                    >
+                      <div className={`w-8 h-8 rounded-xl ${item.bg} flex items-center justify-center flex-shrink-0 mt-0.5`}>
+                        <item.icon className={`w-4 h-4 ${item.color}`} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-semibold leading-snug">{item.title}</p>
+                        <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-relaxed">{item.desc}</p>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-[13px] font-semibold leading-snug">{item.title}</p>
-                      <p className="text-[11px] text-muted-foreground/70 mt-0.5 leading-relaxed">{item.desc}</p>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Footer */}

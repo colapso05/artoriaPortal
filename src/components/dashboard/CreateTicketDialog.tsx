@@ -61,7 +61,7 @@ export function CreateTicketDialog({ open, onOpenChange, conversation }: CreateT
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-[425px]">
+            <DialogContent className="sm:max-w-[425px]" aria-describedby={undefined}>
                 <DialogHeader>
                     <DialogTitle>Escalar a Ticket Central</DialogTitle>
                     <DialogDescription>

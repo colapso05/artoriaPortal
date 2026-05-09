@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, Suspense, lazy } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, Suspense, lazy } from "react";
 const ScheduleTab = lazy(() => import("./schedule/ScheduleTab"));
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -15,9 +15,9 @@ import {
   Send, Search, ArrowLeft, Bot, Monitor,
   Phone, FileText, CheckCheck, Check, Clock,
   Ticket, User, Info, AlertCircle, XCircle, MessageCircle, X, Loader2, Download, Hand, Forward, SlidersHorizontal, Menu,
-  ChevronDown, Copy, MapPin, Flame, StickyNote
+  ChevronDown, Copy, MapPin, Flame, StickyNote, CalendarClock, Plus, MessageSquarePlus,
 } from "lucide-react";
-import { format, isToday, isYesterday } from "date-fns";
+import { format, isToday, isYesterday, parseISO } from "date-fns";
 import { es } from "date-fns/locale";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -320,13 +320,15 @@ interface WhatsAppInboxProps {
   userRole?: string;
   operatorRoles?: string[];
   initialConversationId?: string;
+  initialPhone?: string;
+  initialMessage?: string;
   onConversationOpened?: () => void;
   isSimulating?: boolean;
   simulatedUserName?: string;
   onNavigateToSchedule?: () => void;
 }
 
-export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, onConversationOpened, isSimulating, simulatedUserName, onNavigateToSchedule }: WhatsAppInboxProps) {
+export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, initialPhone, initialMessage, onConversationOpened, isSimulating, simulatedUserName, onNavigateToSchedule }: WhatsAppInboxProps) {
   // En vista simulada el admin escribe como el usuario simulado, así el historial queda correcto
   const effectiveSenderName = (isSimulating && simulatedUserName) ? simulatedUserName : userName;
 
@@ -362,6 +364,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [transferRole, setTransferRole] = useState("soporte_tecnico");
   const [activeTicket, setActiveTicket] = useState<any>(null);
   const [nocodbEnabled, setNocodbEnabled] = useState(false);
+  const [outboundEnabled, setOutboundEnabled] = useState(true);
+  const [bandejaTemplateId, setBandejaTemplateId] = useState<string | null>(null);
+  const [outboundTemplateId, setOutboundTemplateId] = useState<string | null>(null);
 
   const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
@@ -391,6 +396,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [clientAddress, setClientAddress] = useState<string | null>(null);
   const [clientEmail, setClientEmail] = useState<string | null>(null);
 
+  // Próxima cita agendada del cliente activo
+  const [clientNextAppt, setClientNextAppt] = useState<any>(null);
+
   // Motivo del caso derivado — expandible
   const [motivoExpanded, setMotivoExpanded] = useState(false);
 
@@ -409,6 +417,34 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [templateVars, setTemplateVars] = useState<TemplateVar[]>([]);
   const [templateVarValues, setTemplateVarValues] = useState<Record<string, string>>({});
   const [sendingTemplate, setSendingTemplate] = useState(false);
+
+  // ── Estado: nueva conversación outbound ─────────────────────────────────────
+  const [newConvOpen,        setNewConvOpen]        = useState(false);
+  const [newConvCountryCode, setNewConvCountryCode] = useState('+56');
+  const [newConvPhone,       setNewConvPhone]       = useState('');
+  const [newConvTemplates,   setNewConvTemplates]   = useState<WhatsAppTemplate[]>([]);
+  const [newConvLoadingTpls, setNewConvLoadingTpls] = useState(false);
+  const [newConvTpl,         setNewConvTpl]         = useState<WhatsAppTemplate | null>(null);
+  const [newConvVars,        setNewConvVars]        = useState<TemplateVar[]>([]);
+  const [newConvVarValues,   setNewConvVarValues]   = useState<Record<string, string>>({});
+  const [newConvSending,     setNewConvSending]     = useState(false);
+  const [newConvSearch,      setNewConvSearch]      = useState('');
+
+  const NEW_CONV_COUNTRY_CODES = [
+    { code: '+56',  flag: '🇨🇱', name: 'Chile'           },
+    { code: '+54',  flag: '🇦🇷', name: 'Argentina'       },
+    { code: '+55',  flag: '🇧🇷', name: 'Brasil'          },
+    { code: '+51',  flag: '🇵🇪', name: 'Perú'            },
+    { code: '+57',  flag: '🇨🇴', name: 'Colombia'        },
+    { code: '+591', flag: '🇧🇴', name: 'Bolivia'         },
+    { code: '+598', flag: '🇺🇾', name: 'Uruguay'         },
+    { code: '+595', flag: '🇵🇾', name: 'Paraguay'        },
+    { code: '+593', flag: '🇪🇨', name: 'Ecuador'         },
+    { code: '+58',  flag: '🇻🇪', name: 'Venezuela'       },
+    { code: '+52',  flag: '🇲🇽', name: 'México'          },
+    { code: '+1',   flag: '🇺🇸', name: 'EE.UU. / Canadá' },
+    { code: '+34',  flag: '🇪🇸', name: 'España'          },
+  ];
 
   const handleSubmitReport = async () => {
     if (!reportWrong.trim() || !reportExpected.trim()) {
@@ -526,6 +562,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     return () => clearTimeout(timer);
   }, [searchTerm, companyId]);
 
+  // Debounce realtime reloads: evita renders en cascada cuando llegan múltiples eventos seguidos
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedLoadConversations = useCallback(() => {
+    if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+    realtimeDebounceRef.current = setTimeout(() => loadConversations(), 350);
+  }, []);
+
   useEffect(() => {
     loadConversations();
     const filter = companyId ? `company_id=eq.${companyId}` : undefined;
@@ -536,13 +579,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         schema: "public",
         table: "conversations",
         ...(filter ? { filter } : {})
-      }, () => loadConversations())
+      }, () => debouncedLoadConversations())
       .on("postgres_changes", {
         event: "*",
         schema: "public",
         table: "tickets",
       }, (payload) => {
-        loadConversations();
+        debouncedLoadConversations();
         // Si el ticket pertenece a la conversación activa, refrescar activeTicket en tiempo real
         const convId = (payload.new as any)?.conversation_id;
         if (convId && convId === selectedConvRef.current) {
@@ -573,11 +616,41 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       const target = conversations.find(c => c.id === initialConversationId);
       if (target) {
         handleConvSelect(target);
-        setChatFilter('all'); // Ensure it's visible
+        setChatFilter('all');
         onConversationOpened?.();
       }
     }
   }, [initialConversationId, conversations]);
+
+  // Handle initialPhone — navegar al chat del técnico por número
+  useEffect(() => {
+    if (!initialPhone || conversations.length === 0) return;
+    const cleanPhone = initialPhone.replace(/^\+/, '');
+    const target = conversations.find(c => {
+      const convPhone = c.wa_id.replace(/^\+/, '');
+      return convPhone === cleanPhone;
+    });
+    if (target) {
+      // Conversación existente → abrirla y pre-llenar el mensaje
+      handleConvSelect(target);
+      setChatFilter('all');
+      if (initialMessage) {
+        setTimeout(() => {
+          const ta = msgTextareaRef.current;
+          if (ta) {
+            ta.value = initialMessage;
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            setHasContent(true);
+            ta.focus();
+          }
+        }, 300);
+      }
+    } else {
+      // Conversación no existe → abrir modal de nueva conversación con el teléfono pre-llenado
+      openNewConvModal(initialPhone);
+    }
+    onConversationOpened?.();
+  }, [initialPhone, conversations.length]);
 
   useEffect(() => {
     if (!selectedConv) return;
@@ -738,15 +811,35 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setRightPanelTab('caso');
   }, [selectedConv?.id]);
 
-  // ── Cargar config de empresa (nocodb_enabled) ────────────────────────────────
+  // ── Cargar config de empresa (nocodb_enabled, outbound_enabled, bandeja_template_id) ──
   useEffect(() => {
     if (!companyId) return;
-    supabase.from('company_config')
-      .select('nocodb_enabled')
+    (supabase as any).from('company_config')
+      .select('nocodb_enabled, outbound_enabled, bandeja_template_id, outbound_template_id')
       .eq('id', companyId)
       .maybeSingle()
-      .then(({ data }) => setNocodbEnabled(!!data?.nocodb_enabled));
+      .then(({ data }: any) => {
+        setNocodbEnabled(!!data?.nocodb_enabled);
+        setOutboundEnabled(data?.outbound_enabled ?? true);
+        setBandejaTemplateId(data?.bandeja_template_id || null);
+        setOutboundTemplateId(data?.outbound_template_id || null);
+      });
   }, [companyId]);
+
+  // ── Auto-seleccionar plantilla de bandeja cuando está configurada ──────────
+  useEffect(() => {
+    if (!bandejaTemplateId || !outboundEnabled) return;
+    // Si ya hay una plantilla seleccionada del mismo nombre, no sobreescribir
+    if (selectedTemplate?.name === bandejaTemplateId) return;
+    // Buscar en templates ya cargados
+    const found = templates.find(t => t.name === bandejaTemplateId);
+    if (found) {
+      setSelectedTemplate(found);
+    } else {
+      // Marcar que necesitamos cargar — se hará lazy cuando el usuario clicke el botón
+      setSelectedTemplate(null);
+    }
+  }, [bandejaTemplateId, templates, outboundEnabled]);
 
   // ── Cargar todas las notas de la empresa + Realtime para toda la lista ───────
   useEffect(() => {
@@ -818,6 +911,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setActiveTicket(null);
     setClientAddress(null);
     setClientEmail(null);
+    setClientNextAppt(null);
   }, [selectedConv?.id]);
 
   // ── Cargar dirección y correo desde clientes (siempre al cambiar conv) ──────
@@ -836,6 +930,27 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         if (error || convId !== selectedConvRef.current) return;
         setClientAddress((data as any)?.direccion || null);
         setClientEmail((data as any)?.email || null);
+      });
+  }, [selectedConv?.id, companyId]);
+
+  // ── Cargar próxima cita del cliente activo ──────────────────────────────────
+  useEffect(() => {
+    if (!selectedConv || !companyId) return;
+    const convId = selectedConv.id;
+    const phone  = selectedConv.wa_id;
+    ;(supabase as any)
+      .from('appointments')
+      .select('id, service_type, start_datetime, status, technician:technician_id(name, color)')
+      .eq('company_id', companyId)
+      .eq('client_phone', phone)
+      .neq('status', 'cancelado')
+      .neq('status', 'completado')
+      .order('start_datetime')
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }: any) => {
+        if (convId !== selectedConvRef.current) return;
+        setClientNextAppt(data || null);
       });
   }, [selectedConv?.id, companyId]);
 
@@ -900,6 +1015,40 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     localStorage.setItem(storageKey, JSON.stringify(tpl));
     setShowTemplateSelector(false);
     setTemplateSearch("");
+  };
+
+  // ── Activar plantilla IA configurada por el admin (bandeja 24h) ─────────────
+  const handleActivarIA = async () => {
+    // Si ya está la plantilla correcta cargada, disparar directamente
+    if (selectedTemplate && selectedTemplate.name === bandejaTemplateId) {
+      handleClickSendTemplate();
+      return;
+    }
+    setLoadingTemplates(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ycloud-get-templates-company");
+      if (error) throw error;
+      const allTpls: WhatsAppTemplate[] = data?.templates || [];
+      setTemplates(allTpls);
+      const found = allTpls.find(t => t.name === bandejaTemplateId);
+      if (!found) {
+        toast({ title: "Plantilla no encontrada", description: `La plantilla "${bandejaTemplateId}" no existe. Contacta al administrador.`, variant: "destructive" });
+        return;
+      }
+      setSelectedTemplate(found);
+      const vars = extractTemplateVars(found);
+      setTemplateVars(vars);
+      setTemplateVarValues({});
+      if (vars.length > 0) {
+        setShowVarForm(true);
+      } else {
+        doSendTemplate({}, vars);
+      }
+    } catch (err: any) {
+      toast({ title: "Error al activar IA", description: err.message, variant: "destructive" });
+    } finally {
+      setLoadingTemplates(false);
+    }
   };
 
   const handleClickSendTemplate = () => {
@@ -978,6 +1127,112 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const getTemplatePreview = (tpl: WhatsAppTemplate) => {
     const body = tpl.components.find(c => c.type.toUpperCase() === "BODY");
     return body?.text?.substring(0, 120) || "";
+  };
+
+  // Prefijos de países soportados (orden: más largos primero para match correcto)
+  const KNOWN_PREFIXES = ['+56','+54','+51','+57','+52','+55','+34','+1'];
+
+  const openNewConvModal = async (prefilledPhone?: string) => {
+    // Parsear teléfono pre-llenado: separar prefijo de país del número
+    let parsedCode = '+56';
+    let parsedNumber = '';
+    if (prefilledPhone) {
+      const normalized = prefilledPhone.startsWith('+') ? prefilledPhone : `+${prefilledPhone}`;
+      const prefix = KNOWN_PREFIXES.find(p => normalized.startsWith(p));
+      if (prefix) {
+        parsedCode = prefix;
+        parsedNumber = normalized.slice(prefix.length);
+      } else {
+        parsedNumber = normalized.replace(/^\+/, '');
+      }
+    }
+
+    setNewConvPhone(parsedNumber);
+    setNewConvCountryCode(parsedCode);
+    setNewConvTpl(null);
+    setNewConvVars([]);
+    setNewConvVarValues({});
+    setNewConvSearch('');
+    setNewConvOpen(true);
+
+    let loadedTemplates = newConvTemplates;
+    if (loadedTemplates.length === 0) {
+      setNewConvLoadingTpls(true);
+      try {
+        const anyConvId = conversations.find(c => c.company_id === companyId)?.id
+          || selectedConv?.id;
+        const { data, error } = await supabase.functions.invoke("ycloud-get-templates", {
+          body: { conversationId: anyConvId, companyId },
+        });
+        if (!error) {
+          loadedTemplates = data?.templates || [];
+          setNewConvTemplates(loadedTemplates);
+        }
+      } finally {
+        setNewConvLoadingTpls(false);
+      }
+    }
+
+    // Si el admin configuró una plantilla outbound, pre-seleccionarla
+    if (outboundTemplateId && loadedTemplates.length > 0) {
+      const found = loadedTemplates.find((t: WhatsAppTemplate) => t.name === outboundTemplateId);
+      if (found) selectNewConvTemplate(found);
+    }
+  };
+
+  const selectNewConvTemplate = (tpl: WhatsAppTemplate) => {
+    setNewConvTpl(tpl);
+    setNewConvVars(extractTemplateVars(tpl));
+    setNewConvVarValues({});
+  };
+
+  const doSendNewConv = async () => {
+    if (!newConvTpl || !newConvPhone.trim()) return;
+    setNewConvSending(true);
+    try {
+      const activeVars = newConvVars;
+      const byType: Record<string, { varIndex: number; value: string }[]> = {};
+      for (const v of activeVars) {
+        const key   = `${v.componentType}_${v.varName}`;
+        const value = newConvVarValues[key] ?? "";
+        if (!byType[v.componentType]) byType[v.componentType] = [];
+        byType[v.componentType].push({ varIndex: v.varIndex, value });
+      }
+      const components: any[] = [];
+      for (const [ctype, vals] of Object.entries(byType)) {
+        vals.sort((a, b) => a.varIndex - b.varIndex);
+        components.push({
+          type:       ctype.toUpperCase(),
+          parameters: vals.map(v => ({ type: "text", text: v.value })),
+        });
+      }
+      const bodyComp = newConvTpl.components.find(c => c.type.toUpperCase() === "BODY");
+      let rendered = bodyComp?.text || `📋 Plantilla: ${newConvTpl.name}`;
+      for (const v of activeVars) {
+        const key   = `${v.componentType}_${v.varName}`;
+        const value = newConvVarValues[key] ?? "";
+        rendered = rendered.replace(new RegExp(`\\{\\{${v.varName}\\}\\}`, "g"), value);
+      }
+      const { data, error } = await supabase.functions.invoke("ycloud-send-outbound", {
+        body: {
+          company_id:         companyId,
+          to:                 `${newConvCountryCode}${newConvPhone.trim().replace(/\s/g, '')}`,
+          templateName:       newConvTpl.name,
+          templateLanguage:   newConvTpl.language || "es",
+          templateComponents: components,
+          templateContent:    rendered,
+        },
+      });
+      if (error) throw error;
+      toast({ title: "✅ Conversación iniciada", description: `Plantilla enviada a ${newConvCountryCode}${newConvPhone.trim()}` });
+      setNewConvOpen(false);
+      // Recargar bandeja para mostrar la conversación nueva/reutilizada
+      setTimeout(() => loadConversations(), 800);
+    } catch (err: any) {
+      toast({ title: "Error al enviar", description: err.message, variant: "destructive" });
+    } finally {
+      setNewConvSending(false);
+    }
   };
 
   const loadConversations = async () => {
@@ -1110,7 +1365,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     if (!selectedConv) return;
     try {
       const action = activate ? 'activate_bot' : 'deactivate_bot';
-      toast({ title: "Procesando...", description: "Actualizando estado del bot en YCloud y sistema local" });
+      toast({ title: "Procesando...", description: activate ? "Activando agente IA..." : "Tomando control de la conversación..." });
 
       // Actualizar BD siempre, independiente del resultado de la edge function
       await supabase.from("conversations").update({
@@ -1415,12 +1670,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   };
 
-  // Filter conversations: merge keyword search hits (which may not be in conversations[] if closed)
-  const filtered = (() => {
+  // Filter conversations — memoizado para no recalcular en cada render no relacionado
+  const filtered = useMemo(() => {
     let base = [...conversations];
     if (searchTerm.trim() && searchResults.length > 0) {
       searchResults.forEach(sr => {
-        // sr.id is already normalized from RPC's conversation_id
         if (!base.find(c => c.id === sr.id)) {
           base.push({
             ...sr,
@@ -1430,61 +1684,50 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       });
     }
 
-    return base.map(c => {
+    const withHits = base.map(c => {
       const hit = searchResults.find(sr => sr.id === c.id);
       return hit ? { ...c, match_content: hit.match_content } : c;
     });
-  })().filter((c) => {
-    // Name/number filter: exact phrase OR significant words (≥4 chars)
-    const matchesName = (() => {
-      if (!searchTerm) return true;
-      const q = searchTerm.toLowerCase();
-      // Try full phrase
-      if (c.profile_name?.toLowerCase().includes(q) || c.wa_id.includes(q)) return true;
-      // Fallback: significant words
-      const words = q.split(/\s+/).filter(t => t.length >= 4);
-      return words.some(t => c.profile_name?.toLowerCase().includes(t) || c.wa_id.includes(t));
-    })();
-    const matchesContent = !!c.match_content;
-    
-    if (!matchesName && !matchesContent) return false;
 
-    // Keyword message matches bypass tab filter
-    if (searchTerm.trim() && matchesContent) return true;
+    const q = searchTerm.toLowerCase();
+    const words = q ? q.split(/\s+/).filter(t => t.length >= 4) : [];
+    const ticketStatus = chatFilter.startsWith('ticket:') ? chatFilter.replace('ticket:', '') : null;
 
-    // Nunca mostrar cerrados en la bandeja principal
-    if (c.status === 'cerrado') return false;
+    return withHits.filter(c => {
+      const matchesName = !searchTerm
+        || c.profile_name?.toLowerCase().includes(q)
+        || c.wa_id.includes(q)
+        || words.some(t => c.profile_name?.toLowerCase().includes(t) || c.wa_id.includes(t));
+      const matchesContent = !!c.match_content;
 
-    // Filtros por estado de ticket — usar ticketStatusByConvId como única fuente de verdad
-    // (misma fuente que usa el badge, evita inconsistencias con el RPC)
-    if (chatFilter.startsWith('ticket:')) {
-      const status = chatFilter.replace('ticket:', '');
-      return ticketStatusByConvId[c.id] === status;
-    }
-
-    return true;
-  }).sort((a, b) => {
-    return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
-  });
+      if (!matchesName && !matchesContent) return false;
+      if (searchTerm.trim() && matchesContent) return true;
+      if (c.status === 'cerrado') return false;
+      if (ticketStatus) return ticketStatusByConvId[c.id] === ticketStatus;
+      return true;
+    }).sort((a, b) =>
+      new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+    );
+  }, [conversations, searchTerm, searchResults, ticketStatusByConvId, chatFilter]);
 
   const getInitials = (name: string | null, waId: string) =>
     (name || waId).replace("+", "").slice(0, 2).toUpperCase();
 
-  // Group messages by date
-  const grouped: { date: string; msgs: Message[] }[] = [];
-  let curDate = "";
-  
-  const validMessages = messages;
-  
-  validMessages.forEach((msg) => {
-    const d = new Date(msg.created_at);
-    const key = isToday(d) ? "Hoy" : isYesterday(d) ? "Ayer" : format(d, "dd MMMM yyyy", { locale: es });
-    if (key !== curDate) { curDate = key; grouped.push({ date: key, msgs: [] }); }
-    grouped[grouped.length - 1].msgs.push(msg);
-  });
+  // Group messages by date — memoizado para no reagrupar en renders no relacionados
+  const grouped = useMemo(() => {
+    const result: { date: string; msgs: Message[] }[] = [];
+    let curDate = "";
+    messages.forEach(msg => {
+      const d = new Date(msg.created_at);
+      const key = isToday(d) ? "Hoy" : isYesterday(d) ? "Ayer" : format(d, "dd MMMM yyyy", { locale: es });
+      if (key !== curDate) { curDate = key; result.push({ date: key, msgs: [] }); }
+      result[result.length - 1].msgs.push(msg);
+    });
+    return result;
+  }, [messages]);
 
   // 24h window validation
-  const lastInbound = messages.filter(m => m.direction === 'inbound').pop();
+  const lastInbound = useMemo(() => messages.filter(m => m.direction === 'inbound').pop(), [messages]);
   const horasDesdeUltimoMensaje = lastInbound 
     ? (Date.now() - new Date(lastInbound.created_at).getTime()) / (1000 * 60 * 60)
     : Infinity;
@@ -1545,6 +1788,28 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   };
 
+  // ── Pre-compute badge counts once per render (O(n) instead of O(n×m)) ──
+  const badgeCounts = useMemo(() => {
+    const counts: Record<string, { count: number; unread: number }> = {};
+    for (const label of ticketLabels) {
+      let count = 0;
+      let unread = 0;
+      for (const c of conversations) {
+        if (ticketStatusByConvId[c.id] === label.key) {
+          count++;
+          if (c.unread_count > 0) unread++;
+        }
+      }
+      counts[label.key] = { count, unread };
+    }
+    return counts;
+  }, [conversations, ticketStatusByConvId, ticketLabels]);
+
+  const allUnread = useMemo(
+    () => conversations.filter(c => c.status !== 'cerrado' && c.unread_count > 0).length,
+    [conversations]
+  );
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-background relative z-10">
       {/* 1. Sidebar de Chats */}
@@ -1558,6 +1823,15 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             {/* Desktop: toggle del sidebar principal */}
             <SidebarTrigger className="hidden md:flex text-muted-foreground/70 hover:text-foreground transition-colors -ml-1 flex-shrink-0" />
             <span className="text-sm font-semibold">Bandeja</span>
+            {outboundEnabled && (
+              <button
+                onClick={openNewConvModal}
+                title="Iniciar nueva conversación"
+                className="ml-auto flex-shrink-0 w-7 h-7 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center transition-colors"
+              >
+                <MessageSquarePlus className="w-4 h-4" />
+              </button>
+            )}
           </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
@@ -1571,29 +1845,21 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           {/* ── Filtros unificados: Todos + etiquetas de ticket + Míos + Cerrados ── */}
           <div className="flex gap-1.5 flex-wrap">
             {/* Todos */}
-            {(() => {
-              const unread = conversations.filter(c => c.status !== 'cerrado' && c.unread_count > 0).length;
-              const active = chatFilter === 'all';
-              return (
-                <button
-                  onClick={() => setChatFilter('all')}
-                  className={`relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all ${active ? 'bg-foreground text-background border-foreground shadow-sm' : 'text-muted-foreground bg-background/50 border-border/30 hover:text-foreground hover:border-border/60'}`}
-                >
-                  Todos
-                  {unread > 0 && (
-                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-primary text-[8px] font-black text-white flex items-center justify-center">{unread}</span>
-                  )}
-                </button>
-              );
-            })()}
+            <button
+              onClick={() => setChatFilter('all')}
+              className={`relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all ${chatFilter === 'all' ? 'bg-foreground text-background border-foreground shadow-sm' : 'text-muted-foreground bg-background/50 border-border/30 hover:text-foreground hover:border-border/60'}`}
+            >
+              Todos
+              {allUnread > 0 && (
+                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-primary text-[8px] font-black text-white flex items-center justify-center">{allUnread}</span>
+              )}
+            </button>
 
             {/* Etiqueta de ticket como filtro (oculta las etiquetas finales como "Resuelto") */}
             {ticketLabels.filter(l => !l.is_final).map(label => {
               const filterKey = `ticket:${label.key}`;
               const active = chatFilter === filterKey;
-              // Contar desde ticketStatusByConvId (misma fuente que el filtro y el badge)
-              const count = conversations.filter(c => ticketStatusByConvId[c.id] === label.key).length;
-              const unread = conversations.filter(c => ticketStatusByConvId[c.id] === label.key && c.unread_count > 0).length;
+              const { count = 0, unread = 0 } = badgeCounts[label.key] ?? {};
               return (
                 <button
                   key={label.key}
@@ -1917,35 +2183,49 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       ⚠️ Han pasado más de 24 horas. Solo puedes contactar al cliente con una <strong>plantilla aprobada</strong> o directamente por WhatsApp.
                     </p>
                     <div className="flex items-center justify-center gap-2 flex-wrap">
-                      {selectedTemplate ? (
-                        <>
-                          <Button
-                            size="sm"
-                            className="h-8 text-[11px] gap-1.5 bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30"
-                            onClick={handleClickSendTemplate}
-                            disabled={sendingTemplate}
-                          >
-                            {sendingTemplate ? <Loader2 className="w-3 h-3 animate-spin" /> : "📋"}
-                            Enviar: <span className="font-bold">{selectedTemplate.name}</span>
-                          </Button>
-                          <button
-                            className="text-[10px] text-muted-foreground underline hover:text-foreground"
-                            onClick={() => { fetchTemplates(); setShowTemplateSelector(true); }}
-                          >
-                            Cambiar plantilla
-                          </button>
-                        </>
-                      ) : (
+                      {outboundEnabled && (bandejaTemplateId ? (
+                        /* Plantilla configurada por el admin — un solo botón */
                         <Button
                           size="sm"
                           className="h-8 text-[11px] gap-1.5 bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30"
-                          onClick={() => { fetchTemplates(); setShowTemplateSelector(true); }}
-                          disabled={loadingTemplates}
+                          onClick={handleActivarIA}
+                          disabled={sendingTemplate || loadingTemplates}
                         >
-                          {loadingTemplates ? <Loader2 className="w-3 h-3 animate-spin" /> : "📋"}
-                          Seleccionar plantilla de respuesta
+                          {(sendingTemplate || loadingTemplates) ? <Loader2 className="w-3 h-3 animate-spin" /> : "📋"}
+                          Enviar plantilla
                         </Button>
-                      )}
+                      ) : (
+                        /* Sin plantilla configurada — usuario elige */
+                        selectedTemplate ? (
+                          <>
+                            <Button
+                              size="sm"
+                              className="h-8 text-[11px] gap-1.5 bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30"
+                              onClick={handleClickSendTemplate}
+                              disabled={sendingTemplate}
+                            >
+                              {sendingTemplate ? <Loader2 className="w-3 h-3 animate-spin" /> : "📋"}
+                              Enviar: <span className="font-bold">{selectedTemplate.name}</span>
+                            </Button>
+                            <button
+                              className="text-[10px] text-muted-foreground underline hover:text-foreground"
+                              onClick={() => { fetchTemplates(); setShowTemplateSelector(true); }}
+                            >
+                              Cambiar plantilla
+                            </button>
+                          </>
+                        ) : (
+                          <Button
+                            size="sm"
+                            className="h-8 text-[11px] gap-1.5 bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30"
+                            onClick={() => { fetchTemplates(); setShowTemplateSelector(true); }}
+                            disabled={loadingTemplates}
+                          >
+                            {loadingTemplates ? <Loader2 className="w-3 h-3 animate-spin" /> : "📋"}
+                            Seleccionar plantilla de respuesta
+                          </Button>
+                        )
+                      ))}
                       {/* Abrir en WhatsApp Web */}
                       <a
                         href={`https://wa.me/${selectedConv.wa_id.replace(/^\+/, '')}`}
@@ -2208,6 +2488,28 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                         </div>
                       </div>
 
+                      {/* ── Cita agendada ── */}
+                      {clientNextAppt && (
+                        <button
+                          onClick={() => setRightPanelTab('agenda')}
+                          className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl border border-violet-500/30 bg-violet-500/8 text-left hover:bg-violet-500/14 transition-colors"
+                        >
+                          <CalendarClock className="w-4 h-4 text-violet-500 flex-shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] font-bold text-violet-500 uppercase tracking-widest leading-none mb-0.5">
+                              Cita agendada
+                            </p>
+                            <p className="text-[12px] font-semibold truncate">{clientNextAppt.service_type}</p>
+                            <p className="text-[10px] text-muted-foreground/70 capitalize">
+                              {format(parseISO(clientNextAppt.start_datetime), "EEE d MMM 'a las' HH:mm", { locale: es })}
+                              {clientNextAppt.technician?.name && (
+                                <span className="text-muted-foreground/50"> · {clientNextAppt.technician.name}</span>
+                              )}
+                            </p>
+                          </div>
+                        </button>
+                      )}
+
                       {/* ── Estado del ticket ── */}
                       <div className="space-y-2">
                         <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
@@ -2417,7 +2719,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       {selectedConv && (
         <Dialog open={isTransferModalOpen} onOpenChange={setIsTransferModalOpen}>
-          <DialogContent className="border-border/30 bg-card">
+          <DialogContent className="border-border/30 bg-card" aria-describedby={undefined}>
             <DialogHeader>
               <DialogTitle>Transferir Conversación</DialogTitle>
             </DialogHeader>
@@ -2444,7 +2746,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       {selectedConv && (
         <Dialog open={isCloseModalOpen} onOpenChange={isGeneratingSummary ? undefined : setIsCloseModalOpen}>
-          <DialogContent className="border-border/30 bg-card max-w-md">
+          <DialogContent className="border-border/30 bg-card max-w-md" aria-describedby={undefined}>
             {isGeneratingSummary ? (
               <div className="flex flex-col items-center justify-center p-6 space-y-4">
                 <Loader2 className="w-8 h-8 text-primary animate-spin" />
@@ -2485,7 +2787,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       )}
 
       <Dialog open={reportModalOpen} onOpenChange={setReportModalOpen}>
-        <DialogContent className="border-border/30 bg-card">
+        <DialogContent className="border-border/30 bg-card" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Reportar Error del Agente IA</DialogTitle>
           </DialogHeader>
@@ -2532,7 +2834,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       {/* ── SELECTOR DE PLANTILLA ────────────────────────────────────────────── */}
       <Dialog open={showTemplateSelector} onOpenChange={setShowTemplateSelector}>
-        <DialogContent className="border-border/30 bg-card max-w-lg">
+        <DialogContent className="border-border/30 bg-card max-w-lg" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle className="text-base font-bold">📋 Seleccionar plantilla de respuesta</DialogTitle>
             <p className="text-[11px] text-muted-foreground mt-1">
@@ -2594,7 +2896,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       {/* ── FORMULARIO DE VARIABLES ──────────────────────────────────────────── */}
       <Dialog open={showVarForm} onOpenChange={setShowVarForm}>
-        <DialogContent className="border-border/30 bg-card max-w-md">
+        <DialogContent className="border-border/30 bg-card max-w-md" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle className="text-base font-bold">
               📋 Completar variables — <span className="text-primary">{selectedTemplate?.name}</span>
@@ -2641,6 +2943,183 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               className="gap-1.5"
             >
               {sendingTemplate ? <Loader2 className="w-3 h-3 animate-spin" /> : "📤"}
+              Enviar plantilla
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── NUEVA CONVERSACIÓN OUTBOUND ─────────────────────────────────────── */}
+      <Dialog open={newConvOpen} onOpenChange={o => { if (!newConvSending) setNewConvOpen(o); }}>
+        <DialogContent className="border-border/30 bg-card max-w-lg" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2">
+              <MessageSquarePlus className="w-4 h-4 text-primary" />
+              Iniciar nueva conversación
+            </DialogTitle>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Ingresa el número de WhatsApp y selecciona una plantilla aprobada para iniciar el contacto.
+            </p>
+          </DialogHeader>
+
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Número de WhatsApp</label>
+            <div className="flex gap-1.5">
+              <Select value={newConvCountryCode} onValueChange={setNewConvCountryCode} disabled={newConvSending}>
+                <SelectTrigger className="h-9 w-[110px] flex-shrink-0 text-[12px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {NEW_CONV_COUNTRY_CODES.map(c => (
+                    <SelectItem key={c.code} value={c.code} className="text-[12px]">
+                      {c.flag} {c.code} <span className="text-muted-foreground/60">{c.name}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="912345678"
+                value={newConvPhone}
+                onChange={e => setNewConvPhone(e.target.value.replace(/[^\d\s]/g, ''))}
+                className="h-9 text-[13px] flex-1"
+                disabled={newConvSending}
+                type="tel"
+              />
+            </div>
+            {newConvPhone.trim() && (
+              <p className="text-[10px] text-muted-foreground/50 pl-1">
+                Número completo: <span className="font-mono text-foreground/60">{newConvCountryCode}{newConvPhone.trim().replace(/\s/g, '')}</span>
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Plantilla</label>
+            {newConvTpl ? (
+              <div className="flex items-center gap-2 p-2.5 rounded-lg border border-primary/40 bg-primary/5">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] font-semibold truncate">{newConvTpl.name}</p>
+                  <p className="text-[10px] text-muted-foreground/60 truncate">{getTemplatePreview(newConvTpl)}</p>
+                </div>
+                <button
+                  onClick={() => { setNewConvTpl(null); setNewConvVars([]); setNewConvVarValues({}); }}
+                  className="text-muted-foreground/50 hover:text-foreground"
+                  disabled={newConvSending}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/60" />
+                  <Input
+                    placeholder="Buscar plantilla..."
+                    value={newConvSearch}
+                    onChange={e => setNewConvSearch(e.target.value)}
+                    className="pl-8 h-8 text-[12px]"
+                    disabled={newConvSending}
+                  />
+                </div>
+                <ScrollArea className="h-52 border border-border/30 rounded-lg">
+                  {newConvLoadingTpls ? (
+                    <div className="flex items-center justify-center gap-2 text-muted-foreground text-[12px] py-8">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Cargando plantillas...
+                    </div>
+                  ) : newConvTemplates.length === 0 ? (
+                    <p className="text-center text-muted-foreground text-[12px] py-8">No se encontraron plantillas.</p>
+                  ) : (
+                    <div className="space-y-1 p-2">
+                      {newConvTemplates
+                        .filter(t =>
+                          !newConvSearch ||
+                          t.name.toLowerCase().includes(newConvSearch.toLowerCase()) ||
+                          getTemplatePreview(t).toLowerCase().includes(newConvSearch.toLowerCase())
+                        )
+                        .map(tpl => (
+                          <button
+                            key={tpl.name}
+                            onClick={() => selectNewConvTemplate(tpl)}
+                            className="w-full text-left p-2.5 rounded-lg border border-border/30 bg-background/50 hover:border-primary/50 hover:bg-primary/5 transition-all"
+                          >
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="text-[12px] font-semibold">{tpl.name}</span>
+                              <div className="flex gap-1">
+                                <Badge variant="outline" className="text-[9px] h-4 px-1.5">{tpl.language}</Badge>
+                                <Badge variant="secondary" className="text-[9px] h-4 px-1.5 capitalize">{tpl.category?.toLowerCase()}</Badge>
+                              </div>
+                            </div>
+                            {getTemplatePreview(tpl) && (
+                              <p className="text-[10px] text-muted-foreground/60 line-clamp-2">{getTemplatePreview(tpl)}</p>
+                            )}
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                </ScrollArea>
+              </>
+            )}
+          </div>
+
+          {newConvTpl && newConvVars.length > 0 && (
+            <div className="space-y-3">
+              <label className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">Variables de la plantilla</label>
+              {newConvVars.map(v => {
+                const key = `${v.componentType}_${v.varName}`;
+                const isNumeric = /^\d+$/.test(v.varName);
+                const labelName = isNumeric ? `Parámetro ${v.varName}` : v.varName.replace(/_/g, " ");
+                return (
+                  <div key={key} className="space-y-1">
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      {v.componentType === "header" ? "Encabezado" : "Cuerpo"} · {labelName}
+                    </label>
+                    <Textarea
+                      placeholder={`Escribe el valor para {{${v.varName}}}...`}
+                      value={newConvVarValues[key] || ""}
+                      onChange={e => setNewConvVarValues(prev => ({ ...prev, [key]: e.target.value.slice(0, 750) }))}
+                      className="text-[12px] min-h-[60px] resize-y"
+                      disabled={newConvSending}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Preview en tiempo real del mensaje */}
+          {newConvTpl && (() => {
+            const bodyComp = newConvTpl.components.find(c => c.type.toUpperCase() === 'BODY');
+            if (!bodyComp?.text) return null;
+            let preview = bodyComp.text;
+            for (const v of newConvVars) {
+              const key = `${v.componentType}_${v.varName}`;
+              const val = newConvVarValues[key]?.trim() || `{{${v.varName}}}`;
+              preview = preview.replace(new RegExp(`\\{\\{${v.varName}\\}\\}`, 'g'), val);
+            }
+            return (
+              <div className="rounded-xl border border-border/40 bg-muted/20 p-3 space-y-1">
+                <p className="text-[9px] font-bold text-muted-foreground/50 uppercase tracking-widest">Vista previa del mensaje</p>
+                <p className="text-[12px] leading-relaxed whitespace-pre-wrap text-foreground/80">{preview}</p>
+              </div>
+            );
+          })()}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => setNewConvOpen(false)} disabled={newConvSending}>
+              Cancelar
+            </Button>
+            <Button
+              size="sm"
+              onClick={doSendNewConv}
+              disabled={
+                newConvSending ||
+                !newConvPhone.trim() ||
+                !newConvTpl ||
+                newConvVars.some(v => !newConvVarValues[`${v.componentType}_${v.varName}`]?.trim())
+              }
+              className="gap-1.5"
+            >
+              {newConvSending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
               Enviar plantilla
             </Button>
           </DialogFooter>

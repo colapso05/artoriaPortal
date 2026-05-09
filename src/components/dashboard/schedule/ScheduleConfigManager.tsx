@@ -7,12 +7,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
-import { Loader2, Plus, Trash2, Settings2, Wrench, Clock, GripVertical } from "lucide-react";
+import { Loader2, Plus, Trash2, Settings2, Wrench, Clock, GripVertical, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { Label } from "@/components/ui/label";
 
 export interface ScheduleConfig {
   serviceTypes:    string[];
   durationOptions: number[]; // minutos
+  techNotificationTemplateId?: string | null;
 }
 
 const DEFAULT_SERVICE_TYPES    = ['Instalación', 'Reparación', 'Retiro', 'Mantenimiento', 'Visita técnica', 'Configuración'];
@@ -42,6 +44,7 @@ export default function ScheduleConfigManager({ companyId, open, onClose, onChan
 
   const [newService,  setNewService]  = useState('');
   const [newDuration, setNewDuration] = useState('');
+  const [techTemplateId, setTechTemplateId] = useState('');
 
   useEffect(() => {
     if (open) loadConfig();
@@ -57,9 +60,11 @@ export default function ScheduleConfigManager({ companyId, open, onClose, onChan
     if (data) {
       setServiceTypes(data.service_types || DEFAULT_SERVICE_TYPES);
       setDurationOptions(data.duration_options || DEFAULT_DURATION_OPTIONS);
+      setTechTemplateId(data.tech_notification_template_id || '');
     } else {
       setServiceTypes(DEFAULT_SERVICE_TYPES);
       setDurationOptions(DEFAULT_DURATION_OPTIONS);
+      setTechTemplateId('');
     }
     setLoading(false);
   }
@@ -73,16 +78,17 @@ export default function ScheduleConfigManager({ companyId, open, onClose, onChan
     const { error } = await (supabase as any)
       .from('schedule_settings')
       .upsert({
-        company_id:       companyId,
-        service_types:    serviceTypes,
-        duration_options: durationOptions,
-        updated_at:       new Date().toISOString(),
+        company_id:                      companyId,
+        service_types:                   serviceTypes,
+        duration_options:                durationOptions,
+        tech_notification_template_id:   techTemplateId.trim() || null,
+        updated_at:                      new Date().toISOString(),
       }, { onConflict: 'company_id' });
     if (error) {
       toast({ title: 'Error al guardar', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Configuración guardada ✓' });
-      onChanged({ serviceTypes, durationOptions });
+      onChanged({ serviceTypes, durationOptions, techNotificationTemplateId: techTemplateId.trim() || null });
       onClose();
     }
     setSaving(false);
@@ -123,7 +129,7 @@ export default function ScheduleConfigManager({ companyId, open, onClose, onChan
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-lg bg-card border-border shadow-2xl rounded-2xl p-0 overflow-hidden">
+      <DialogContent className="max-w-lg bg-card border-border shadow-2xl rounded-2xl p-0 overflow-hidden" aria-describedby={undefined}>
         <DialogHeader className="px-6 py-4 border-b border-border bg-muted/20">
           <DialogTitle className="text-sm font-bold flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
@@ -278,6 +284,34 @@ export default function ScheduleConfigManager({ companyId, open, onClose, onChan
                 <p className="text-[10px] text-muted-foreground/40 px-0.5">
                   Rango permitido: 5 – 720 minutos (12 horas)
                 </p>
+              </section>
+
+              {/* ── Notificación al técnico ── */}
+              <section className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+                    <MessageSquare className="w-3 h-3 text-emerald-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-[11px] font-bold text-foreground uppercase tracking-widest">
+                      Notificación al Técnico
+                    </h3>
+                    <p className="text-[10px] text-muted-foreground/60">
+                      Template de YCloud para el botón "Enviar tarea"
+                    </p>
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-muted/40 border border-border/60 space-y-1.5">
+                  <p className="text-[10px] text-muted-foreground/60">Plantilla configurada actualmente</p>
+                  {techTemplateId ? (
+                    <p className="text-sm font-mono font-semibold text-foreground">{techTemplateId}</p>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground/40 italic">Sin plantilla configurada</p>
+                  )}
+                  <p className="text-[10px] text-muted-foreground/50 leading-relaxed pt-1">
+                    Para cambiarla, usa el botón <span className="font-semibold">⚙️</span> junto a "Enviar tarea" en el panel de detalle de cualquier cita.
+                  </p>
+                </div>
               </section>
             </div>
           )}

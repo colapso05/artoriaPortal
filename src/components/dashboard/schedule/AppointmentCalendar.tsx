@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import {
   format, addDays, startOfWeek, isSameDay, isToday,
   parseISO, addMinutes,
@@ -6,10 +6,18 @@ import {
 import { es } from "date-fns/locale";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  ChevronLeft, ChevronRight, CalendarDays, LayoutList, Grid3x3, MapPin,
+  ChevronLeft, ChevronRight, CalendarDays, LayoutList, Grid3x3, MapPin, Clock,
 } from "lucide-react";
-import { type Technician, type Appointment } from "./types";
+import { type Technician, type Appointment, STATUS_LABELS, type AppointmentStatus } from "./types";
 import TechAvatar from "./TechAvatar";
+
+const STATUS_BADGE_COLORS: Record<AppointmentStatus, string> = {
+  pendiente:  '#f59e0b',
+  en_camino:  '#3b82f6',
+  en_espera:  '#8b5cf6',
+  completado: '#10b981',
+  cancelado:  '#ef4444',
+};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const HOUR_HEIGHT   = 64;
@@ -25,6 +33,9 @@ interface Props {
   onDateChange: (d: Date) => void;
   onAppointmentClick: (a: Appointment) => void;
   onSlotClick?: (date: string, time: string, technicianId?: string) => void;
+  baseHourStart?: number;
+  baseHourEnd?: number;
+  fontScale?: number;
 }
 
 function getWeekDays(date: Date): Date[] {
@@ -47,7 +58,8 @@ function fmtHour(h: number): string {
   return h < 12 ? `${h} AM` : `${h - 12} PM`;
 }
 
-// ── Day View ──────────────────────────────────────────────────────────────────
+// ── Day View (Horizontal Gantt) ───────────────────────────────────────────────
+const LEFT_W = 172; // px for left tech-name column
 interface DayViewProps {
   activeTechs: Technician[];
   allTechs: Technician[];
@@ -55,179 +67,236 @@ interface DayViewProps {
   dayStr: string;
   selectedDate: Date;
   onAppointmentClick: (a: Appointment) => void;
-  onSlotClick: (e: React.MouseEvent<HTMLDivElement>, techId: string) => void;
+  onSlotClick?: (date: string, time: string, techId: string) => void;
   hourStart: number;
   hours: number[];
   totalHeight: number;
+  orphanedWaiting: Appointment[];
+  fontScale: number;
 }
 
-function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlotClick, hourStart, hours, totalHeight }: DayViewProps) {
-  return (
-    <div className="h-full overflow-y-auto overflow-x-auto rounded-2xl border border-border/60 bg-card/60">
-      <div className="flex gap-0" style={{ minHeight: totalHeight + 76, minWidth: activeTechs.length * 140 }}>
+function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlotClick, hourStart, hours, dayStr, orphanedWaiting, fontScale }: DayViewProps) {
+  const [containerW, setContainerW] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-        {/* ── Time ruler ── */}
-        <div className="flex-shrink-0 w-16 pt-[76px] select-none border-r border-border/50 bg-muted/10">
-          {hours.map(h => {
-            const isCurrentHour = h === new Date().getHours() && isToday(selectedDate);
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      setContainerW(entries[0].contentRect.width);
+    });
+    ro.observe(containerRef.current);
+    setContainerW(containerRef.current.getBoundingClientRect().width);
+    return () => ro.disconnect();
+  }, []);
+
+  // hourW fills the container exactly; Math.floor prevents 1px rounding scrollbar
+  const hourW = useMemo(() => {
+    if (!containerW || hours.length === 0) return 80;
+    return Math.max(55, Math.min(180, Math.floor((containerW - LEFT_W - 1) / hours.length)));
+  }, [containerW, hours.length]);
+
+  // Dynamic row height based on number of technicians
+  // 1 tech = ~120px, decreases until it hits the safe minimum of 56px (at ~7+ techs)
+  const rowHeight = useMemo(() => {
+    const n = activeTechs.length;
+    if (n === 0) return 56;
+    return Math.max(56, 120 - (n - 1) * 12);
+  }, [activeTechs.length]);
+
+  const totalW       = hours.length * hourW;
+  const isCurrentDay = isToday(selectedDate);
+
+  const currentTimeX = useMemo(() => {
+    if (!isCurrentDay) return null;
+    const now  = new Date();
+    const mins = now.getHours() * 60 + now.getMinutes() - hourStart * 60;
+    if (mins < 0 || mins > hours.length * 60) return null;
+    return (mins / 60) * hourW;
+  }, [isCurrentDay, hourStart, hours.length, hourW]);
+
+  function handleRowClick(e: React.MouseEvent<HTMLDivElement>, techId: string) {
+    const rect   = e.currentTarget.getBoundingClientRect();
+    const x      = e.clientX - rect.left;
+    const totalM = hourStart * 60 + (x / hourW) * 60;
+    const h      = Math.floor(totalM / 60);
+    const rawM   = Math.round((totalM % 60) / 15) * 15;
+    const fh     = rawM >= 60 ? h + 1 : h;
+    const fm     = rawM >= 60 ? rawM - 60 : rawM;
+    const ts     = `${String(fh).padStart(2, '0')}:${String(fm).padStart(2, '0')}`;
+    onSlotClick?.(dayStr, ts, techId);
+  }
+
+  return (
+    <div ref={containerRef} className="overflow-x-hidden rounded-2xl border border-border/60 bg-card/60 select-none">
+      <div style={{ minWidth: LEFT_W + totalW }}>
+
+        {/* ── Header: time labels ── */}
+        <div
+          className="sticky top-0 z-20 flex bg-card/96 border-b border-border/60 backdrop-blur-sm"
+          style={{ height: 44 }}
+        >
+          {/* Corner cell */}
+          <div
+            className="sticky left-0 z-30 bg-card/96 flex-shrink-0 flex items-center justify-center border-r border-border/50"
+            style={{ width: LEFT_W, backdropFilter: 'blur(12px)' }}
+          >
+            <span className="text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest">
+              {format(selectedDate, 'd MMM', { locale: es })}
+            </span>
+          </div>
+
+          {/* Hour cells */}
+          {hours.map((h, i) => {
+            const isNow = isCurrentDay && h === new Date().getHours();
             return (
               <div
                 key={h}
-                className="relative flex items-start justify-end pr-3"
-                style={{ height: HOUR_HEIGHT }}
+                className="relative flex items-center border-r border-border/30 last:border-0"
+                style={{ width: hourW, flexShrink: 0 }}
               >
-
-                <span className={`text-[10px] font-bold leading-none -mt-[5px] ${
-                  isCurrentHour ? 'text-red-500' : 'text-muted-foreground/50'
-                }`}>
+                <span className={`absolute left-2 text-[10px] font-bold ${isNow ? 'text-red-500' : 'text-muted-foreground/50'}`}>
                   {fmtHour(h)}
                 </span>
+                {isNow && currentTimeX !== null && (() => {
+                  const offsetInHour = currentTimeX - i * hourW;
+                  return (
+                    <span
+                      className="absolute bottom-0.5 text-[9px] font-extrabold text-red-500 tabular-nums bg-card/95 border border-red-500/30 px-1 rounded-md z-10 pointer-events-none"
+                      style={{ left: Math.max(2, offsetInHour - 14) }}
+                    >
+                      {format(new Date(), 'HH:mm')}
+                    </span>
+                  );
+                })()}
               </div>
             );
           })}
         </div>
 
-        {/* ── Technician columns ── */}
-        {activeTechs.map((tech, colIdx) => {
+        {/* ── Technician rows ── */}
+        {activeTechs.map(tech => {
           const techAppts = byTech[tech.id] || [];
           return (
             <div
               key={tech.id}
-              className="flex-1 min-w-[140px] flex flex-col border-l border-border/50 first:border-l-0"
+              className="flex"
+              style={{ height: rowHeight, borderBottom: '1px solid hsl(var(--border) / 0.4)' }}
             >
-              {/* ── Column header ── */}
+              {/* Left: tech info (sticky) */}
               <div
-                className="h-[76px] flex flex-col items-center justify-center gap-1.5 sticky top-0 z-10 border-b border-border/50 px-3 backdrop-blur-sm"
+                className="sticky left-0 z-10 flex items-center gap-2.5 px-3 flex-shrink-0 border-r"
                 style={{
-                  background: `linear-gradient(180deg, color-mix(in srgb, ${tech.color} 18%, hsl(var(--card))) 0%, hsl(var(--card)) 100%)`,
+                  width:      LEFT_W,
+                  background: `linear-gradient(to right, color-mix(in srgb, ${tech.color} 12%, hsl(var(--card) / 0.98)), hsl(var(--card) / 0.97))`,
+                  borderColor: `${tech.color}30`,
+                  backdropFilter: 'blur(12px)',
                 }}
               >
                 <TechAvatar tech={tech} size="sm" />
-                <div className="text-center leading-none">
-                  <p className="text-[11px] font-bold truncate max-w-[110px]">{tech.name}</p>
-                  <p
-                    className="text-[9px] font-semibold mt-0.5"
-                    style={{ color: techAppts.length > 0 ? tech.color : undefined }}
-                  >
-                    {techAppts.length > 0
-                      ? `${techAppts.length} cita${techAppts.length > 1 ? 's' : ''}`
-                      : <span className="text-muted-foreground/40">disponible</span>}
-                  </p>
+                <div className="flex-1 min-w-0 overflow-hidden" style={{ zoom: fontScale }}>
+                  <p className="text-[12px] font-bold truncate leading-tight">{tech.name}</p>
+                  {techAppts.length > 0 ? (
+                    <p className="text-[10px] font-semibold" style={{ color: tech.color }}>
+                      {techAppts.length} cita{techAppts.length > 1 ? 's' : ''}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground/40">disponible</p>
+                  )}
                 </div>
               </div>
 
-              {/* ── Time grid ── */}
+              {/* Right: timeline */}
               <div
-                className="relative cursor-crosshair select-none"
-                style={{ height: totalHeight }}
-                onClick={e => onSlotClick(e, tech.id)}
+                className="relative cursor-crosshair flex-shrink-0"
+                style={{ width: totalW, height: rowHeight }}
+                onClick={e => handleRowClick(e, tech.id)}
               >
-                {/* Subtle column tint */}
-                <div
-                  className="absolute inset-0 pointer-events-none opacity-30"
-                  style={{ background: `${tech.color}08` }}
-                />
+                {/* Subtle row tint */}
+                <div className="absolute inset-0 pointer-events-none" style={{ background: `${tech.color}06` }} />
 
-                {/* ── Hour grid lines (full) ── */}
-                {hours.map(h => (
-                  <div
-                    key={h}
-                    className="absolute left-0 right-0 border-t border-border/70"
-                    style={{ top: (h - hourStart) * HOUR_HEIGHT }}
-                  />
+                {/* Hour vertical lines */}
+                {hours.map((_, i) => (
+                  <div key={i} className="absolute top-0 bottom-0 border-l border-border/50" style={{ left: i * hourW }} />
                 ))}
 
-                {/* ── Half-hour grid lines (dashed) ── */}
-                {hours.map(h => (
-                  <div
-                    key={`${h}h`}
-                    className="absolute left-6 right-0 border-t border-border/40 border-dashed"
-                    style={{ top: (h - hourStart) * HOUR_HEIGHT + HOUR_HEIGHT / 2 }}
-                  />
+                {/* Half-hour dashed lines */}
+                {hours.map((_, i) => (
+                  <div key={`h${i}`} className="absolute top-0 bottom-0 border-l border-border/25 border-dashed" style={{ left: i * hourW + hourW / 2 }} />
                 ))}
 
-                {/* Hover hint */}
-                <div
-                  className="absolute inset-0 opacity-0 hover:opacity-100 transition-opacity pointer-events-none"
-                  style={{ background: `${tech.color}07` }}
-                />
+                {/* Current time vertical line */}
+                {currentTimeX !== null && (
+                  <div
+                    className="absolute top-0 bottom-0 z-20 pointer-events-none"
+                    style={{ left: currentTimeX, width: 1.5, background: 'rgba(239,68,68,0.55)' }}
+                  />
+                )}
 
-                {/* ── Current time indicator ── */}
-                {isToday(selectedDate) && (() => {
-                  const now  = new Date();
-                  const mins = now.getHours() * 60 + now.getMinutes() - hourStart * 60;
-                  if (mins < 0 || mins > totalHeight / HOUR_HEIGHT * 60) return null;
-                  return (
-                    <div
-                      className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
-                      style={{ top: (mins / 60) * HOUR_HEIGHT }}
-                    >
-                      {colIdx === 0
-                        ? <div className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_3px_rgba(239,68,68,0.4)] -ml-1.5 flex-shrink-0" />
-                        : <div className="w-0 flex-shrink-0" />
-                      }
-                      <div
-                        className="flex-1 h-[1.5px]"
-                        style={{ background: colIdx === 0
-                          ? 'linear-gradient(to right, #ef4444, rgba(239,68,68,0.1))'
-                          : 'rgba(239,68,68,0.3)'
-                        }}
-                      />
-                      {colIdx === 0 && (
-                        <span className="absolute left-3 -top-4 text-[9px] font-extrabold text-red-500 tabular-nums bg-card/90 border border-red-500/20 px-1.5 py-0.5 rounded-md shadow-sm">
-                          {format(now, 'HH:mm')}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* ── Appointment blocks ── */}
+                {/* Appointment bars */}
                 {techAppts.map(appt => {
-                  const { top, height } = apptPosition(appt, hourStart);
-                  if (top < 0 || top > totalHeight) return null;
-                  const startLabel = format(parseISO(appt.start_datetime), 'HH:mm');
-                  const endLabel   = format(addMinutes(parseISO(appt.start_datetime), appt.duration_minutes), 'HH:mm');
+                  const start     = parseISO(appt.start_datetime);
+                  const startMins = start.getHours() * 60 + start.getMinutes() - hourStart * 60;
+                  const leftPx    = (startMins / 60) * hourW;
+                  const widthPx   = Math.max((appt.duration_minutes / 60) * hourW, 38);
+                  if (leftPx > totalW || leftPx + widthPx < 0) return null;
+
+                  const isEnEspera = appt.status === 'en_espera';
+                  const startLabel = format(start, 'HH:mm');
+                  const endLabel   = format(addMinutes(start, appt.duration_minutes), 'HH:mm');
+
                   return (
                     <motion.div
                       key={appt.id}
-                      initial={{ opacity: 0, x: -4, scale: 0.97 }}
-                      animate={{ opacity: 1, x: 0, scale: 1 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
-                      whileHover={{ scale: 1.018, transition: { duration: 0.12 } }}
-                      className="absolute left-1.5 right-1.5 cursor-pointer z-10 overflow-hidden"
+                      initial={{ opacity: 0, scaleX: 0.92 }}
+                      animate={{ opacity: 1, scaleX: 1 }}
+                      transition={{ duration: 0.16, ease: 'easeOut' }}
+                      whileHover={{ scaleY: 1.06, transition: { duration: 0.1 } }}
+                      className="absolute cursor-pointer z-10 overflow-hidden"
                       style={{
-                        top:          top + 2,
-                        height:       height - 4,
-                        background:   `color-mix(in srgb, ${tech.color} 22%, hsl(var(--card)))`,
-                        border:       `1px solid color-mix(in srgb, ${tech.color} 40%, transparent)`,
-                        borderLeft:   `3px solid ${tech.color}`,
-                        borderRadius: '10px',
-                        boxShadow:    `0 2px 12px color-mix(in srgb, ${tech.color} 20%, transparent)`,
+                        left:         leftPx + 2,
+                        width:        widthPx - 4,
+                        top:          6,
+                        bottom:       6,
+                        background:   isEnEspera
+                          ? `repeating-linear-gradient(45deg, ${tech.color}22, ${tech.color}22 5px, ${tech.color}08 5px, ${tech.color}08 13px)`
+                          : `color-mix(in srgb, ${tech.color} 22%, hsl(var(--card)))`,
+                        border:       isEnEspera ? `1.5px dashed ${tech.color}80` : `1px solid color-mix(in srgb, ${tech.color} 40%, transparent)`,
+                        borderTop:    isEnEspera ? undefined : `3px solid ${tech.color}`,
+                        borderRadius: 10,
+                        boxShadow:    isEnEspera ? 'none' : `0 2px 10px color-mix(in srgb, ${tech.color} 18%, transparent)`,
                       }}
                       onClick={e => { e.stopPropagation(); onAppointmentClick(appt); }}
                     >
-                      {/* Shine strip */}
-                      <div
-                        className="absolute top-0 left-0 right-0 h-px"
-                        style={{ background: `linear-gradient(to right, ${tech.color}70, transparent)` }}
-                      />
-                      <div className="p-2 h-full flex flex-col justify-start gap-0.5">
-                        <p className="text-[10px] font-bold leading-tight truncate" style={{ color: tech.color }}>
+                      {!isEnEspera && (
+                        <div className="absolute top-0 left-0 bottom-0 w-px" style={{ background: `linear-gradient(to bottom, ${tech.color}80, transparent)` }} />
+                      )}
+                      {/* Status badge dot */}
+                      {!isEnEspera && (
+                        <div
+                          className="absolute top-1.5 right-1.5 z-20 pointer-events-none"
+                          title={STATUS_LABELS[appt.status]}
+                        >
+                          <div
+                            className="w-2 h-2 rounded-full"
+                            style={{ background: STATUS_BADGE_COLORS[appt.status], boxShadow: `0 0 4px ${STATUS_BADGE_COLORS[appt.status]}80` }}
+                          />
+                        </div>
+                      )}
+                      <div className="px-2 h-full flex flex-col justify-center gap-0.5 overflow-hidden" style={{ zoom: fontScale }}>
+                        <p className="text-[10px] font-bold leading-tight truncate" style={{ color: isEnEspera ? `${tech.color}bb` : tech.color }}>
                           {appt.service_type}
+                          {isEnEspera && <span className="ml-1 opacity-60 font-normal">(espera)</span>}
                         </p>
-                        {height > 42 && (
-                          <p className="text-[9px] text-foreground/75 truncate font-medium">{appt.client_name}</p>
+                        {widthPx > 64 && (
+                          <p className="text-[9px] text-foreground/70 truncate font-medium">{appt.client_name}</p>
                         )}
-                        {height > 58 && (
-                          <p className="text-[9px] text-muted-foreground/60 tabular-nums">
-                            {startLabel} — {endLabel}
-                          </p>
+                        {widthPx > 108 && (
+                          <p className="text-[9px] text-muted-foreground/55 tabular-nums">{startLabel}–{endLabel}</p>
                         )}
-                        {height > 78 && appt.client_address && (
-                          <div className="flex items-center gap-1 mt-0.5">
-                            <MapPin className="w-2 h-2 flex-shrink-0 opacity-50" style={{ color: tech.color }} />
-                            <p className="text-[8px] text-muted-foreground/50 truncate">{appt.client_address}</p>
+                        {widthPx > 160 && appt.client_address && (
+                          <div className="flex items-center gap-1">
+                            <MapPin className="w-2 h-2 flex-shrink-0 opacity-40" style={{ color: tech.color }} />
+                            <p className="text-[8px] text-muted-foreground/45 truncate">{appt.client_address}</p>
                           </div>
                         )}
                       </div>
@@ -238,6 +307,96 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
             </div>
           );
         })}
+
+        {/* ── "En espera" row: orphaned appointments with no technician assigned ── */}
+        {orphanedWaiting.length > 0 && (
+          <div
+            className="flex"
+            style={{ height: rowHeight, borderBottom: '1px solid hsl(var(--border) / 0.4)' }}
+          >
+            {/* Left: label (sticky) */}
+            <div
+              className="sticky left-0 z-10 flex items-center gap-2.5 px-3 flex-shrink-0 border-r"
+              style={{
+                width:          LEFT_W,
+                background:     'linear-gradient(to right, color-mix(in srgb, #8b5cf6 12%, hsl(var(--card) / 0.98)), hsl(var(--card) / 0.97))',
+                borderColor:    '#8b5cf630',
+                backdropFilter: 'blur(12px)',
+              }}
+            >
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                style={{ background: '#8b5cf615', border: '1px solid #8b5cf630' }}
+              >
+                <Clock className="w-3.5 h-3.5" style={{ color: '#8b5cf6' }} />
+              </div>
+              <div className="flex-1 min-w-0 overflow-hidden" style={{ zoom: fontScale }}>
+                <p className="text-[12px] font-bold truncate leading-tight" style={{ color: '#8b5cf6' }}>
+                  En espera
+                </p>
+                <p className="text-[10px] font-semibold" style={{ color: '#8b5cf680' }}>
+                  {orphanedWaiting.length} sin asignar
+                </p>
+              </div>
+            </div>
+
+            {/* Right: timeline */}
+            <div
+              className="relative flex-shrink-0"
+              style={{ width: totalW, height: rowHeight }}
+            >
+              <div className="absolute inset-0 pointer-events-none" style={{ background: '#8b5cf606' }} />
+              {hours.map((_, i) => (
+                <div key={i} className="absolute top-0 bottom-0 border-l border-border/50" style={{ left: i * hourW }} />
+              ))}
+              {hours.map((_, i) => (
+                <div key={`h${i}`} className="absolute top-0 bottom-0 border-l border-border/25 border-dashed" style={{ left: i * hourW + hourW / 2 }} />
+              ))}
+
+              {orphanedWaiting.map(appt => {
+                const start     = parseISO(appt.start_datetime);
+                const startMins = start.getHours() * 60 + start.getMinutes() - hourStart * 60;
+                const leftPx    = (startMins / 60) * hourW;
+                const widthPx   = Math.max((appt.duration_minutes / 60) * hourW, 38);
+                if (leftPx > totalW || leftPx + widthPx < 0) return null;
+                const startLabel = format(start, 'HH:mm');
+                const endLabel   = format(addMinutes(start, appt.duration_minutes), 'HH:mm');
+                return (
+                  <motion.div
+                    key={appt.id}
+                    initial={{ opacity: 0, scaleX: 0.92 }}
+                    animate={{ opacity: 1, scaleX: 1 }}
+                    transition={{ duration: 0.16, ease: 'easeOut' }}
+                    whileHover={{ scaleY: 1.06, transition: { duration: 0.1 } }}
+                    className="absolute cursor-pointer z-10 overflow-hidden"
+                    style={{
+                      left:         leftPx + 2,
+                      width:        widthPx - 4,
+                      top:          6,
+                      bottom:       6,
+                      background:   'repeating-linear-gradient(45deg,#8b5cf622,#8b5cf622 5px,#8b5cf608 5px,#8b5cf608 13px)',
+                      border:       '1.5px dashed #8b5cf680',
+                      borderRadius: 10,
+                    }}
+                    onClick={e => { e.stopPropagation(); onAppointmentClick(appt); }}
+                  >
+                    <div className="px-2 h-full flex flex-col justify-center gap-0.5 overflow-hidden" style={{ zoom: fontScale }}>
+                      <p className="text-[10px] font-bold leading-tight truncate" style={{ color: '#8b5cf6bb' }}>
+                        {appt.service_type}
+                      </p>
+                      {widthPx > 64 && (
+                        <p className="text-[9px] text-foreground/70 truncate font-medium">{appt.client_name}</p>
+                      )}
+                      {widthPx > 108 && (
+                        <p className="text-[9px] text-muted-foreground/55 tabular-nums">{startLabel}–{endLabel}</p>
+                      )}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -252,13 +411,14 @@ interface WeekViewProps {
   onAppointmentClick: (a: Appointment) => void;
   onPrevWeek: () => void;
   onNextWeek: () => void;
+  fontScale: number;
 }
 
-function WeekView({ technicians, weekDays, appointments, onDayClick, onAppointmentClick, onPrevWeek, onNextWeek }: WeekViewProps) {
+function WeekView({ technicians, weekDays, appointments, onDayClick, onAppointmentClick, onPrevWeek, onNextWeek, fontScale }: WeekViewProps) {
   const byDay = useMemo(() => {
     const m: Record<string, Appointment[]> = {};
     for (const a of appointments) {
-      const k = a.start_datetime.slice(0, 10);
+      const k = format(parseISO(a.start_datetime), 'yyyy-MM-dd');
       (m[k] ||= []).push(a);
     }
     return m;
@@ -338,13 +498,22 @@ function WeekView({ technicians, weekDays, appointments, onDayClick, onAppointme
                       borderRadius: '8px',
                     }}
                   >
-                    <p className="text-[9px] font-extrabold tabular-nums" style={{ color: tech?.color }}>
-                      {format(parseISO(appt.start_datetime), 'HH:mm')}
-                    </p>
-                    <p className="text-[9px] text-foreground/70 truncate mt-0.5 font-medium leading-tight">
-                      {appt.service_type}
-                    </p>
-                    <p className="text-[8px] text-muted-foreground/55 truncate">{appt.client_name}</p>
+                    <div style={{ zoom: fontScale }}>
+                      <div className="flex items-center gap-1 justify-between">
+                        <p className="text-[9px] font-extrabold tabular-nums" style={{ color: tech?.color }}>
+                          {format(parseISO(appt.start_datetime), 'HH:mm')}
+                        </p>
+                        <div
+                          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          style={{ background: STATUS_BADGE_COLORS[appt.status] }}
+                          title={STATUS_LABELS[appt.status]}
+                        />
+                      </div>
+                      <p className="text-[9px] text-foreground/70 truncate mt-0.5 font-medium leading-tight">
+                        {appt.service_type}
+                      </p>
+                      <p className="text-[8px] text-muted-foreground/55 truncate">{appt.client_name}</p>
+                    </div>
                   </motion.button>
                 );
               })}
@@ -371,9 +540,10 @@ interface ListViewProps {
   technicians: Technician[];
   appointments: Appointment[];
   onAppointmentClick: (a: Appointment) => void;
+  fontScale: number;
 }
 
-function ListView({ technicians, appointments, onAppointmentClick }: ListViewProps) {
+function ListView({ technicians, appointments, onAppointmentClick, fontScale }: ListViewProps) {
   const today = format(new Date(), 'yyyy-MM-dd');
 
   const grouped = useMemo(() => {
@@ -405,7 +575,7 @@ function ListView({ technicians, appointments, onAppointmentClick }: ListViewPro
   }
 
   return (
-    <div className="h-full overflow-y-auto overflow-x-hidden space-y-6 pr-0.5">
+    <div className="space-y-6 pr-0.5">
       {entries.map(([date, appts], gi) => {
         const isToday_ = date === today;
         return (
@@ -470,8 +640,20 @@ function ListView({ technicians, appointments, onAppointmentClick }: ListViewPro
                       ? <TechAvatar tech={tech} size="sm" />
                       : <div className="w-7 h-7 rounded-full bg-muted/50 flex-shrink-0" />
                     }
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[12px] font-bold truncate">{appt.service_type}</p>
+                    <div className="flex-1 min-w-0 overflow-hidden" style={{ zoom: fontScale }}>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="text-[12px] font-bold truncate">{appt.service_type}</p>
+                        <span
+                          className="flex-shrink-0 text-[8px] font-bold px-1.5 py-0.5 rounded-md"
+                          style={{
+                            background: `${STATUS_BADGE_COLORS[appt.status]}20`,
+                            color:       STATUS_BADGE_COLORS[appt.status],
+                            border:      `1px solid ${STATUS_BADGE_COLORS[appt.status]}40`,
+                          }}
+                        >
+                          {STATUS_LABELS[appt.status]}
+                        </span>
+                      </div>
                       <p className="text-[11px] text-muted-foreground/70 truncate">{appt.client_name}</p>
                       {appt.client_address && (
                         <div className="flex items-center gap-1 mt-0.5">
@@ -485,6 +667,7 @@ function ListView({ technicians, appointments, onAppointmentClick }: ListViewPro
                       style={{
                         background:  tech ? `color-mix(in srgb, ${tech.color} 12%, hsl(var(--card)))` : 'hsl(var(--muted) / 0.3)',
                         borderColor: tech ? `color-mix(in srgb, ${tech.color} 25%, transparent)` : 'hsl(var(--border) / 0.4)',
+                        zoom:        fontScale,
                       }}
                     >
                       <p className="text-[13px] font-black tabular-nums leading-none" style={{ color: tech?.color }}>
@@ -508,6 +691,7 @@ function ListView({ technicians, appointments, onAppointmentClick }: ListViewPro
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AppointmentCalendar({
   technicians, appointments, selectedDate, onDateChange, onAppointmentClick, onSlotClick,
+  baseHourStart, baseHourEnd, fontScale = 1.0,
 }: Props) {
   const [calView, setCalView] = useState<CalView>('day');
 
@@ -518,14 +702,14 @@ export default function AppointmentCalendar({
   const byDay = useMemo(() => {
     const m: Record<string, Appointment[]> = {};
     for (const a of appointments) {
-      const k = a.start_datetime.slice(0, 10);
+      const k = format(parseISO(a.start_datetime), 'yyyy-MM-dd');
       (m[k] ||= []).push(a);
     }
     return m;
   }, [appointments]);
 
   const dayAppts = useMemo(() =>
-    appointments.filter(a => a.start_datetime.startsWith(dayStr)),
+    appointments.filter(a => format(parseISO(a.start_datetime), 'yyyy-MM-dd') === dayStr),
   [appointments, dayStr]);
 
   const byTech = useMemo(() => {
@@ -534,10 +718,16 @@ export default function AppointmentCalendar({
     return m;
   }, [dayAppts, activeTechs]);
 
-  // ── Dynamic visible hour range based on day's appointments ──
+  // Orphaned "en_espera" appointments with no technician assigned
+  const orphanedWaiting = useMemo(
+    () => dayAppts.filter(a => (!a.technician_id || a.technician_id === '') && a.status === 'en_espera'),
+    [dayAppts],
+  );
+
+  // ── Dynamic visible hour range based on tech schedules + appointments ──
   const { hourStart, hourEnd } = useMemo(() => {
-    let start = DEFAULT_START;
-    let end   = DEFAULT_END;
+    let start = baseHourStart ?? DEFAULT_START;
+    let end   = baseHourEnd   ?? DEFAULT_END;
     for (const a of dayAppts) {
       const s  = parseISO(a.start_datetime);
       const e  = addMinutes(s, a.duration_minutes);
@@ -545,28 +735,16 @@ export default function AppointmentCalendar({
       end   = Math.max(end, e.getHours() + (e.getMinutes() > 0 ? 1 : 0));
     }
     return {
-      hourStart: Math.max(0, start - 1),   // 1h buffer before first appt
-      hourEnd:   Math.min(24, end + 1),    // 1h buffer after last appt
+      hourStart: Math.max(0, start),
+      hourEnd:   Math.min(24, end),
     };
-  }, [dayAppts]);
+  }, [dayAppts, baseHourStart, baseHourEnd]);
 
   const hours       = useMemo(
     () => Array.from({ length: hourEnd - hourStart }, (_, i) => hourStart + i),
     [hourStart, hourEnd],
   );
   const totalHeight = (hourEnd - hourStart) * HOUR_HEIGHT;
-
-  function handleSlotClick(e: React.MouseEvent<HTMLDivElement>, techId: string) {
-    const rect   = e.currentTarget.getBoundingClientRect();
-    const y      = e.clientY - rect.top;
-    const totalM = hourStart * 60 + (y / HOUR_HEIGHT) * 60;
-    const h      = Math.floor(totalM / 60);
-    const rawM   = Math.round((totalM % 60) / 15) * 15;
-    const fh     = rawM >= 60 ? h + 1 : h;
-    const fm     = rawM >= 60 ? rawM - 60 : rawM;
-    const ts     = `${String(fh).padStart(2, '0')}:${String(fm).padStart(2, '0')}`;
-    onSlotClick?.(dayStr, ts, techId);
-  }
 
   const step = calView === 'day' ? 1 : 7;
 
@@ -577,7 +755,7 @@ export default function AppointmentCalendar({
     : 'Próximas citas';
 
   return (
-    <div className="flex flex-col h-full min-h-0 gap-3">
+    <div className="flex flex-col gap-2">
 
       {/* ── Navigation bar ── */}
       <div className="flex items-center gap-1.5 shrink-0 px-2 py-1.5 rounded-2xl bg-muted/30 border border-border/40">
@@ -705,7 +883,7 @@ export default function AppointmentCalendar({
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -8 }}
           transition={{ duration: 0.15 }}
-          className="flex-1 min-h-0"
+          className="flex-shrink-0 pb-4"
         >
           {calView === 'day' && activeTechs.length === 0 && (
             <div className="h-full flex items-center justify-center text-sm text-muted-foreground/40">
@@ -720,10 +898,12 @@ export default function AppointmentCalendar({
               dayStr={dayStr}
               selectedDate={selectedDate}
               onAppointmentClick={onAppointmentClick}
-              onSlotClick={handleSlotClick}
+              onSlotClick={onSlotClick}
               hourStart={hourStart}
               hours={hours}
               totalHeight={totalHeight}
+              orphanedWaiting={orphanedWaiting}
+              fontScale={fontScale}
             />
           )}
           {calView === 'week' && (
@@ -735,6 +915,7 @@ export default function AppointmentCalendar({
               onAppointmentClick={onAppointmentClick}
               onPrevWeek={() => onDateChange(addDays(selectedDate, -7))}
               onNextWeek={() => onDateChange(addDays(selectedDate,  7))}
+              fontScale={fontScale}
             />
           )}
           {calView === 'list' && (
@@ -742,6 +923,7 @@ export default function AppointmentCalendar({
               technicians={technicians}
               appointments={appointments}
               onAppointmentClick={onAppointmentClick}
+              fontScale={fontScale}
             />
           )}
         </motion.div>

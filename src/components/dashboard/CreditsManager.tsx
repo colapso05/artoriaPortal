@@ -260,10 +260,6 @@ export default function CreditsManager({ companyId, userId }: Props) {
                   </p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">mensajes disponibles</p>
                 </div>
-                <div className="text-right text-[11px] text-muted-foreground space-y-0.5">
-                  <p>Comprados: <span className="font-semibold text-foreground">{credits?.total_purchased.toLocaleString("es-CL")}</span></p>
-                  <p>Usados: <span className="font-semibold text-foreground">{credits?.total_used.toLocaleString("es-CL")}</span></p>
-                </div>
               </div>
               <div className="space-y-1">
                 <div className="h-2 rounded-full bg-secondary/60 overflow-hidden">

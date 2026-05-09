@@ -7,13 +7,16 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   Palette, HelpCircle, Save, Loader2, Minus, Plus, User, Lock, Tag,
   Trash2, Check, GripVertical, PlusCircle, Pencil, X, Bell, Phone, PanelLeft,
-  Home, MessageCircle, Ticket, Zap, MapPin,
+  Home, MessageCircle, Ticket, Zap, MapPin, Users,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -127,10 +130,15 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   // Alert phone numbers
   const [alertPhones, setAlertPhones] = useState<{ id: string; phone: string; label: string; sort_order: number }[]>([]);
   const [alertPhonesLoading, setAlertPhonesLoading] = useState(false);
-  const [newPhone, setNewPhone] = useState("");
+  const [newPhoneCode,  setNewPhoneCode]  = useState("+56");
+  const [newPhone,      setNewPhone]      = useState("");
   const [newPhoneLabel, setNewPhoneLabel] = useState("");
-  const [addingPhone, setAddingPhone] = useState(false);
-  const [savingPhone, setSavingPhone] = useState(false);
+  const [addingPhone,   setAddingPhone]   = useState(false);
+  const [savingPhone,   setSavingPhone]   = useState(false);
+  // Import from technicians
+  const [techPhones,      setTechPhones]      = useState<{ id: string; name: string; phone: string }[]>([]);
+  const [loadingTechPhones, setLoadingTechPhones] = useState(false);
+  const [showTechImport,  setShowTechImport]  = useState(false);
 
   const { toast } = useToast();
 
@@ -294,13 +302,18 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     setAlertPhonesLoading(false);
   };
 
-  const addAlertPhone = async () => {
-    if (!newPhone.trim() || !companyId) return;
+  const addAlertPhone = async (overridePhone?: string, overrideLabel?: string) => {
+    const rawNumber = overridePhone ?? newPhone.trim();
+    if (!rawNumber || !companyId) return;
+    // If it's a manual entry, prepend the selected country code
+    const fullPhone = overridePhone
+      ? rawNumber
+      : `${newPhoneCode}${rawNumber.replace(/^0+/, '')}`;
     setSavingPhone(true);
     const { error } = await (supabase as any).rpc("add_alert_phone", {
       p_company_id: companyId,
-      p_phone: newPhone.trim(),
-      p_label: newPhoneLabel.trim() || null,
+      p_phone: fullPhone,
+      p_label: (overrideLabel ?? newPhoneLabel.trim()) || null,
     });
     setSavingPhone(false);
     if (error) {
@@ -310,12 +323,29 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
         toast({ title: "Error al agregar", description: error.message, variant: "destructive" });
       }
     } else {
-      setNewPhone("");
-      setNewPhoneLabel("");
-      setAddingPhone(false);
+      if (!overridePhone) {
+        setNewPhone("");
+        setNewPhoneLabel("");
+        setAddingPhone(false);
+      }
       await loadAlertPhones();
       toast({ title: "✅ Número agregado" });
     }
+  };
+
+  const loadTechPhones = async () => {
+    if (!companyId) return;
+    setLoadingTechPhones(true);
+    const { data } = await (supabase as any)
+      .from('technicians')
+      .select('id, name, phone')
+      .eq('company_id', companyId)
+      .eq('is_active', true)
+      .not('phone', 'is', null)
+      .order('name');
+    setTechPhones((data ?? []).filter((t: any) => t.phone?.trim()));
+    setLoadingTechPhones(false);
+    setShowTechImport(true);
   };
 
   const deleteAlertPhone = async (id: string) => {
@@ -775,6 +805,59 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                 </div>
               )}
 
+              {/* Import from technicians */}
+              <AnimatePresence>
+                {showTechImport && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    className="space-y-2 p-3 rounded-xl border border-border/30 bg-secondary/20"
+                  >
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-semibold text-muted-foreground">Técnicos con teléfono registrado</p>
+                      <button onClick={() => setShowTechImport(false)} className="text-muted-foreground/50 hover:text-foreground">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {techPhones.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground/60 py-2 text-center">
+                        Sin técnicos con número registrado
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        {techPhones.map(tech => {
+                          const alreadyAdded = alertPhones.some(p =>
+                            p.phone.replace(/\D/g, '').endsWith(tech.phone.replace(/\D/g, ''))
+                          );
+                          return (
+                            <div key={tech.id} className="flex items-center gap-2 py-1">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[12px] font-semibold truncate">{tech.name}</p>
+                                <p className="text-[10px] text-muted-foreground">{tech.phone}</p>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant={alreadyAdded ? "ghost" : "outline"}
+                                className="h-7 text-[11px] gap-1 shrink-0"
+                                disabled={alreadyAdded || alertPhones.length >= 5 || savingPhone}
+                                onClick={() => addAlertPhone(tech.phone, tech.name)}
+                              >
+                                {alreadyAdded ? (
+                                  <><Check className="w-3 h-3 text-emerald-500" /> Agregado</>
+                                ) : (
+                                  <><PlusCircle className="w-3 h-3" /> Agregar</>
+                                )}
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Add new phone */}
               <AnimatePresence>
                 {addingPhone ? (
@@ -784,45 +867,83 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                     exit={{ opacity: 0, y: -8 }}
                     className="space-y-2 p-3 rounded-xl border border-primary/30 bg-primary/5"
                   >
+                    {/* Country code + number */}
                     <div className="flex gap-2">
+                      <Select value={newPhoneCode} onValueChange={setNewPhoneCode}>
+                        <SelectTrigger className="w-[90px] h-9 text-sm rounded-md shrink-0">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {[
+                            { code: '+56', flag: '🇨🇱' },
+                            { code: '+54', flag: '🇦🇷' },
+                            { code: '+51', flag: '🇵🇪' },
+                            { code: '+57', flag: '🇨🇴' },
+                            { code: '+52', flag: '🇲🇽' },
+                            { code: '+55', flag: '🇧🇷' },
+                            { code: '+34', flag: '🇪🇸' },
+                            { code: '+1',  flag: '🇺🇸' },
+                          ].map(({ code, flag }) => (
+                            <SelectItem key={code} value={code} className="text-sm">
+                              {flag} {code}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <input
                         type="tel"
                         value={newPhone}
-                        onChange={e => setNewPhone(e.target.value)}
-                        placeholder="+56912345678"
-                        className="flex-1 h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onKeyDown={e => e.key === "Enter" && addAlertPhone()}
-                      />
-                      <input
-                        type="text"
-                        value={newPhoneLabel}
-                        onChange={e => setNewPhoneLabel(e.target.value)}
-                        placeholder="Etiqueta (ej: Jefe de turno)"
+                        onChange={e => setNewPhone(e.target.value.replace(/\D/g, ''))}
+                        placeholder="912345678"
                         className="flex-1 h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         onKeyDown={e => e.key === "Enter" && addAlertPhone()}
                       />
                     </div>
+                    <input
+                      type="text"
+                      value={newPhoneLabel}
+                      onChange={e => setNewPhoneLabel(e.target.value)}
+                      placeholder="Etiqueta (ej: Jefe de turno)"
+                      className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onKeyDown={e => e.key === "Enter" && addAlertPhone()}
+                    />
                     <div className="flex gap-2 justify-end">
                       <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => { setAddingPhone(false); setNewPhone(""); setNewPhoneLabel(""); }}>
                         Cancelar
                       </Button>
-                      <Button size="sm" className="h-7 text-xs gap-1.5" onClick={addAlertPhone} disabled={savingPhone || !newPhone.trim()}>
+                      <Button size="sm" className="h-7 text-xs gap-1.5" onClick={() => addAlertPhone()} disabled={savingPhone || !newPhone.trim()}>
                         {savingPhone ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                         Guardar
                       </Button>
                     </div>
                   </motion.div>
                 ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full h-9 gap-2 text-xs border-dashed"
-                    disabled={alertPhones.length >= 5}
-                    onClick={() => setAddingPhone(true)}
-                  >
-                    <PlusCircle className="w-3.5 h-3.5" />
-                    {alertPhones.length >= 5 ? "Límite alcanzado (5/5)" : "Agregar número"}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 h-9 gap-2 text-xs border-dashed"
+                      disabled={alertPhones.length >= 5}
+                      onClick={() => setAddingPhone(true)}
+                    >
+                      <PlusCircle className="w-3.5 h-3.5" />
+                      {alertPhones.length >= 5 ? "Límite alcanzado (5/5)" : "Agregar número"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 gap-1.5 text-xs border-dashed"
+                      disabled={alertPhones.length >= 5 || loadingTechPhones}
+                      onClick={showTechImport ? () => setShowTechImport(false) : loadTechPhones}
+                      title="Importar desde técnicos"
+                    >
+                      {loadingTechPhones
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <Users className="w-3.5 h-3.5" />
+                      }
+                      Técnicos
+                    </Button>
+                  </div>
                 )}
               </AnimatePresence>
             </div>

@@ -1,4 +1,4 @@
-export type AppointmentStatus = 'pendiente' | 'en_camino' | 'completado' | 'cancelado';
+export type AppointmentStatus = 'pendiente' | 'en_camino' | 'completado' | 'cancelado' | 'en_espera';
 
 export interface Technician {
   id: string;
@@ -63,6 +63,7 @@ export const STATUS_LABELS: Record<AppointmentStatus, string> = {
   en_camino:  'En camino',
   completado: 'Completado',
   cancelado:  'Cancelado',
+  en_espera:  'En espera',
 };
 
 export const STATUS_COLORS: Record<AppointmentStatus, string> = {
@@ -70,6 +71,7 @@ export const STATUS_COLORS: Record<AppointmentStatus, string> = {
   en_camino:  'text-blue-500 bg-blue-500/10 border-blue-500/30',
   completado: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/30',
   cancelado:  'text-red-500 bg-red-500/10 border-red-500/30',
+  en_espera:  'text-violet-500 bg-violet-500/10 border-violet-500/30',
 };
 
 export const DAY_NAMES = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];

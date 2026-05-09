@@ -26,6 +26,8 @@ const MyReports            = React.lazy(() => import("@/components/dashboard/MyR
 const AdminCreditRequests  = React.lazy(() => import("@/components/dashboard/AdminCreditRequests"));
 const ConversationsAnalytics = React.lazy(() => import("@/components/dashboard/ConversationsAnalytics"));
 const ScheduleManager        = React.lazy(() => import("@/components/dashboard/schedule/ScheduleManager"));
+const BillingManager         = React.lazy(() => import("@/components/dashboard/BillingManager"));
+const AdminBillingPanel      = React.lazy(() => import("@/components/dashboard/AdminBillingPanel"));
 
 // Spinner mínimo para el Suspense boundary
 function ViewLoader() {
@@ -63,6 +65,8 @@ export default function Dashboard() {
   // Guardamos el tamaño del admin para restaurarlo al salir de simulación
   const adminIconSizeRef = React.useRef<number>(24);
   const [pendingConversationId, setPendingConversationId] = useState<string | null>(null);
+  const [pendingInboxPhone, setPendingInboxPhone] = useState<string | null>(null);
+  const [pendingInboxMessage, setPendingInboxMessage] = useState<string | null>(null);
 
   const [activeToggle, setActiveToggle] = useState<UserToggle | null>(null);
   const [companyRole, setCompanyRole] = useState<string | null>(null);
@@ -124,18 +128,23 @@ export default function Dashboard() {
       document.body.removeAttribute("data-scroll-locked");
     }, 100);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (!session) navigate("/portal");
-    });
+    // Use onAuthStateChange exclusively — INITIAL_SESSION fires only after the
+    // token is fully loaded into the HTTP client, avoiding the race condition
+    // where getSession() resolves before the Authorization header is ready.
+    let dashboardInitialized = false;
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session) {
+        dashboardInitialized = false;
         navigate("/portal");
         return;
       }
       setSession(session);
-      initializeDashboard(session.user.id);
+      // Initialize only once per mount — skip TOKEN_REFRESHED / USER_UPDATED events
+      if (!dashboardInitialized && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
+        dashboardInitialized = true;
+        initializeDashboard(session.user.id);
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -316,6 +325,7 @@ export default function Dashboard() {
               simulatedCompanyName={simulatedCompanyName}
               simulatedUserName={simulatedUserName}
               simulatedUserRole={simulatedUserRole}
+              onAgendaClick={() => setActiveView("schedule")}
               onStopSimulation={() => {
                 setSidebarIconSize(adminIconSizeRef.current); // restaurar preferencia del admin
                 setSimulatedCompanyId(null);
@@ -328,9 +338,9 @@ export default function Dashboard() {
             />
           )}
 
-          <main className={`flex-1 min-h-0 flex flex-col ${activeView === "home" || activeView === "conversations-analytics" ? "overflow-y-auto" : "overflow-hidden"} ${activeView === "inbox" ? "p-0" : "p-4 md:p-6 lg:p-8"}`}>
+          <main className={`flex-1 min-h-0 flex flex-col ${["home", "conversations-analytics"].includes(activeView) ? "overflow-y-auto" : "overflow-hidden"} ${activeView === "inbox" ? "p-0" : "p-4 md:p-6 lg:p-8"}`}>
             <Suspense fallback={<ViewLoader />}>
-            <div className={`flex-1 flex flex-col w-full max-w-none ${activeView === "home" ? "" : "min-h-0"}`}>
+            <div className={`flex-1 flex flex-col w-full max-w-none ${["home", "conversations-analytics"].includes(activeView) ? "" : "min-h-0"}`}>
               {activeView === "home" && effectiveIsAdmin && <AdminDashboardHome />}
               {activeView === "home" && !effectiveIsAdmin && (
                 <ClientDashboardHome
@@ -424,7 +434,9 @@ export default function Dashboard() {
                   userRole={effectiveCompanyRole || undefined}
                   operatorRoles={effectiveOperatorRoles}
                   initialConversationId={pendingConversationId || undefined}
-                  onConversationOpened={() => setPendingConversationId(null)}
+                  initialPhone={pendingInboxPhone || undefined}
+                  initialMessage={pendingInboxMessage || undefined}
+                  onConversationOpened={() => { setPendingConversationId(null); setPendingInboxPhone(null); setPendingInboxMessage(null); }}
                   isSimulating={!!simulatedCompanyId}
                   simulatedUserName={simulatedUserName || simulatedCompanyName || undefined}
                   onNavigateToSchedule={() => setActiveView("schedule")}
@@ -469,6 +481,16 @@ export default function Dashboard() {
                   <AdminCreditRequests />
                 </div>
               )}
+              {activeView === "admin-billing" && isAdmin && (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <AdminBillingPanel />
+                </div>
+              )}
+              {activeView === "billing" && effectiveCompanyId && !effectiveIsAdmin && (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <BillingManager companyId={effectiveCompanyId} userId={session.user.id} />
+                </div>
+              )}
               {activeView === "my-reports" && (
                 <div className="flex-1 min-h-0 flex flex-col">
                   <MyReports userId={session.user.id} companyId={effectiveCompanyId} />
@@ -487,6 +509,11 @@ export default function Dashboard() {
                   companyId={effectiveCompanyId}
                   userId={session.user.id}
                   isAdmin={effectiveIsAdmin || effectiveCompanyRole === "administrador"}
+                  onOpenInboxConversation={(phone, message) => {
+                    setPendingInboxPhone(phone);
+                    setPendingInboxMessage(message || null);
+                    setActiveView("inbox");
+                  }}
                 />
               )}
 

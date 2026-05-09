@@ -14,8 +14,9 @@ import {
 } from "@/components/ui/select";
 import {
   Loader2, Clock, User, MapPin, Wrench, AlertCircle, CheckCircle2,
-  SlidersHorizontal, CalendarX, BanIcon, ChevronDown,
+  SlidersHorizontal, CalendarX, BanIcon, ChevronDown, HelpCircle,
 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { format, parseISO, addMinutes } from "date-fns";
 import { es } from "date-fns/locale";
 import {
@@ -113,6 +114,7 @@ export default function AppointmentForm({
   const [customDuration,    setCustomDuration]    = useState(false);
   const [customMins,        setCustomMins]        = useState('');
   const [customServiceType, setCustomServiceType] = useState(false);
+  const [forceEnEspera,     setForceEnEspera]     = useState(false);
 
   // ── Availability state ──
   const [avail,        setAvail]        = useState<Record<string, TechStatus>>({});
@@ -158,6 +160,7 @@ export default function AppointmentForm({
     setCustomDuration(false);
     setCustomMins('');
     setCustomServiceType(false);
+    setForceEnEspera(false);
   }, [open]);
 
   // ── Recheck whenever scheduling params change ──
@@ -167,7 +170,7 @@ export default function AppointmentForm({
     } else {
       setAvail({});
     }
-  }, [date, time, duration]);
+  }, [date, time, duration, activeTechs.length]);
 
   // ── Batch availability check ───────────────────────────────────────────────
   async function checkAllAvailability() {
@@ -200,8 +203,8 @@ export default function AppointmentForm({
         .from('appointments')
         .select('id, technician_id, start_datetime, duration_minutes')
         .in('technician_id', techIds)
-        .gte('start_datetime', `${date}T00:00:00`)
-        .lte('start_datetime', `${date}T23:59:59`)
+        .gte('start_datetime', new Date(`${date}T00:00:00`).toISOString())
+        .lte('start_datetime', new Date(`${date}T23:59:59.999`).toISOString())
         .neq('status', 'cancelado'),
     ]);
 
@@ -211,17 +214,20 @@ export default function AppointmentForm({
       const sched = schedules?.find((s: any) => s.technician_id === tech.id);
       const exc   = exceptions?.find((e: any) => e.technician_id === tech.id);
 
-      if (sched?.is_day_off) {
+      // Sin horario configurado para este día = no trabaja
+      if (!sched || sched.is_day_off) {
         result[tech.id] = { state: 'dayoff' };
         continue;
       }
-      // Check work hours — only if schedule row exists with times
+      // Check work hours — normalize to HH:mm to avoid "10:00" < "10:00:00" bug
       if (sched && sched.start_time && sched.end_time) {
+        const schedStart  = sched.start_time.slice(0, 5);
+        const schedEnd    = sched.end_time.slice(0, 5);
         const apptEndHHmm = format(endDt, 'HH:mm');
-        if (time < sched.start_time || apptEndHHmm > sched.end_time) {
+        if (time < schedStart || apptEndHHmm > schedEnd) {
           result[tech.id] = {
             state: 'outside',
-            detail: `${sched.start_time} – ${sched.end_time}`,
+            detail: `${schedStart} – ${schedEnd}`,
           };
           continue;
         }
@@ -258,17 +264,25 @@ export default function AppointmentForm({
   async function handleSave() {
     if (!clientName.trim())    { toast({ title: 'El nombre del cliente es obligatorio', variant: 'destructive' }); return; }
     if (!clientAddress.trim()) { toast({ title: 'La dirección es obligatoria', variant: 'destructive' }); return; }
-    if (!techId)               { toast({ title: 'Selecciona un técnico', variant: 'destructive' }); return; }
+    if (!techId && !forceEnEspera) { toast({ title: 'Selecciona un técnico', variant: 'destructive' }); return; }
     if (!date)                 { toast({ title: 'Selecciona una fecha', variant: 'destructive' }); return; }
-    if (isBlocked) {
+    if (isPast) {
+      toast({ title: 'No puedes agendar en el pasado', description: 'Elige una fecha y hora futura.', variant: 'destructive' });
+      return;
+    }
+    if (isBlocked && !forceEnEspera) {
       toast({ title: 'El técnico no está disponible en ese horario', variant: 'destructive' });
       return;
     }
 
     setSaving(true);
+    // Convertir a ISO UTC para evitar desfase de zona horaria en DB timestamptz
+    const effectiveStatus   = forceEnEspera ? 'en_espera' : status;
+    const startDatetimeISO  = new Date(`${date}T${time}:00`).toISOString();
+
     const payload = {
       company_id:       companyId,
-      technician_id:    techId,
+      technician_id:    effectiveStatus === 'en_espera' ? null : techId,
       conversation_id:  prefill?.conversationId || appointment?.conversation_id || null,
       client_name:      clientName.trim(),
       client_rut:       clientRut.trim()     || null,
@@ -276,9 +290,9 @@ export default function AppointmentForm({
       client_phone:     clientPhone.trim()   || null,
       service_type:     serviceType,
       notes:            notes.trim()         || null,
-      start_datetime:   `${date}T${time}:00`,
+      start_datetime:   startDatetimeISO,
       duration_minutes: duration,
-      status,
+      status:           effectiveStatus,
       created_by:       userId,
     };
 
@@ -289,19 +303,28 @@ export default function AppointmentForm({
     } else {
       const { error } = await (supabase as any).from('appointments').insert(payload);
       if (error) { toast({ title: 'Error al crear cita', description: error.message, variant: 'destructive' }); }
-      else       { toast({ title: '¡Cita agendada! 📅' }); onSaved(); onClose(); }
+      else {
+        toast({ title: forceEnEspera ? '⏳ Cita en espera creada' : '¡Cita agendada! 📅' });
+        onSaved();
+        onClose();
+      }
     }
     setSaving(false);
   }
 
-  const preview      = date && time ? endTime(`${date}T${time}:00`, duration) : null;
-  const hasDatetime  = !!(date && time);
-  const freeCount    = Object.values(avail).filter(s => s.state === 'free').length;
-  const busyCount    = Object.values(avail).filter(s => ['busy','dayoff','exception'].includes(s.state)).length;
+  const preview       = date && time ? endTime(`${date}T${time}:00`, duration) : null;
+  const hasDatetime   = !!(date && time);
+  const freeCount     = Object.values(avail).filter(s => s.state === 'free').length;
+  const busyCount     = Object.values(avail).filter(s => ['busy','dayoff','exception'].includes(s.state)).length;
+  const allBusy       = activeTechs.length > 0 && freeCount === 0 && !checkingAll && hasDatetime;
+  const isPast        = !appointment && date && time
+    ? new Date(`${date}T${time}:00`) < new Date()
+    : false;
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-md bg-card border-border shadow-2xl rounded-2xl p-0 overflow-hidden">
+      <DialogContent className="max-w-md bg-card border-border shadow-2xl rounded-2xl p-0 overflow-hidden" aria-describedby={undefined}>
+      <TooltipProvider delayDuration={200}>
         <DialogHeader className="px-6 py-4 border-b border-border bg-gradient-to-r from-primary/8 to-transparent">
           <DialogTitle className="text-sm font-bold flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
@@ -402,47 +425,63 @@ export default function AppointmentForm({
 
                 {/* Técnico con dot de estado */}
                 <div className="space-y-1">
-                  <Label className="text-[11px] text-muted-foreground">Técnico</Label>
-                  <Select value={techId} onValueChange={v => { setTechId(v); }}>
-                    <SelectTrigger className={`h-9 text-sm rounded-xl ${
-                      isBlocked ? 'border-red-500/50 bg-red-500/5' : ''
-                    }`}>
-                      <SelectValue placeholder="Seleccionar...">
-                        {techId && (() => {
-                          const t = activeTechs.find(t => t.id === techId);
-                          const s = avail[techId];
-                          return t ? (
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[s?.state || 'idle']}`} />
-                              <span className="truncate">{t.name}</span>
-                            </div>
-                          ) : null;
-                        })()}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent className="rounded-xl">
-                      {activeTechs.length === 0 && (
-                        <div className="px-3 py-2 text-[11px] text-muted-foreground">Sin técnicos activos</div>
-                      )}
-                      {activeTechs.map(t => {
-                        const s = avail[t.id];
-                        const cfg = STATUS_CONFIG[s?.state || 'idle'];
-                        return (
-                          <SelectItem key={t.id} value={t.id} className="text-sm">
-                            <div className="flex items-center gap-2.5 w-full">
-                              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[s?.state || 'idle']}`} />
-                              <span className="flex-1">{t.name}</span>
-                              {s && s.state !== 'idle' && (
-                                <span className={`text-[10px] font-semibold ml-auto ${cfg.color}`}>
-                                  {s.state === 'busy' && s.detail ? s.detail : cfg.label}
-                                </span>
-                              )}
-                            </div>
-                          </SelectItem>
-                        );
-                      })}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-1.5">
+                    <Label className="text-[11px] text-muted-foreground">Técnico</Label>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <HelpCircle className="w-3 h-3 text-muted-foreground/60 hover:text-muted-foreground cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-[220px] text-xs font-medium">
+                        El sistema verifica en tiempo real la disponibilidad de los técnicos considerando sus jornadas laborales, permisos y citas programadas.
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  {forceEnEspera || status === 'en_espera' ? (
+                    <div className="flex items-center gap-2 h-9 px-3 rounded-xl border border-input bg-muted/50 text-sm text-muted-foreground">
+                      <Clock className="w-4 h-4 text-violet-500" /> A espera de asignar técnico
+                    </div>
+                  ) : (
+                    <Select value={techId} onValueChange={v => { setTechId(v); }}>
+                      <SelectTrigger className={`h-9 text-sm rounded-xl ${
+                        isBlocked ? 'border-red-500/50 bg-red-500/5' : ''
+                      }`}>
+                        <SelectValue placeholder="Seleccionar...">
+                          {techId && (() => {
+                            const t = activeTechs.find(t => t.id === techId);
+                            const s = avail[techId];
+                            return t ? (
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[s?.state || 'idle']}`} />
+                                <span className="truncate">{t.name}</span>
+                              </div>
+                            ) : null;
+                          })()}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="rounded-xl">
+                        {activeTechs.length === 0 && (
+                          <div className="px-3 py-2 text-[11px] text-muted-foreground">Sin técnicos activos</div>
+                        )}
+                        {activeTechs.map(t => {
+                          const s = avail[t.id];
+                          const cfg = STATUS_CONFIG[s?.state || 'idle'];
+                          return (
+                            <SelectItem key={t.id} value={t.id} className="text-sm">
+                              <div className="flex items-center gap-2.5 w-full">
+                                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${DOT_COLOR[s?.state || 'idle']}`} />
+                                <span className="flex-1">{t.name}</span>
+                                {s && s.state !== 'idle' && (
+                                  <span className={`text-[10px] font-semibold ml-auto ${cfg.color}`}>
+                                    {s.state === 'busy' && s.detail ? s.detail : cfg.label}
+                                  </span>
+                                )}
+                              </div>
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
 
                 {/* Fecha */}
@@ -451,6 +490,7 @@ export default function AppointmentForm({
                   <input
                     type="date"
                     value={date}
+                    min={!appointment ? format(new Date(), 'yyyy-MM-dd') : undefined}
                     onChange={e => setDate(e.target.value)}
                     className="w-full h-9 text-sm rounded-xl border border-input bg-background px-3 focus:outline-none focus:ring-2 focus:ring-ring/30"
                   />
@@ -604,6 +644,16 @@ export default function AppointmentForm({
                 </div>
               )}
 
+              {/* Past-time warning */}
+              {isPast && (
+                <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
+                  <span className="text-[11px] text-amber-600 dark:text-amber-400 leading-snug">
+                    Esta hora ya pasó — elige un horario futuro
+                  </span>
+                </div>
+              )}
+
               {/* Blocked warning for selected tech */}
               {isBlocked && techId && (
                 <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/30">
@@ -650,20 +700,53 @@ export default function AppointmentForm({
           </div>
         </ScrollArea>
 
+        {/* Banner en espera */}
+        {allBusy && !appointment && (
+          <div className="px-5 pb-3">
+            {!forceEnEspera ? (
+              <button
+                type="button"
+                onClick={() => setForceEnEspera(true)}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-violet-500/40 bg-violet-500/8 text-left hover:bg-violet-500/14 transition-colors"
+              >
+                <Clock className="w-4 h-4 text-violet-500 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-[11px] font-bold text-violet-500">Todos los técnicos están ocupados</p>
+                  <p className="text-[10px] text-muted-foreground/70">Clic para agregar a lista de espera</p>
+                </div>
+              </button>
+            ) : (
+              <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-violet-500/40 bg-violet-500/10">
+                <Clock className="w-4 h-4 text-violet-500 flex-shrink-0" />
+                <p className="text-[11px] text-violet-600 dark:text-violet-400 flex-1">
+                  Se guardará como <strong>En espera</strong> — recibirás aviso cuando el técnico esté disponible
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setForceEnEspera(false)}
+                  className="text-[10px] text-muted-foreground/60 hover:text-foreground transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <DialogFooter className="px-5 py-4 border-t border-border gap-2 bg-muted/20">
           <Button variant="ghost" onClick={onClose} disabled={saving} className="rounded-xl">
             Cancelar
           </Button>
           <Button
             onClick={handleSave}
-            disabled={saving || isBlocked || checkingAll}
-            className="rounded-xl gap-2 min-w-[130px]"
+            disabled={saving || (isBlocked && !forceEnEspera) || checkingAll || (!!isPast && !appointment)}
+            className={`rounded-xl gap-2 min-w-[130px] ${forceEnEspera ? 'bg-violet-600 hover:bg-violet-700' : ''}`}
           >
-            {saving      && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            {checkingAll && !saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            {appointment ? 'Guardar cambios' : 'Confirmar cita'}
+            {(saving || checkingAll) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            {appointment ? 'Guardar cambios' : forceEnEspera ? 'Agregar en espera' : 'Confirmar cita'}
           </Button>
         </DialogFooter>
+      </TooltipProvider>
       </DialogContent>
     </Dialog>
   );

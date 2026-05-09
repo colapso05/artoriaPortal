@@ -130,7 +130,7 @@ const statusWeight: Record<string, number> = {
 function OnboardingTip({ children, tip, side = "bottom" }: { children: React.ReactNode; tip: string; side?: "top" | "bottom" | "left" | "right" }) {
   return (
     <Tooltip delayDuration={200}>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipTrigger asChild><span className="inline-flex">{children}</span></TooltipTrigger>
       <TooltipContent side={side} className="max-w-[220px] text-xs font-normal bg-card border-border shadow-lg">
         <div className="flex items-start gap-1.5">
           <Info className="w-3 h-3 text-primary mt-0.5 shrink-0" />
@@ -898,7 +898,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
 
         {/* ── Create Dialog ── */}
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogContent className="bg-card border-border/30 max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogContent className="bg-card border-border/30 max-w-md max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
             <DialogHeader>
               <DialogTitle className="font-['Space_Grotesk'] flex items-center gap-2">
                 <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">

@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/sidebar";
 import {
   Users, Database, FolderKanban, Home,
-  HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle, Zap, CreditCard, ClipboardList, BadgeDollarSign, CalendarDays,
+  HelpCircle, Sparkles, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle, Zap, CreditCard, ClipboardList, BadgeDollarSign, CalendarDays, Receipt,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -139,6 +139,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 <NavItem view="schedule" icon={CalendarDays} label="Agenda" />
                 <NavItem view="reports" icon={AlertCircle} label="Reportes IA" />
                 <NavItem view="credit-requests" icon={BadgeDollarSign} label="Solicitudes Créditos" />
+                <NavItem view="admin-billing" icon={Receipt} label="Facturación" />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -158,6 +159,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 {hasPermission("coverage") && <NavItem view="coverage" icon={MapPin} label="Coberturas" />}
                 {hasPermission("schedule") && <NavItem view="schedule" icon={CalendarDays} label="Agenda" />}
                 {companyRole === "administrador" && creditsEnabled && <NavItem view="credits" icon={CreditCard} label="Créditos" />}
+                {companyRole === "administrador" && <NavItem view="billing" icon={Receipt} label="Facturación" />}
                 <NavItem view="my-reports" icon={ClipboardList} label="Mis Reportes" />
               </SidebarMenu>
             </SidebarGroupContent>
