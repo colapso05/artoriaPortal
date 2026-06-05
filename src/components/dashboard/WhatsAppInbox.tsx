@@ -481,8 +481,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
-  // Búsqueda: refs para debounce y cancelación de resultados viejos
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Búsqueda: ref para cancelar resultados de fetches viejos (race condition)
   const searchGenerationRef = useRef(0);
   const [chatFilter, setChatFilter] = useState<string>('all');
   const [ticketStatusByConvId, setTicketStatusByConvId] = useState<Record<string, string>>({});
@@ -734,7 +733,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     // generación anterior (fetch viejo que tardó más) lo descartamos.
     const generation = ++searchGenerationRef.current;
 
-    const runSearch = async () => {
+    // Debounce: espera 350ms desde el último keystroke antes de lanzar el fetch
+    const timer = setTimeout(async () => {
       const normalize = (rows: any[]) =>
         rows.map(r => ({ ...r, id: r.id ?? r.conversation_id }));
 
@@ -804,9 +804,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       }
 
       setSearchResults(intersection ?? []);
-    };
+    }, 350);
 
-    runSearch();
+    return () => clearTimeout(timer);
   }, [searchTerm, companyId]);
 
   // ── Sonido de notificación (Web Audio API, sin archivo externo) ─────────────
@@ -2237,14 +2237,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
             <Input
               placeholder="Buscar chats..."
-              defaultValue={searchTerm}
-              onChange={(e) => {
-                // Debounce en el handler: no actualiza estado en cada tecla
-                // (evita re-render del componente por cada letra)
-                if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-                const val = e.target.value;
-                searchDebounceRef.current = setTimeout(() => setSearchTerm(val), 350);
-              }}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-8 h-9 bg-secondary/50 border-border/40 focus-visible:ring-1 text-[13px] rounded-lg shadow-sm"
             />
           </div>
