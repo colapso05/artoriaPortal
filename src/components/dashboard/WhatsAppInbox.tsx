@@ -481,6 +481,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
   // Búsqueda: ref para cancelar resultados de fetches viejos (race condition)
   const searchGenerationRef = useRef(0);
   const [chatFilter, setChatFilter] = useState<string>('all');
@@ -722,64 +723,83 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setShowMobilePanel(false);
   }, [selectedConv?.id]);
 
-  // Debounced keyword search
+  // Debounced keyword search — relevancia progresiva:
+  // cuantas más palabras escriba el usuario, más específicos son los resultados.
   useEffect(() => {
-    if (!searchTerm.trim()) {
+    const q = searchTerm.trim();
+
+    if (!q) {
       setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+
+    // Mínimo 3 caracteres para activar la búsqueda
+    if (q.length < 3) {
+      setSearchResults([]);
+      setSearching(false);
       return;
     }
 
     // Cada búsqueda tiene un número de generación; si llega un resultado de una
     // generación anterior (fetch viejo que tardó más) lo descartamos.
     const generation = ++searchGenerationRef.current;
+    setSearching(true);
 
-    // Debounce: espera 350ms desde el último keystroke antes de lanzar el fetch
+    // Debounce: 400ms — da tiempo a que el usuario termine de escribir
     const timer = setTimeout(async () => {
       const normalize = (rows: any[]) =>
         rows.map(r => ({ ...r, id: r.id ?? r.conversation_id }));
 
-      // 1. Buscar la frase completa primero (orden exacto)
+      // ── Estrategia de búsqueda progresiva ──────────────────────────────────
+      // 1. Frase completa exacta (el RPC usa ILIKE — no tiene stopwords)
       const { data: phraseData, error: phraseError } = await (supabase as any).rpc(
         'search_conversations_by_keyword',
-        { p_company_id: companyId, p_keyword: searchTerm.trim() }
+        { p_company_id: companyId, p_keyword: q }
       );
 
-      if (generation !== searchGenerationRef.current) return; // resultado viejo, ignorar
+      if (generation !== searchGenerationRef.current) return;
 
       if (!phraseError && phraseData && (phraseData as any[]).length > 0) {
         setSearchResults(normalize(phraseData as any[]));
+        setSearching(false);
         return;
       }
 
-      // 2. Si la frase completa falló (probablemente por stopwords cortas como "si", "de"),
-      //    intentar la frase sin palabras cortas (< 4 chars).
-      //    Ej: "si tiene conectado" → intenta "tiene conectado" que el RPC sí puede resolver.
-      const significantWords = searchTerm.toLowerCase().split(/\s+/).filter(t => t.length >= 4);
+      // 2. Frase sin palabras muy cortas (≤2 chars): "si tiene conectado" → "tiene conectado"
+      //    Útil como fallback mientras el backend no usa ILIKE puro.
+      const significantWords = q.split(/\s+/).filter(t => t.length >= 3);
       if (significantWords.length === 0) {
         setSearchResults([]);
+        setSearching(false);
         return;
       }
 
       const filteredPhrase = significantWords.join(' ');
-      if (filteredPhrase !== searchTerm.trim().toLowerCase()) {
-        // La frase filtrada es diferente a la original — probarla antes de ir a palabras sueltas
+      if (filteredPhrase.toLowerCase() !== q.toLowerCase()) {
         const { data: filteredData, error: filteredError } = await (supabase as any).rpc(
           'search_conversations_by_keyword',
           { p_company_id: companyId, p_keyword: filteredPhrase }
         );
-
         if (generation !== searchGenerationRef.current) return;
-
         if (!filteredError && filteredData && (filteredData as any[]).length > 0) {
           setSearchResults(normalize(filteredData as any[]));
+          setSearching(false);
           return;
         }
       }
 
-      // 3. Último recurso: buscar cada palabra significativa (≥4 chars) por separado
-      //    y hacer intersección (AND) para evitar falsos positivos con palabras comunes.
-      const results = await Promise.all(
-        significantWords.map(word =>
+      // 3. Último recurso: intersección (AND) de palabras significativas (≥4 chars).
+      //    "si tiene conectado" → busca "tiene" ∩ "conectado" → solo chats con ambas palabras.
+      const longWords = q.split(/\s+/).filter(t => t.length >= 4);
+      if (longWords.length === 0) {
+        setSearchResults([]);
+        setSearching(false);
+        return;
+      }
+
+      const wordResults = await Promise.all(
+        longWords.map(word =>
           (supabase as any).rpc('search_conversations_by_keyword', {
             p_company_id: companyId,
             p_keyword: word
@@ -787,12 +807,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         )
       );
 
-      if (generation !== searchGenerationRef.current) return; // resultado viejo, ignorar
+      if (generation !== searchGenerationRef.current) return;
 
-      // Intersección (AND): solo conversaciones que contengan TODOS los términos.
-      // Unión (OR) causa falsos positivos — "tiene" es común y devuelve cientos de chats.
       let intersection: any[] | null = null;
-      for (const { data, error } of results) {
+      for (const { data, error } of wordResults) {
         if (error || !data) continue;
         const normalized = normalize(data as any[]);
         if (intersection === null) {
@@ -804,9 +822,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       }
 
       setSearchResults(intersection ?? []);
-    }, 350);
+      setSearching(false);
+    }, 400);
 
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); };
   }, [searchTerm, companyId]);
 
   // ── Sonido de notificación (Web Audio API, sin archivo externo) ─────────────
@@ -2233,14 +2252,46 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               </button>
             )}
           </div>
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
-            <Input
-              placeholder="Buscar chats..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-8 h-9 bg-secondary/50 border-border/40 focus-visible:ring-1 text-[13px] rounded-lg shadow-sm"
-            />
+          <div className="space-y-1.5">
+            <div className="relative">
+              {searching
+                ? <Loader2 className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-primary animate-spin" />
+                : <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
+              }
+              <Input
+                placeholder="Buscar mensajes en chats..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-8 pr-7 h-9 bg-secondary/50 border-border/40 focus-visible:ring-1 text-[13px] rounded-lg shadow-sm"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {/* Feedback de resultados */}
+            {searchTerm.trim().length >= 3 && !searching && (
+              <div className="flex items-center gap-1.5 px-1">
+                {searchResults.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground/60">Sin resultados — intenta con otras palabras</p>
+                ) : searchResults.length > 80 ? (
+                  <p className="text-[10px] text-amber-500/80">
+                    <span className="font-semibold">{searchResults.length}</span> chats — agrega más palabras para afinar
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground/60">
+                    <span className="font-semibold text-foreground/70">{searchResults.length}</span> chats encontrados
+                  </p>
+                )}
+              </div>
+            )}
+            {searchTerm.trim().length > 0 && searchTerm.trim().length < 3 && (
+              <p className="text-[10px] text-muted-foreground/50 px-1">Escribe al menos 3 caracteres</p>
+            )}
           </div>
           {/* ── Filtros unificados: Todos + etiquetas de ticket + Míos + Cerrados ── */}
           <div className="flex gap-1.5 flex-wrap">
