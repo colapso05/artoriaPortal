@@ -481,6 +481,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  // Búsqueda: refs para debounce y cancelación de resultados viejos
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchGenerationRef = useRef(0);
   const [chatFilter, setChatFilter] = useState<string>('all');
   const [ticketStatusByConvId, setTicketStatusByConvId] = useState<Record<string, string>>({});
   const [ticketLabels, setTicketLabels] = useState<Array<{key: string; name: string; color: string; is_initial?: boolean; is_final?: boolean}>>([
@@ -727,25 +730,30 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       return;
     }
 
-    const timer = setTimeout(async () => {
+    // Cada búsqueda tiene un número de generación; si llega un resultado de una
+    // generación anterior (fetch viejo que tardó más) lo descartamos.
+    const generation = ++searchGenerationRef.current;
+
+    const runSearch = async () => {
       const normalize = (rows: any[]) =>
         rows.map(r => ({ ...r, id: r.id ?? r.conversation_id }));
 
-      // 1. Always search the full phrase first (exact order)
+      // 1. Buscar la frase completa primero (orden exacto)
       const { data: phraseData, error: phraseError } = await (supabase as any).rpc(
         'search_conversations_by_keyword',
         { p_company_id: companyId, p_keyword: searchTerm.trim() }
       );
+
+      if (generation !== searchGenerationRef.current) return; // resultado viejo, ignorar
 
       if (!phraseError && phraseData && (phraseData as any[]).length > 0) {
         setSearchResults(normalize(phraseData as any[]));
         return;
       }
 
-      // 2. Fallback: search each significant word (≥4 chars) independently and merge results
+      // 2. Fallback: buscar cada palabra significativa (≥4 chars) por separado y unir
       const words = searchTerm.toLowerCase().split(/\s+/).filter(t => t.length >= 4);
       if (words.length === 0) {
-        // If no significant words exist, nothing useful to search
         setSearchResults([]);
         return;
       }
@@ -759,7 +767,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         )
       );
 
-      // Merge deduplicated results (conversation shown once, using first match_content)
+      if (generation !== searchGenerationRef.current) return; // resultado viejo, ignorar
+
+      // Merge deduplicado (una conversación aparece una vez, con el primer match_content)
       const merged = new Map<string, any>();
       results.forEach(({ data, error }: any) => {
         if (!error && data) {
@@ -770,9 +780,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       });
 
       setSearchResults(Array.from(merged.values()));
-    }, 400);
+    };
 
-    return () => clearTimeout(timer);
+    runSearch();
   }, [searchTerm, companyId]);
 
   // ── Sonido de notificación (Web Audio API, sin archivo externo) ─────────────
@@ -2203,8 +2213,14 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/70" />
             <Input
               placeholder="Buscar chats..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              defaultValue={searchTerm}
+              onChange={(e) => {
+                // Debounce en el handler: no actualiza estado en cada tecla
+                // (evita re-render del componente por cada letra)
+                if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+                const val = e.target.value;
+                searchDebounceRef.current = setTimeout(() => setSearchTerm(val), 350);
+              }}
               className="pl-8 h-9 bg-secondary/50 border-border/40 focus-visible:ring-1 text-[13px] rounded-lg shadow-sm"
             />
           </div>
