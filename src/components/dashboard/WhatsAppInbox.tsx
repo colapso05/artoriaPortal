@@ -751,15 +751,35 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         return;
       }
 
-      // 2. Fallback: buscar cada palabra significativa (≥4 chars) por separado y unir
-      const words = searchTerm.toLowerCase().split(/\s+/).filter(t => t.length >= 4);
-      if (words.length === 0) {
+      // 2. Si la frase completa falló (probablemente por stopwords cortas como "si", "de"),
+      //    intentar la frase sin palabras cortas (< 4 chars).
+      //    Ej: "si tiene conectado" → intenta "tiene conectado" que el RPC sí puede resolver.
+      const significantWords = searchTerm.toLowerCase().split(/\s+/).filter(t => t.length >= 4);
+      if (significantWords.length === 0) {
         setSearchResults([]);
         return;
       }
 
+      const filteredPhrase = significantWords.join(' ');
+      if (filteredPhrase !== searchTerm.trim().toLowerCase()) {
+        // La frase filtrada es diferente a la original — probarla antes de ir a palabras sueltas
+        const { data: filteredData, error: filteredError } = await (supabase as any).rpc(
+          'search_conversations_by_keyword',
+          { p_company_id: companyId, p_keyword: filteredPhrase }
+        );
+
+        if (generation !== searchGenerationRef.current) return;
+
+        if (!filteredError && filteredData && (filteredData as any[]).length > 0) {
+          setSearchResults(normalize(filteredData as any[]));
+          return;
+        }
+      }
+
+      // 3. Último recurso: buscar cada palabra significativa (≥4 chars) por separado
+      //    y hacer intersección (AND) para evitar falsos positivos con palabras comunes.
       const results = await Promise.all(
-        words.map(word =>
+        significantWords.map(word =>
           (supabase as any).rpc('search_conversations_by_keyword', {
             p_company_id: companyId,
             p_keyword: word
@@ -769,17 +789,21 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       if (generation !== searchGenerationRef.current) return; // resultado viejo, ignorar
 
-      // Merge deduplicado (una conversación aparece una vez, con el primer match_content)
-      const merged = new Map<string, any>();
-      results.forEach(({ data, error }: any) => {
-        if (!error && data) {
-          normalize(data as any[]).forEach((r: any) => {
-            if (!merged.has(r.id)) merged.set(r.id, r);
-          });
+      // Intersección (AND): solo conversaciones que contengan TODOS los términos.
+      // Unión (OR) causa falsos positivos — "tiene" es común y devuelve cientos de chats.
+      let intersection: any[] | null = null;
+      for (const { data, error } of results) {
+        if (error || !data) continue;
+        const normalized = normalize(data as any[]);
+        if (intersection === null) {
+          intersection = normalized;
+        } else {
+          const ids = new Set(normalized.map((r: any) => r.id));
+          intersection = intersection.filter((r: any) => ids.has(r.id));
         }
-      });
+      }
 
-      setSearchResults(Array.from(merged.values()));
+      setSearchResults(intersection ?? []);
     };
 
     runSearch();
