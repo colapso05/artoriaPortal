@@ -1673,6 +1673,33 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       return;
     }
     setSending(true);
+    // ── Update optimista ANTES del invoke ─────────────────────────────────────
+    // Si se agrega DESPUÉS, el evento Realtime INSERT puede llegar primero
+    // (mientras await espera) y agregar el mensaje real, causando el duplicado visual.
+    const optimisticId = `opt-${Date.now()}`;
+    const optimisticMsg: Message = {
+      id: optimisticId,
+      conversation_id: selectedConv.id,
+      wa_message_id: null,
+      direction: 'outbound',
+      content: text,
+      message_type: 'text',
+      status: 'sent',
+      sender_name: effectiveSenderName,
+      sender_type: 'human',
+      media_url: null,
+      media_type: null,
+      created_at: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
+
+    // Limpiar textarea sin re-render
+    if (msgTextareaRef.current) {
+      msgTextareaRef.current.value = "";
+      msgTextareaRef.current.style.height = "48px";
+    }
+    setHasContent(false);
+
     try {
       if (selectedConv.is_agent_active) {
         await handleToggleBot(false); // Auto intervenir
@@ -1686,36 +1713,15 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         },
       });
       if (error) throw error;
-
-      // ── Update optimista: mostrar el mensaje del agente al instante ──
-      // No esperamos el evento Realtime — si el WS está roto el mensaje
-      // aparecería con delay. Cuando llegue el INSERT real de Realtime,
-      // el dedup por id lo descarta si ya existe un mensaje con ese contenido
-      // y timestamp cercano (ver handler de suscripción).
-      const optimisticMsg: Message = {
-        id: `opt-${Date.now()}`,
-        conversation_id: selectedConv.id,
-        wa_message_id: null,
-        direction: 'outbound',
-        content: text,
-        message_type: 'text',
-        status: 'sent',
-        sender_name: effectiveSenderName,
-        sender_type: 'human',
-        media_url: null,
-        media_type: null,
-        created_at: new Date().toISOString(),
-      };
-      setMessages(prev => [...prev, optimisticMsg]);
-
-      // Limpiar textarea sin re-render
-      if (msgTextareaRef.current) {
-        msgTextareaRef.current.value = "";
-        msgTextareaRef.current.style.height = "48px";
-      }
-      setHasContent(false);
     } catch (err: any) {
-      toast({ title: "Error al enviar", description: err.message, variant: "destructive" });
+      // Revertir el mensaje optimista si el envío falló
+      setMessages(prev => prev.filter(m => m.id !== optimisticId));
+      if (msgTextareaRef.current) {
+        msgTextareaRef.current.value = text;
+        msgTextareaRef.current.style.height = "auto";
+      }
+      setHasContent(true);
+      toast({ title: "Error al enviar", description: (err as any).message, variant: "destructive" });
     } finally {
       setSending(false);
     }
