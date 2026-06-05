@@ -30,8 +30,8 @@ RewriteRule ^ /index.html [L]
   # Restringe acceso a APIs del navegador
   Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=()"
 
-  # Content Security Policy — ajustado para Supabase, YCloud y librerías usadas
-  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://api.ycloud.com https://*.supabase.co https://bot.artoria.cl; media-src 'self' blob: https:; frame-ancestors 'none';"
+  # Content Security Policy — ajustado para Supabase, YCloud, MercadoPago y librerías usadas
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://sdk.mercadopago.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://api.ycloud.com https://*.supabase.co https://bot.artoria.cl https://*.mercadopago.com https://*.mercadolibre.com; media-src 'self' blob: https:; frame-src https://*.mercadopago.com https://*.mercadolibre.com; frame-ancestors 'none';"
 
   # Elimina header que expone tecnología del servidor
   Header always unset X-Powered-By
