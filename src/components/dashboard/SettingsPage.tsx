@@ -16,7 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Palette, HelpCircle, Save, Loader2, Minus, Plus, User, Lock, Tag,
   Trash2, Check, GripVertical, PlusCircle, Pencil, X, Bell, Phone, PanelLeft,
-  Home, MessageCircle, Ticket, Zap, MapPin, Users,
+  Home, MessageCircle, Ticket, Zap, MapPin, Users, Clock, Wand2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -33,6 +33,8 @@ interface CompanySettings {
   delay: number;
   mensajes_separados: boolean;
   mensaje_inicial: string;
+  temp_prompt_section: string;
+  temp_prompt_expires_at: string | null;
 }
 
 interface TicketLabel {
@@ -49,6 +51,8 @@ const DEFAULT_SETTINGS: CompanySettings = {
   delay: 0,
   mensajes_separados: false,
   mensaje_inicial: "Hola soy tu asistente inteligente, ¿En que puedo ayudarte?",
+  temp_prompt_section: "",
+  temp_prompt_expires_at: null,
 };
 
 const PRESET_COLORS = [
@@ -142,6 +146,81 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
 
   const { toast } = useToast();
 
+  // ── Contexto Temporal del Agente ──
+  const [tempDuration, setTempDuration] = useState("24");
+  const [tempBrief, setTempBrief] = useState("");
+  const [showAiHelper, setShowAiHelper] = useState(false);
+  const [generatingPrompt, setGeneratingPrompt] = useState(false);
+  const [savingTemp, setSavingTemp] = useState(false);
+
+  const isTempActive = () => {
+    if (!settings.temp_prompt_section?.trim()) return false;
+    if (!settings.temp_prompt_expires_at) return false;
+    return new Date(settings.temp_prompt_expires_at) > new Date();
+  };
+
+  const getTempCountdown = () => {
+    if (!settings.temp_prompt_expires_at) return "";
+    const diff = new Date(settings.temp_prompt_expires_at).getTime() - Date.now();
+    if (diff <= 0) return "Expirado";
+    const totalMinutes = Math.floor(diff / 60000);
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `Expira en ${days}d ${hours}h`;
+    if (hours > 0) return `Expira en ${hours}h ${minutes}min`;
+    return `Expira en ${minutes}min`;
+  };
+
+  const activateTempPrompt = async () => {
+    if (!companyId || !settings.temp_prompt_section?.trim()) return;
+    setSavingTemp(true);
+    const hours = parseInt(tempDuration);
+    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+    const { error } = await supabase
+      .from("company_config")
+      .update({ temp_prompt_section: settings.temp_prompt_section, temp_prompt_expires_at: expiresAt } as any)
+      .eq("id", companyId);
+    setSavingTemp(false);
+    if (error) {
+      toast({ title: "Error al activar", description: error.message, variant: "destructive" });
+    } else {
+      setSettings(s => ({ ...s, temp_prompt_expires_at: expiresAt }));
+      toast({ title: "✅ Contexto temporal activado" });
+    }
+  };
+
+  const clearTempPrompt = async () => {
+    if (!companyId) return;
+    const { error } = await supabase
+      .from("company_config")
+      .update({ temp_prompt_section: null, temp_prompt_expires_at: null } as any)
+      .eq("id", companyId);
+    if (error) {
+      toast({ title: "Error al desactivar", description: error.message, variant: "destructive" });
+    } else {
+      setSettings(s => ({ ...s, temp_prompt_section: "", temp_prompt_expires_at: null }));
+      toast({ title: "Contexto temporal desactivado" });
+    }
+  };
+
+  const generateWithAI = async () => {
+    if (!tempBrief.trim() || !companyId) return;
+    setGeneratingPrompt(true);
+    const { data, error } = await supabase.functions.invoke('generate-temp-prompt', {
+      body: { description: tempBrief.trim(), company_id: companyId },
+    });
+    setGeneratingPrompt(false);
+    if (error || !data?.generated_text) {
+      toast({ title: "No se pudo generar el texto", description: "Verifica que la edge function esté activa.", variant: "destructive" });
+      return;
+    }
+    setSettings(s => ({ ...s, temp_prompt_section: data.generated_text }));
+    setShowAiHelper(false);
+    setTempBrief("");
+    toast({ title: "✨ Texto generado", description: "Puedes editarlo antes de activar." });
+  };
+
   useEffect(() => {
     if (isAdmin && companyId) loadSettings();
     else setLoading(false);
@@ -155,7 +234,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     setLoading(true);
     const { data } = await supabase
       .from("company_config")
-      .select("delay, mensajes_separados, mensaje_inicial")
+      .select("delay, mensajes_separados, mensaje_inicial, temp_prompt_section, temp_prompt_expires_at")
       .eq("id", companyId!)
       .single();
     if (data) {
@@ -163,6 +242,8 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
         delay: data.delay ?? DEFAULT_SETTINGS.delay,
         mensajes_separados: data.mensajes_separados ?? DEFAULT_SETTINGS.mensajes_separados,
         mensaje_inicial: data.mensaje_inicial ?? DEFAULT_SETTINGS.mensaje_inicial,
+        temp_prompt_section: (data as any).temp_prompt_section ?? "",
+        temp_prompt_expires_at: (data as any).temp_prompt_expires_at ?? null,
       });
     }
     setLoading(false);
@@ -499,6 +580,137 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                   <p className="text-[11px] text-muted-foreground/60 text-right">
                     {settings.mensaje_inicial.length} caracteres
                   </p>
+                </div>
+
+                {/* ── Contexto Temporal del Agente ── */}
+                <div className={`space-y-3 rounded-xl border p-4 transition-colors ${isTempActive() ? "border-amber-500/40 bg-amber-500/5" : "border-border/20 bg-card/40"}`}>
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2 flex-1">
+                      <Clock className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Label className="text-sm font-semibold">Contexto Temporal del Agente</Label>
+                          <HelpTip text="Información o instrucciones que el agente IA tendrá en cuenta solo durante el período que definas. Útil para feriados, promociones, cambios temporales de horario u otros avisos con fecha límite." />
+                          {isTempActive() && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/20 text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                              ● ACTIVO
+                            </span>
+                          )}
+                          {settings.temp_prompt_section && !isTempActive() && settings.temp_prompt_expires_at && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-muted/40 text-muted-foreground uppercase tracking-wider">
+                              EXPIRADO
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground/70">
+                          Como una historia de Instagram — expira automáticamente cuando se acaba el tiempo.
+                        </p>
+                      </div>
+                    </div>
+                    {isTempActive() && (
+                      <span className="text-[11px] text-amber-500/80 font-medium whitespace-nowrap flex-shrink-0">
+                        {getTempCountdown()}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Textarea principal */}
+                  <Textarea
+                    value={settings.temp_prompt_section}
+                    onChange={e => setSettings(s => ({ ...s, temp_prompt_section: e.target.value }))}
+                    rows={5}
+                    className="resize-y text-sm bg-muted/10 border-border/20 focus:border-amber-500/50 rounded-xl min-h-[100px]"
+                    placeholder={'Ej: "Esta semana hay una promoción especial en el plan 100MB a $12.990/mes. El feriado del lunes la oficina estará cerrada. Ofrece esta promoción a clientes que pregunten por planes."'}
+                  />
+                  <p className="text-[11px] text-muted-foreground/50 text-right">
+                    {(settings.temp_prompt_section || "").length} caracteres
+                  </p>
+
+                  {/* Asistente IA */}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAiHelper(v => !v)}
+                      className="flex items-center gap-1.5 text-[11px] font-semibold text-primary/60 hover:text-primary transition-colors"
+                    >
+                      <Wand2 className="w-3.5 h-3.5" />
+                      {showAiHelper ? "Ocultar asistente" : "✨ Ayudarme a redactar con IA"}
+                    </button>
+                    <AnimatePresence>
+                      {showAiHelper && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="mt-2.5 space-y-2 p-3 rounded-xl bg-primary/5 border border-primary/10">
+                            <p className="text-[11px] text-muted-foreground/70">
+                              Describe brevemente lo que quieres informar y la IA lo redactará como instrucción para el bot.
+                            </p>
+                            <Textarea
+                              value={tempBrief}
+                              onChange={e => setTempBrief(e.target.value)}
+                              rows={2}
+                              className="text-sm bg-background/60 border-border/20 rounded-xl"
+                              placeholder='Ej: "feriado el lunes, no hay atención" o "promoción 50% en plan fibra esta semana"'
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={generateWithAI}
+                              disabled={generatingPrompt || !tempBrief.trim()}
+                              className="gap-2 text-xs border-primary/30 text-primary hover:bg-primary/10"
+                            >
+                              {generatingPrompt
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Wand2 className="w-3.5 h-3.5" />}
+                              {generatingPrompt ? "Generando..." : "Generar texto para el bot"}
+                            </Button>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* Duración + Activar / Desactivar */}
+                  <div className="flex items-center gap-2 flex-wrap pt-1">
+                    <Select value={tempDuration} onValueChange={setTempDuration}>
+                      <SelectTrigger className="w-32 h-8 text-xs border-border/20">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 hora</SelectItem>
+                        <SelectItem value="4">4 horas</SelectItem>
+                        <SelectItem value="8">8 horas</SelectItem>
+                        <SelectItem value="24">1 día</SelectItem>
+                        <SelectItem value="48">2 días</SelectItem>
+                        <SelectItem value="168">7 días</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="sm"
+                      onClick={activateTempPrompt}
+                      disabled={savingTemp || !settings.temp_prompt_section?.trim()}
+                      className="gap-2 text-xs bg-amber-500 hover:bg-amber-600 text-white"
+                    >
+                      {savingTemp
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <Clock className="w-3.5 h-3.5" />}
+                      {isTempActive() ? "Reactivar" : "Activar"}
+                    </Button>
+                    {(isTempActive() || (settings.temp_prompt_expires_at != null)) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={clearTempPrompt}
+                        className="gap-1.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                      >
+                        <X className="w-3.5 h-3.5" /> Desactivar
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Save */}

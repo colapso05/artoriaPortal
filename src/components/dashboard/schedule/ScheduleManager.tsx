@@ -999,7 +999,7 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
                 <div className="p-4 space-y-4">
                   {/* Quick status change */}
                   <div className="space-y-1.5">
-                    <p className="text-[10px] text-muted-foreground/50 font-semibold uppercase tracking-widest">Estado</p>
+                    <p className="text-[11px] text-muted-foreground/80 font-semibold uppercase tracking-wide">Estado</p>
                     <div className="flex gap-1.5 flex-wrap">
                       {(Object.entries(STATUS_LABELS) as [string, string][]).map(([k, v]) => {
                         const StatusIcon = STATUS_ICONS[k] || Circle;
@@ -1025,7 +1025,7 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
                   {/* En espera: assign tech */}
                   {detail.status === 'en_espera' && (
                     <div className="space-y-2 p-3 rounded-xl bg-violet-500/8 border border-violet-500/30">
-                      <p className="text-[10px] font-bold text-violet-500 uppercase tracking-widest flex items-center gap-1.5">
+                      <p className="text-[11px] font-bold text-violet-500 uppercase tracking-wide flex items-center gap-1.5">
                         <UserCheck className="w-3 h-3" /> Asignar técnico
                       </p>
                       <Select value={detailAssignTech} onValueChange={setDetailAssignTech}>
@@ -1062,8 +1062,8 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
                       <div key={label} className="flex items-start gap-3">
                         <IcComp className="w-3.5 h-3.5 text-muted-foreground mt-0.5 flex-shrink-0" />
                         <div>
-                          <p className="text-[10px] text-muted-foreground/60 leading-none mb-0.5">{label}</p>
-                          <p className="text-[12px] font-medium leading-snug">{value}</p>
+                          <p className="text-[11px] text-muted-foreground/70 leading-none mb-0.5">{label}</p>
+                          <p className="text-[13px] font-semibold leading-snug">{value}</p>
                         </div>
                       </div>
                     ) : null)}
@@ -1072,14 +1072,14 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
                       <div className="flex items-start gap-3">
                         <User className="w-3.5 h-3.5 text-muted-foreground mt-0.5 flex-shrink-0" />
                         <div>
-                          <p className="text-[10px] text-muted-foreground/60 leading-none mb-0.5">RUT</p>
-                          <p className="text-[12px] font-medium">{detail.client_rut}</p>
+                          <p className="text-[11px] text-muted-foreground/70 leading-none mb-0.5">RUT</p>
+                          <p className="text-[13px] font-semibold">{detail.client_rut}</p>
                         </div>
                       </div>
                     )}
 
                     {detail.notes && (
-                      <div className="px-3 py-2.5 rounded-xl bg-secondary/20 text-[11px] text-muted-foreground leading-relaxed">
+                      <div className="px-3 py-2.5 rounded-xl bg-muted/50 border border-border/30 text-[12px] text-foreground/80 leading-relaxed">
                         {detail.notes}
                       </div>
                     )}

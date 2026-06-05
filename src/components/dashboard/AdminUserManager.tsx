@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Plus, Trash2, Settings2, Pencil, Building2, KeyRound, Copy, Eye, EyeOff,
   MoreHorizontal, Link2, Phone, Key, RotateCw, ChevronLeft, Map, Users as UsersIcon, Settings,
-  FileUp, AlertCircle, Save, WandSparkles, Tag
+  FileUp, AlertCircle, Save, WandSparkles, Tag, ShieldAlert
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -101,6 +101,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
     bandeja_template_id: "" as string,
     tech_template_id: "" as string,
     outbound_template_id: "" as string,
+    alert_webhook_path: "" as string,
   });
   const [editTemplates, setEditTemplates] = useState<WaTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -299,6 +300,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
       bandeja_template_id: company.bandeja_template_id || "",
       tech_template_id: "",
       outbound_template_id: (company as any).outbound_template_id || "",
+      alert_webhook_path: company.alert_webhook_path || "",
     });
     setEditUserDialogOpen(true);
 
@@ -372,6 +374,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
             credits_enabled: editUserData.credits_enabled,
             bandeja_template_id: editUserData.bandeja_template_id || null,
             outbound_template_id: editUserData.outbound_template_id || null,
+            alert_webhook_path: editUserData.alert_webhook_path.trim() || null,
           })
           .eq("id", editUserData.config_id);
         if (updateConfigError) throw new Error(updateConfigError.message);
@@ -916,6 +919,44 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
                   </div>
                 </div>
               )}
+              {/* Alert webhook path */}
+              <div className="pt-2 border-t border-border/10 mt-2 space-y-2">
+                <Label className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 text-red-500" />
+                  Webhook de Alertas (ruta n8n)
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={editUserData.alert_webhook_path}
+                    onChange={(e) => setEditUserData(prev => ({ ...prev, alert_webhook_path: e.target.value.trim() }))}
+                    placeholder="ej: alert-dropp"
+                    className="font-mono text-xs"
+                  />
+                  {editUserData.alert_webhook_path && botWebhookUrl && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      title="Copiar URL completa"
+                      onClick={() => {
+                        const base = botWebhookUrl.replace(/\/[^/]+$/, "");
+                        const url = `${base}/${editUserData.alert_webhook_path}`;
+                        navigator.clipboard.writeText(url);
+                        toast({ title: "URL copiada", description: url });
+                      }}
+                    >
+                      <Copy className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Solo el segmento final de la URL del webhook en n8n.{" "}
+                  {botWebhookUrl && editUserData.alert_webhook_path
+                    ? <span className="font-mono text-primary/70">{botWebhookUrl.replace(/\/[^/]+$/, "")}/{editUserData.alert_webhook_path}</span>
+                    : "Ej: si la URL es …/webhook/alert-dropp, escribe alert-dropp"}
+                </p>
+              </div>
+
               {editUserData.config_id && (
                 <div className="pt-2 border-t border-border/10 mt-2 space-y-2">
                   <Label>Webhook Derivación de Tickets (Dev)</Label>
@@ -1339,7 +1380,17 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
                   </td>
 
                   <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Editar configuración"
+                        className="h-8 w-8 hover:bg-primary/10 hover:text-primary"
+                        onClick={() => openEditUser(c)}
+                      >
+                        <Settings2 className="w-4 h-4" />
+                      </Button>
+                      <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-muted">
                           <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
@@ -1349,8 +1400,11 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
                         <DropdownMenuItem onClick={() => setSelectedCompany(c)} className="cursor-pointer gap-2">
                           <Eye className="w-4 h-4" /> Ver panel detalle
                         </DropdownMenuItem>
-                        <DropdownMenuItem 
-                          onClick={() => onSimulate?.(c.id, c.company_name)} 
+                        <DropdownMenuItem onClick={() => openEditUser(c)} className="cursor-pointer gap-2">
+                          <Settings2 className="w-4 h-4" /> Editar configuración
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => onSimulate?.(c.id, c.company_name)}
                           className="cursor-pointer gap-2 text-primary focus:text-primary font-bold"
                         >
                           <WandSparkles className="w-4 h-4" /> Simular esta empresa
@@ -1392,6 +1446,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    </div>
                   </td>
                 </tr>
               ))}

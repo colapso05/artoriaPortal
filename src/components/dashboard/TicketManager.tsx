@@ -718,7 +718,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                                     </span>
                                   );
                                 })() : (
-                                  <span className="text-[10px] text-muted-foreground/50">
+                                  <span className="text-[11px] text-muted-foreground/70">
                                     {format(new Date(t.created_at), "dd/MM/yy HH:mm", { locale: es })}
                                   </span>
                                 )}
@@ -757,7 +757,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                       </Button>
                       <div className="min-w-0">
                         <h3 className="text-sm font-semibold truncate font-['Space_Grotesk']">{selectedTicket.title}</h3>
-                        <p className="text-[10px] text-muted-foreground">
+                        <p className="text-[11px] text-muted-foreground/80">
                           Creado {format(new Date(selectedTicket.created_at), "dd MMM yyyy · HH:mm", { locale: es })}
                           {selectedTicket.resolved_at && (
                             <> · Resuelto {format(new Date(selectedTicket.resolved_at), "dd MMM HH:mm", { locale: es })}</>
@@ -852,7 +852,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                       <div className="text-center py-8">
                         <MessageSquare className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
                         <p className="text-sm text-muted-foreground/60">Sin notas aún</p>
-                        <p className="text-[10px] text-muted-foreground/40 mt-1">Agrega una nota para iniciar el seguimiento</p>
+                        <p className="text-[11px] text-muted-foreground/65 mt-1">Agrega una nota para iniciar el seguimiento</p>
                       </div>
                     ) : notes.map((n, idx) => (
                       <motion.div
@@ -860,11 +860,11 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                         initial={{ opacity: 0, y: 5 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: idx * 0.05 }}
-                        className="bg-secondary/30 rounded-lg px-3 py-2.5 border border-border/10"
+                        className="bg-muted/50 rounded-xl px-3 py-2.5 border border-border/30"
                       >
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-medium text-foreground/80">{n.author_name || "Sistema"}</span>
-                          <span className="text-[10px] text-muted-foreground">
+                          <span className="text-[11px] text-muted-foreground/80">
                             {format(new Date(n.created_at), "dd MMM HH:mm", { locale: es })}
                           </span>
                         </div>

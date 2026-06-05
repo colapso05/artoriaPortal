@@ -329,7 +329,7 @@ export default function CreditsManager({ companyId, userId }: Props) {
                       </p>
                       <p className="text-[11px] text-muted-foreground">{formatCLP(req.price_clp)} · {formatDate(req.created_at)}</p>
                     </div>
-                    <span className={`inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-1 rounded-full border flex-shrink-0 ${st.color}`}>
+                    <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full border flex-shrink-0 ${st.color}`}>
                       <StIcon className="w-2.5 h-2.5" />
                       {st.label}
                     </span>
@@ -455,12 +455,12 @@ export default function CreditsManager({ companyId, userId }: Props) {
                   </div>
 
                   {/* Bank details */}
-                  <div className="bg-secondary/30 rounded-xl divide-y divide-border/10 overflow-hidden">
+                  <div className="bg-muted/50 rounded-xl divide-y divide-border/30 overflow-hidden border border-border/30">
                     {BANK_DETAILS.map(d => (
                       <div key={d.label} className="flex items-center justify-between px-4 py-2.5">
                         <div>
-                          <p className="text-[9px] text-muted-foreground uppercase tracking-wider font-medium">{d.label}</p>
-                          <p className="text-[12px] font-semibold">{d.value}</p>
+                          <p className="text-[10px] text-muted-foreground/80 uppercase tracking-wider font-medium">{d.label}</p>
+                          <p className="text-[13px] font-semibold">{d.value}</p>
                         </div>
                         <Button variant="ghost" size="icon" className="h-6 w-6 flex-shrink-0" onClick={() => handleCopy(d.label, d.value)}>
                           {copied === d.label ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3 text-muted-foreground" />}

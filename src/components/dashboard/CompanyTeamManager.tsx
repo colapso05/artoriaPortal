@@ -468,7 +468,7 @@ export default function CompanyTeamManager({
                           <span>🕒</span> {u.start_hour || '08:00'} - {u.end_hour || '18:00'}
                         </div>
                         {u.must_change_password && (
-                          <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/20 text-[9px] w-fit">
+                          <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/20 text-[10px] w-fit">
                             Reset req.
                           </Badge>
                         )}
@@ -556,7 +556,7 @@ export default function CompanyTeamManager({
                 required 
                 maxLength={11}
               />
-              <p className="text-[9px] text-muted-foreground mt-0.5">El guión se agrega automáticamente</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">El guión se agrega automáticamente</p>
             </div>
             <div>
               <Label className="text-xs font-bold uppercase tracking-wider opacity-60">Teléfono <span className="text-destructive">*</span></Label>
@@ -627,7 +627,7 @@ export default function CompanyTeamManager({
               </Select>
               <div className="mt-2 flex flex-wrap gap-1">
                 {roleConfig(newRole).permissions.map(p => (
-                  <Badge key={p} variant="secondary" className="text-[9px] py-0">{p}</Badge>
+                  <Badge key={p} variant="secondary" className="text-[10px] py-0">{p}</Badge>
                 ))}
               </div>
 

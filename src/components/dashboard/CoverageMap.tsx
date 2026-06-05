@@ -614,7 +614,7 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
 
   const updateGlobalAlert = async (updates: Partial<CompanyOption>) => {
     if (!companyId && companies.length > 1 && !companies[0]?.id) {
-      toast({ title: "Seleccione una empresa primero", variant: "destructive" });
+      toast({ title: "Selecciona una empresa primero", variant: "destructive" });
       return;
     }
 
@@ -632,6 +632,56 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
 
     await loadCompanies();
     toast({ title: "Configuración de alerta actualizada" });
+  };
+
+  // Validates requirements before activating the global alert
+  const handleToggleGlobalAlert = async (activate: boolean) => {
+    // Turning off via switch is blocked — only "Enviar último mensaje" can deactivate
+    if (!activate) {
+      toast({
+        title: "Alerta activa",
+        description: "Para finalizar la alerta usa el botón \"Enviar último mensaje y finalizar alerta\".",
+      });
+      return;
+    }
+
+    const company = companies.find(c => companyId ? c.id === companyId : true);
+    const targetCompanyId = companyId || companies[0]?.id;
+    const errors: string[] = [];
+
+    // 1. Validate alert message
+    if (!localAlertMessage.trim()) {
+      errors.push("Debes escribir un mensaje de alerta.");
+    }
+
+    // 2. Check coverage zones selected
+    const hasCoverageZones = (company?.alert_zones?.length ?? 0) > 0;
+
+    // 3. Check drawn alert zones in the map (query alert_zones table)
+    let hasDrawnZones = false;
+    if (!hasCoverageZones && targetCompanyId) {
+      const { count } = await (supabase as any)
+        .from("alert_zones")
+        .select("id", { count: "exact", head: true })
+        .eq("company_id", targetCompanyId);
+      hasDrawnZones = (count ?? 0) > 0;
+    }
+
+    if (!hasCoverageZones && !hasDrawnZones) {
+      errors.push("Debes marcar al menos una zona afectada o dibujar una zona en el mapa de alerta.");
+    }
+
+    if (errors.length > 0) {
+      toast({
+        title: "No se puede activar la alerta",
+        description: errors.join(" "),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Save message + activate in one update so loadCompanies() doesn't wipe the local text
+    await updateGlobalAlert({ alert_active: true, alert_message: localAlertMessage.trim() });
   };
 
   const toggleZoneInAlert = (zoneId: string) => {
@@ -1134,12 +1184,22 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
                       <h3 className="text-xl font-bold tracking-tight mb-1">Sistema Global de Alertas</h3>
                       <p className="text-sm text-muted-foreground">Configure una única alerta para múltiples zonas de cobertura.</p>
                     </div>
-                    <div className="flex items-center gap-3 bg-secondary/20 px-4 py-2 rounded-2xl border border-border/40">
-                      <Label className="text-xs font-bold uppercase tracking-wider cursor-pointer" htmlFor="global-alert">Estado Global</Label>
+                    <div className={`flex items-center gap-3 px-4 py-2 rounded-2xl border transition-colors ${
+                      company.alert_active
+                        ? 'bg-red-500/10 border-red-500/30'
+                        : 'bg-secondary/20 border-border/40'
+                    }`}>
+                      <Label
+                        className={`text-xs font-bold uppercase tracking-wider ${company.alert_active ? 'text-red-500 cursor-default' : 'cursor-pointer'}`}
+                        htmlFor="global-alert"
+                      >
+                        {company.alert_active ? '⚠ Alerta Activa' : 'Estado Global'}
+                      </Label>
                       <Switch
                         id="global-alert"
                         checked={company.alert_active}
-                        onCheckedChange={(val) => updateGlobalAlert({ alert_active: val })}
+                        onCheckedChange={handleToggleGlobalAlert}
+                        className={company.alert_active ? 'opacity-60 cursor-not-allowed' : ''}
                       />
                     </div>
                   </div>
@@ -1167,16 +1227,18 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
                           variant="outline"
                           className="w-full gap-2 text-xs border-primary/30 hover:bg-primary/10 hover:text-primary"
                           onClick={() => sendAlertWebhook("actualizacion")}
-                          disabled={!localAlertMessage.trim()}
+                          disabled={!localAlertMessage.trim() || !company.alert_active}
+                          title={!company.alert_active ? "Activa el estado global primero" : undefined}
                         >
                           <Bell className="w-3.5 h-3.5" />
-                          Actualizar mensaje
+                          Actualizar y enviar mensaje
                         </Button>
                         <Button
                           size="sm"
                           className="w-full gap-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
                           onClick={() => sendAlertWebhook("ultimo")}
-                          disabled={!localAlertMessage.trim()}
+                          disabled={!localAlertMessage.trim() || !company.alert_active}
+                          title={!company.alert_active ? "Activa el estado global primero" : undefined}
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           Enviar último mensaje y finalizar alerta

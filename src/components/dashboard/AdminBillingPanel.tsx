@@ -84,18 +84,12 @@ function formatCLP(n: number): string {
   return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", minimumFractionDigits: 0 }).format(n);
 }
 
-const DEFAULT_BANK_DETAILS = `Nombre: DEMIS ALEJANDRO ZUNIGA
-RUT: 21.311.925-7
-Banco: Banco BCI
-Tipo de cuenta: Cuenta Corriente
-N° de cuenta: 50458931`;
-
 const EMPTY_CONFIG: BillingConfig = {
   billing_day: 5,
   amount: 0,
   currency: "CLP",
   grace_period_days: 5,
-  bank_details: DEFAULT_BANK_DETAILS,
+  bank_details: "",
   billing_enabled: false,
 };
 
@@ -125,7 +119,7 @@ export default function AdminBillingPanel() {
   const [loadingCfg, setLoadingCfg]           = useState(false);
   const [savingCfg, setSavingCfg]             = useState(false);
 
-  const BILLING_WEBHOOK_URL = "https://bot.dropptelecom.cl/webhook/billing-events";
+  const BILLING_WEBHOOK_URL = "https://bot.artoria.cl/webhook/billing-events";
 
   useEffect(() => { loadInvoices(); loadCompanies(); }, []);
 
@@ -191,7 +185,6 @@ export default function AdminBillingPanel() {
         amount:            billingCfg.amount,
         currency:          billingCfg.currency,
         grace_period_days: billingCfg.grace_period_days,
-        bank_details:      billingCfg.bank_details,
         billing_enabled:   billingCfg.billing_enabled,
       },
     });
@@ -303,7 +296,7 @@ export default function AdminBillingPanel() {
               <div className="flex flex-col items-center justify-center py-20 gap-3 text-center">
                 <CheckCircle2 className="w-10 h-10 text-emerald-500/30" />
                 <p className="text-sm font-semibold text-muted-foreground/60">Sin pagos pendientes</p>
-                <p className="text-[12px] text-muted-foreground/40">Todas las declaraciones han sido revisadas.</p>
+                <p className="text-[12px] text-muted-foreground/40">Los pagos de Mercado Pago se confirman automáticamente. Aparecerán aquí solo si requieren revisión manual.</p>
               </div>
             ) : (
               <div className="space-y-3 max-w-2xl mx-auto">
@@ -510,12 +503,12 @@ export default function AdminBillingPanel() {
                           <Label className="text-[11px] text-muted-foreground">Día de facturación</Label>
                           <Input
                             type="number"
-                            min={1} max={28}
+                            min={1} max={31}
                             value={billingCfg.billing_day}
-                            onChange={e => setBillingCfg(p => ({ ...p, billing_day: Math.min(28, Math.max(1, parseInt(e.target.value) || 1)) }))}
+                            onChange={e => setBillingCfg(p => ({ ...p, billing_day: Math.min(31, Math.max(1, parseInt(e.target.value) || 1)) }))}
                             className="h-9 text-sm rounded-xl"
                           />
-                          <p className="text-[10px] text-muted-foreground/40">Día del mes (1–28)</p>
+                          <p className="text-[10px] text-muted-foreground/40">Día del mes (1–31). Usa 28 para evitar problemas en febrero.</p>
                         </div>
 
                         {/* Grace period */}
@@ -553,19 +546,15 @@ export default function AdminBillingPanel() {
                         )}
                       </div>
 
-                      {/* Bank details */}
-                      <div className="space-y-1.5">
-                        <Label className="text-[11px] text-muted-foreground">Datos de transferencia</Label>
-                        <Textarea
-                          value={billingCfg.bank_details}
-                          onChange={e => setBillingCfg(p => ({ ...p, bank_details: e.target.value }))}
-                          placeholder={"Banco: Banco Estado\nCuenta corriente: 123456789\nRUT: 12.345.678-9\nNombre: Artoria SpA\nEmail: pagos@artoria.cl"}
-                          rows={5}
-                          className="resize-none text-sm rounded-xl font-mono text-xs"
-                        />
-                        <p className="text-[10px] text-muted-foreground/40">
-                          Se incluye en la notificación de boleta emitida.
-                        </p>
+                      {/* Método de pago */}
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-[#009ee3]/10 border border-[#009ee3]/20">
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-[#009ee3]/20 flex-shrink-0">
+                          <Webhook className="w-4 h-4 text-[#009ee3]" />
+                        </div>
+                        <div>
+                          <p className="text-[12px] font-semibold text-foreground">Mercado Pago (Checkout Pro)</p>
+                          <p className="text-[11px] text-muted-foreground/60">Los pagos se confirman automáticamente vía webhook.</p>
+                        </div>
                       </div>
 
                       {/* Summary preview */}

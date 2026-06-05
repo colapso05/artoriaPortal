@@ -31,7 +31,7 @@ RewriteRule ^ /index.html [L]
   Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=()"
 
   # Content Security Policy — ajustado para Supabase, YCloud y librerías usadas
-  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://api.ycloud.com https://*.supabase.co; media-src 'self' blob: https:; frame-ancestors 'none';"
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://api.ycloud.com https://*.supabase.co https://bot.artoria.cl; media-src 'self' blob: https:; frame-ancestors 'none';"
 
   # Elimina header que expone tecnología del servidor
   Header always unset X-Powered-By

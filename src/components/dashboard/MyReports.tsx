@@ -135,7 +135,7 @@ export default function MyReports({ userId, companyId }: Props) {
                         {st.label}
                       </span>
                     </div>
-                    <span className="text-[10px] text-muted-foreground/50 flex-shrink-0 whitespace-nowrap">
+                    <span className="text-[11px] text-muted-foreground/75 flex-shrink-0 whitespace-nowrap">
                       {format(new Date(r.created_at), "dd MMM yyyy", { locale: es })}
                     </span>
                   </div>
@@ -154,13 +154,13 @@ export default function MyReports({ userId, companyId }: Props) {
                         </p>
                         <p className="text-[12px] text-foreground/80 leading-relaxed">{r.admin_response}</p>
                         {r.resolved_at && (
-                          <p className="text-[10px] text-muted-foreground/50 mt-1.5">
+                          <p className="text-[11px] text-muted-foreground/70 mt-1.5">
                             Resuelto el {format(new Date(r.resolved_at), "dd MMM yyyy 'a las' HH:mm", { locale: es })}
                           </p>
                         )}
                       </div>
                     ) : (
-                      <p className="text-[11px] text-muted-foreground/50 italic flex items-center gap-1.5">
+                      <p className="text-[11px] text-muted-foreground/75 italic flex items-center gap-1.5">
                         <Clock className="w-3 h-3 flex-shrink-0" />
                         En revisión — te notificaremos cuando tengamos una respuesta.
                       </p>

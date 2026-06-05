@@ -6,23 +6,25 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 10%;
+    /* Fondo general neutro claro — los cards blancos resaltan sobre él */
+    --background: 220 13% 95%;
+    --foreground: 220 15% 8%;
 
-    --card: 0 0% 98%;
-    --card-foreground: 240 10% 10%;
+    /* Cards: blanco puro con sombra sutil — se distinguen del fondo */
+    --card: 0 0% 100%;
+    --card-foreground: 240 15% 8%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 10%;
+    --popover-foreground: 240 15% 8%;
 
     --primary: 280 100% 60%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 5% 93%;
-    --secondary-foreground: 240 10% 10%;
+    --secondary: 240 8% 92%;
+    --secondary-foreground: 240 15% 8%;
 
-    --muted: 240 5% 93%;
-    --muted-foreground: 240 4% 46%;
+    --muted: 240 8% 92%;
+    --muted-foreground: 240 6% 38%;
 
     --accent: 280 100% 60%;
     --accent-foreground: 0 0% 100%;
@@ -30,8 +32,8 @@
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 240 6% 87%;
-    --input: 240 6% 90%;
+    --border: 240 10% 88%;
+    --input: 240 8% 91%;
     --ring: 280 100% 60%;
 
     --radius: 0.75rem;
@@ -39,32 +41,35 @@
     --glow: 280 100% 60%;
     --glow-secondary: 320 100% 55%;
 
-    --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 240 10% 10%;
-    --sidebar-border: 240 6% 87%;
-    --sidebar-accent: 240 5% 93%;
-    --sidebar-accent-foreground: 240 10% 10%;
-    --sidebar-ring: 280 100% 60%;
+    /* Sidebar: siempre oscuro (panel de control) */
+    --sidebar-background: 244 50% 11%;
+    --sidebar-foreground: 220 15% 82%;
+    --sidebar-border: 244 35% 20%;
+    --sidebar-accent: 244 42% 19%;
+    --sidebar-accent-foreground: 220 15% 92%;
+    --sidebar-ring: 265 90% 65%;
   }
 
   .dark {
-    --background: 0 0% 4%;
-    --foreground: 0 0% 98%;
+    /* Azul-gris profundo en lugar de negro puro — más cálido y menos agresivo */
+    --background: 226 28% 8%;
+    --foreground: 220 15% 96%;
 
-    --card: 0 0% 6%;
-    --card-foreground: 0 0% 98%;
+    /* Cards un poco más claros que el fondo para crear jerarquía */
+    --card: 226 22% 12%;
+    --card-foreground: 220 15% 96%;
 
-    --popover: 0 0% 4%;
-    --popover-foreground: 0 0% 98%;
+    --popover: 226 22% 10%;
+    --popover-foreground: 220 15% 96%;
 
     --primary: 271 91% 65%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 189 94% 43%;
-    --secondary-foreground: 0 0% 4%;
+    --secondary-foreground: 226 28% 8%;
 
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 65%;
+    --muted: 226 18% 18%;
+    --muted-foreground: 220 10% 65%;
 
     --accent: 271 91% 65%;
     --accent-foreground: 0 0% 100%;
@@ -72,18 +77,18 @@
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
 
-    --border: 0 0% 16%;
-    --input: 0 0% 12%;
+    --border: 226 15% 20%;
+    --input: 226 18% 15%;
     --ring: 271 91% 65%;
 
     --glow: 271 91% 65%;
     --glow-secondary: 189 94% 43%;
 
-    --sidebar-background: 0 0% 6%;
-    --sidebar-foreground: 0 0% 98%;
-    --sidebar-border: 0 0% 16%;
-    --sidebar-accent: 0 0% 12%;
-    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-background: 244 55% 8%;
+    --sidebar-foreground: 220 15% 80%;
+    --sidebar-border: 244 40% 16%;
+    --sidebar-accent: 244 46% 15%;
+    --sidebar-accent-foreground: 220 15% 92%;
     --sidebar-ring: 271 91% 65%;
   }
 }
@@ -96,15 +101,28 @@
   body {
     @apply bg-background text-foreground;
     font-family: 'Inter', sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   }
 
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6 {
+  h1, h2, h3, h4, h5, h6 {
     font-family: 'Space Grotesk', sans-serif;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
+  }
+
+  /* Sombra sutil en cards para tema claro — invisible en oscuro */
+  :root .bg-card,
+  :root [class*="bg-card"] {
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.07), 0 1px 2px -1px rgb(0 0 0 / 0.05);
+  }
+
+  .dark .bg-card,
+  .dark [class*="bg-card"] {
+    box-shadow: none;
   }
 }
 
@@ -163,6 +181,10 @@
   .bento-card {
     @apply glass rounded-2xl p-6 relative overflow-hidden transition-all duration-300;
   }
+
+  /* Hide scrollbar while keeping scroll functionality */
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
   .bento-card:hover {
     @apply glow-box;

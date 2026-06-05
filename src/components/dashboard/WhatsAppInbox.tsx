@@ -16,6 +16,7 @@ import {
   Phone, FileText, CheckCheck, Check, Clock,
   Ticket, User, Info, AlertCircle, XCircle, MessageCircle, X, Loader2, Download, Hand, Forward, SlidersHorizontal, Menu,
   ChevronDown, Copy, MapPin, Flame, StickyNote, CalendarClock, Plus, MessageSquarePlus,
+  Calendar, CalendarCheck, RefreshCw,
 } from "lucide-react";
 import { format, isToday, isYesterday, parseISO } from "date-fns";
 import { es } from "date-fns/locale";
@@ -328,6 +329,137 @@ interface WhatsAppInboxProps {
   onNavigateToSchedule?: () => void;
 }
 
+// ── Panel vacío: Agenda del día + Notas del turno ──────────────────────────
+function InboxEmptyPanel({ companyId, onNavigateToSchedule }: { companyId?: string; onNavigateToSchedule?: () => void }) {
+  const [appointments, setAppointments] = useState<any[]>([]);
+  const [loadingAppts, setLoadingAppts] = useState(true);
+  const [notes, setNotes] = useState("");
+
+  // Carga agenda de hoy
+  useEffect(() => {
+    if (!companyId) { setLoadingAppts(false); return; }
+    const todayStr = format(new Date(), "yyyy-MM-dd");
+    (supabase as any)
+      .from("appointments")
+      .select("id, start_datetime, client_name, client_address, status, technician_id")
+      .eq("company_id", companyId)
+      .neq("status", "cancelado")
+      .gte("start_datetime", `${todayStr}T00:00:00`)
+      .lte("start_datetime", `${todayStr}T23:59:59`)
+      .order("start_datetime")
+      .then(({ data }: any) => { setAppointments(data || []); setLoadingAppts(false); });
+  }, [companyId]);
+
+  // Carga notas del día desde localStorage (clave con fecha → se autolimpian)
+  useEffect(() => {
+    const key = `inbox_notes_${companyId}_${format(new Date(), "yyyy-MM-dd")}`;
+    setNotes(localStorage.getItem(key) || "");
+  }, [companyId]);
+
+  const handleNotes = (value: string) => {
+    const key = `inbox_notes_${companyId}_${format(new Date(), "yyyy-MM-dd")}`;
+    localStorage.setItem(key, value);
+    setNotes(value);
+  };
+
+  const statusDot: Record<string, string> = {
+    pendiente:  "bg-amber-400",
+    en_camino:  "bg-blue-400",
+    completado: "bg-emerald-500",
+  };
+
+  const statusLabel: Record<string, string> = {
+    pendiente: "Pendiente",
+    en_camino: "En camino",
+    completado: "Completado",
+  };
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+
+      {/* ── Agenda del día ── */}
+      <div className="flex-[3] flex flex-col min-h-0 border-b border-border/20">
+        <div className="px-5 py-3 flex items-center justify-between flex-shrink-0 border-b border-border/20 bg-muted/40">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-3.5 h-3.5 text-primary" />
+            <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Agenda de hoy</span>
+          </div>
+          {onNavigateToSchedule && (
+            <button
+              onClick={onNavigateToSchedule}
+              className="text-[10px] font-semibold text-primary hover:text-primary/70 transition-colors"
+            >
+              Ver todo →
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2">
+          {loadingAppts ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="w-4 h-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+            </div>
+          ) : appointments.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center gap-2 py-6">
+              <CalendarCheck className="w-8 h-8 text-muted-foreground/40" />
+              <p className="text-xs text-muted-foreground/70">Sin citas para hoy</p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {appointments.map(appt => {
+                const time = format(parseISO(appt.start_datetime), "HH:mm");
+                const dot = statusDot[appt.status] || "bg-muted-foreground/40";
+                const lbl = statusLabel[appt.status] || appt.status;
+                return (
+                  <div key={appt.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-muted/40 transition-colors group">
+                    <span className="text-xs font-mono font-bold text-muted-foreground flex-shrink-0 w-10 tabular-nums">{time}</span>
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate leading-tight text-foreground">{appt.client_name}</p>
+                      {appt.client_address && (
+                        <p className="text-[10px] text-muted-foreground/70 truncate flex items-center gap-1 mt-0.5">
+                          <MapPin className="w-2.5 h-2.5 flex-shrink-0" />{appt.client_address}
+                        </p>
+                      )}
+                    </div>
+                    <span className={`text-[9px] font-bold uppercase tracking-wide flex-shrink-0 px-1.5 py-0.5 rounded-full
+                      ${appt.status === "completado" ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" :
+                        appt.status === "en_camino"  ? "bg-blue-500/15 text-blue-600 dark:text-blue-400" :
+                                                       "bg-amber-500/15 text-amber-600 dark:text-amber-400"}`}>
+                      {lbl}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Notas del turno ── */}
+      <div className="flex-[2] flex flex-col min-h-0">
+        <div className="px-5 py-3 flex items-center gap-2 flex-shrink-0 border-b border-border/20 bg-muted/40">
+          <StickyNote className="w-3.5 h-3.5 text-amber-500" />
+          <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Notas del turno</span>
+        </div>
+        <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
+          <textarea
+            value={notes}
+            onChange={e => handleNotes(e.target.value)}
+            placeholder={"Apuntes rápidos del turno...\n(números, instrucciones, recordatorios)"}
+            className="flex-1 min-h-0 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 outline-none border-none focus:ring-0 leading-relaxed font-medium"
+          />
+          <p className="text-[10px] text-muted-foreground/60 text-center flex-shrink-0 leading-tight">
+            Se borran automáticamente al terminar el día
+          </p>
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
 export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, initialPhone, initialMessage, onConversationOpened, isSimulating, simulatedUserName, onNavigateToSchedule }: WhatsAppInboxProps) {
   // En vista simulada el admin escribe como el usuario simulado, así el historial queda correcto
   const effectiveSenderName = (isSimulating && simulatedUserName) ? simulatedUserName : userName;
@@ -376,6 +508,39 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportType, setReportType] = useState("informacion_incorrecta");
+
+  // ── Actualizar Info Cliente ──
+  const [infoClientModalOpen, setInfoClientModalOpen] = useState(false);
+  const [infoClientRut, setInfoClientRut] = useState("");
+  const [infoClientRutError, setInfoClientRutError] = useState("");
+  const [infoClientMotivo, setInfoClientMotivo] = useState("");
+  const [infoClientLoading, setInfoClientLoading] = useState(false);
+
+  /** Formatea el input de RUT en tiempo real: solo dígitos y K, añade guion antes del DV */
+  function formatRutInput(raw: string): string {
+    const clean = raw.replace(/[^0-9kK]/g, '').toUpperCase();
+    if (clean.length === 0) return '';
+    const dv   = clean.slice(-1);
+    const body = clean.slice(0, -1);
+    return body.length === 0 ? dv : `${body}-${dv}`;
+  }
+
+  /** Valida el RUT chileno con módulo 11. Acepta 7-9 dígitos en el cuerpo (incluye empresas). */
+  function isRutValid(rut: string): boolean {
+    const clean = rut.replace(/[^0-9kK]/g, '').toUpperCase();
+    if (clean.length < 8 || clean.length > 10) return false;
+    const dv   = clean.slice(-1);
+    const body = clean.slice(0, -1);
+    if (!/^\d+$/.test(body)) return false;
+    let sum = 0, factor = 2;
+    for (let i = body.length - 1; i >= 0; i--) {
+      sum += parseInt(body[i]) * factor;
+      factor = factor === 7 ? 2 : factor + 1;
+    }
+    const rem = 11 - (sum % 11);
+    const expected = rem === 11 ? '0' : rem === 10 ? 'K' : String(rem);
+    return dv === expected;
+  }
   const [reportWrong, setReportWrong] = useState("");
   const [reportExpected, setReportExpected] = useState("");
 
@@ -472,6 +637,42 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setReportExpected("");
     setReportType("informacion_incorrecta");
   };
+
+  // ── Webhook: actualizar info del cliente ──
+  const handleInfoClient = async () => {
+    const rutTrimmed = infoClientRut.trim();
+    if (!rutTrimmed) {
+      setInfoClientRutError("El RUT es obligatorio.");
+      return;
+    }
+    if (!isRutValid(rutTrimmed)) {
+      setInfoClientRutError("RUT inválido. Verifica los dígitos.");
+      return;
+    }
+    setInfoClientRutError("");
+    setInfoClientLoading(true);
+    try {
+      await fetch("https://bot.artoria.cl/webhook/InfoClientArtoria", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company_id: companyId ?? null,
+          ticket_id: activeTicket?.id ?? null,
+          rut: rutTrimmed,
+          reason: infoClientMotivo.trim() || undefined,
+        }),
+      });
+      toast({ title: "✅ Solicitud enviada", description: "La información del cliente será actualizada en breve." });
+      setInfoClientModalOpen(false);
+      setInfoClientRut("");
+      setInfoClientMotivo("");
+      setInfoClientRutError("");
+    } catch {
+      toast({ title: "Error al enviar", description: "No se pudo conectar al servidor.", variant: "destructive" });
+    } finally {
+      setInfoClientLoading(false);
+    }
+  };
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -479,6 +680,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const retryMapRef = useRef<Record<string, boolean>>({});
+
+  // ── Notificaciones in-app ────────────────────────────────────────────────────
+  const [inAppNotif, setInAppNotif] = useState<{
+    convId: string;
+    clientName: string;
+    preview: string;
+    label: string;
+    labelColor: string;
+  } | null>(null);
+  const notifTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevConvsRef = useRef<Conversation[]>([]);
+  const initialLoadDoneRef = useRef(false);
 
   // Helper: insertar atajo reemplazando solo la parte "/query", conservando texto anterior y posterior
   const insertShortcut = useCallback((message: string) => {
@@ -562,12 +775,111 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     return () => clearTimeout(timer);
   }, [searchTerm, companyId]);
 
+  // ── Sonido de notificación (Web Audio API, sin archivo externo) ─────────────
+  const playNotifSound = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const master = ctx.createGain();
+      master.connect(ctx.destination);
+
+      const playNote = (freq: number, startAt: number, duration: number, vol: number) => {
+        const osc  = ctx.createOscillator();
+        const osc2 = ctx.createOscillator(); // armónico para dar cuerpo
+        const g    = ctx.createGain();
+        osc.type  = 'sine';
+        osc2.type = 'sine';
+        osc.frequency.setValueAtTime(freq, startAt);
+        osc2.frequency.setValueAtTime(freq * 2, startAt);
+        g.gain.setValueAtTime(0, startAt);
+        g.gain.linearRampToValueAtTime(vol, startAt + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.001, startAt + duration);
+        osc.connect(g); osc2.connect(g); g.connect(master);
+        osc.start(startAt);  osc.stop(startAt + duration);
+        osc2.start(startAt); osc2.stop(startAt + duration);
+      };
+
+      // Dos notas tipo notificación social: la segunda un poco más baja
+      playNote(1046, ctx.currentTime,        0.22, 0.22); // C6
+      playNote(880,  ctx.currentTime + 0.21, 0.22, 0.18); // A5
+    } catch (_) {}
+  }, []);
+
+  // ── Detectar mensajes nuevos no leídos en conversaciones con etiqueta ───────
+  useEffect(() => {
+    if (!initialLoadDoneRef.current) {
+      if (conversations.length > 0) {
+        prevConvsRef.current = conversations;
+        initialLoadDoneRef.current = true;
+      }
+      return;
+    }
+    for (const conv of conversations) {
+      const prev = prevConvsRef.current.find(c => c.id === conv.id);
+      if (!prev) continue;
+      if (
+        conv.unread_count > (prev.unread_count || 0) &&
+        conv.id !== selectedConvRef.current &&
+        ticketStatusByConvId[conv.id]
+      ) {
+        const labelKey = ticketStatusByConvId[conv.id];
+        const labelObj = ticketLabels.find(l => l.key === labelKey);
+        const clientName = conv.profile_name || conv.wa_id;
+        const preview = (conv.last_message_preview || '').slice(0, 50);
+        playNotifSound();
+        if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
+        setInAppNotif({
+          convId: conv.id,
+          clientName,
+          preview,
+          label: labelObj?.name || labelKey,
+          labelColor: labelObj?.color || '#888',
+        });
+        notifTimeoutRef.current = setTimeout(() => setInAppNotif(null), 5000);
+        break; // Una notificación a la vez
+      }
+    }
+    prevConvsRef.current = conversations;
+  }, [conversations]);
+
   // Debounce realtime reloads: evita renders en cascada cuando llegan múltiples eventos seguidos
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedLoadConversations = useCallback(() => {
     if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
     realtimeDebounceRef.current = setTimeout(() => loadConversations(), 350);
   }, []);
+
+  // ── Monitor de reconexión WebSocket ──────────────────────────────────────────
+  // Cuando el WebSocket cae (firewall, timeout nginx, etc.) los canales quedan
+  // en estado "zombie": registrados pero sin recibir eventos. Este monitor
+  // detecta la desconexión y forza reconexión + recarga de datos.
+  useEffect(() => {
+    if (!companyId) return;
+
+    const checkAndReconnect = () => {
+      const rt = supabase.realtime as any;
+      // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+      const state = rt?.conn?.readyState;
+      if (state === undefined || state === 3 /* CLOSED */) {
+        supabase.realtime.connect();
+        // Pequeño delay para que los canales se re-suscriban antes de recargar
+        setTimeout(() => debouncedLoadConversations(), 1500);
+      }
+    };
+
+    // Verificar cada 12 segundos
+    const interval = setInterval(checkAndReconnect, 12_000);
+
+    // También reconectar cuando el usuario vuelve a la pestaña
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') checkAndReconnect();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [companyId]);
 
   useEffect(() => {
     loadConversations();
@@ -678,7 +990,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         setMessages((prev) => {
           // Evitar duplicados si ya fue cargado por el loadMessages posterior
           if (prev.find(m => m.id === payload.new.id)) return prev;
-          return [...prev, payload.new as Message];
+          // Reemplazar mensaje optimista si tiene el mismo contenido, dirección
+          // y fue creado en los últimos 15 segundos (ventana de tolerancia)
+          const withoutOptimistic = prev.filter(m => {
+            if (!m.id.startsWith('opt-')) return true;
+            const sameContent = m.content === payload.new.content;
+            const sameDirection = m.direction === payload.new.direction;
+            const closeInTime = Math.abs(
+              new Date(m.created_at).getTime() - new Date(payload.new.created_at).getTime()
+            ) < 15_000;
+            return !(sameContent && sameDirection && closeInTime);
+          });
+          return [...withoutOptimistic, payload.new as Message];
         });
 
         setConversations(prev => prev.map(c =>
@@ -1026,8 +1349,23 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
     setLoadingTemplates(true);
     try {
-      const { data, error } = await supabase.functions.invoke("ycloud-get-templates-company");
-      if (error) throw error;
+      // Usar service key para que funcione también con admin_isp simulando empresa
+      const { data: keyData } = await supabase.functions.invoke("get-service-key");
+      const serviceKey = keyData?.service_key || "";
+      const baseUrl = import.meta.env.VITE_SUPABASE_URL || "https://supabase.artoria.cl";
+      const resp = await fetch(`${baseUrl}/functions/v1/ycloud-get-templates-company`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${serviceKey}`,
+        },
+        body: JSON.stringify({ company_id: companyId }),
+      });
+      if (!resp.ok) {
+        const errBody = await resp.json().catch(() => ({}));
+        throw new Error(errBody?.error || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
       const allTpls: WhatsAppTemplate[] = data?.templates || [];
       setTemplates(allTpls);
       const found = allTpls.find(t => t.name === bandejaTemplateId);
@@ -1348,6 +1686,28 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         },
       });
       if (error) throw error;
+
+      // ── Update optimista: mostrar el mensaje del agente al instante ──
+      // No esperamos el evento Realtime — si el WS está roto el mensaje
+      // aparecería con delay. Cuando llegue el INSERT real de Realtime,
+      // el dedup por id lo descarta si ya existe un mensaje con ese contenido
+      // y timestamp cercano (ver handler de suscripción).
+      const optimisticMsg: Message = {
+        id: `opt-${Date.now()}`,
+        conversation_id: selectedConv.id,
+        wa_message_id: null,
+        direction: 'outbound',
+        content: text,
+        message_type: 'text',
+        status: 'sent',
+        sender_name: effectiveSenderName,
+        sender_type: 'human',
+        media_url: null,
+        media_type: null,
+        created_at: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, optimisticMsg]);
+
       // Limpiar textarea sin re-render
       if (msgTextareaRef.current) {
         msgTextareaRef.current.value = "";
@@ -1825,7 +2185,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             <span className="text-sm font-semibold">Bandeja</span>
             {outboundEnabled && (
               <button
-                onClick={openNewConvModal}
+                onClick={() => openNewConvModal()}
                 title="Iniciar nueva conversación"
                 className="ml-auto flex-shrink-0 w-7 h-7 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center transition-colors"
               >
@@ -1964,36 +2324,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       <div className={`tour-inbox-chat ${selectedConv ? "flex" : "hidden md:flex"} flex-col flex-1 bg-background/50 relative overflow-hidden min-h-0`}>
         {/* Background Pattern */}
         {!selectedConv ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-6 relative z-10 bg-grid">
-            <div className="absolute inset-0 bg-background/80" />
-            <div className="relative">
-              <div className="absolute inset-0 bg-primary/20 blur-[50px] rounded-full" />
-              <div className="w-24 h-24 rounded-[2rem] bg-card/40 border border-primary/20 flex items-center justify-center shadow-2xl relative z-10 glass hover:scale-105 transition-transform duration-500">
-                <MessageCircle className="w-10 h-10 text-primary drop-shadow-[0_0_15px_rgba(var(--primary),0.8)]" />
-              </div>
-            </div>
-            <div className="text-center max-w-sm px-6 animate-in fade-in slide-in-from-bottom-4 duration-700 z-10">
-              <h2 className="text-2xl tracking-tight font-display font-medium glow-text mb-3">SISTEMA EN ESPERA</h2>
-              <p className="text-[14px] text-muted-foreground/80 leading-relaxed mb-8 font-light">
-                Seleccione un canal de comunicación en el panel lateral. El Agente IA maneja las peticiones entrantes.
-              </p>
-
-              <div className="grid grid-cols-2 gap-4 mt-2">
-                <div className="flex flex-col items-center gap-3 p-4 bento-card">
-                  <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center border border-primary/30 glow-box">
-                    <Bot className="w-5 h-5 text-primary" />
-                  </div>
-                  <span className="text-[10px] uppercase font-semibold tracking-widest text-primary/90">AGENTE IA</span>
-                </div>
-                <div className="flex flex-col items-center gap-3 p-4 bento-card">
-                  <div className="w-10 h-10 rounded-xl bg-muted/20 flex items-center justify-center border border-muted-foreground/20">
-                    <User className="w-5 h-5 text-muted-foreground" />
-                  </div>
-                  <span className="text-[10px] uppercase font-semibold tracking-widest text-muted-foreground">ESPECIALISTA</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <InboxEmptyPanel companyId={companyId} onNavigateToSchedule={onNavigateToSchedule} />
         ) : (
           <div className="flex flex-col flex-1 h-full min-h-0 relative z-10 bg-background/50">
             {/* Header */}
@@ -2369,7 +2700,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       )}
 
       {selectedConv && (
-        <div className={`tour-inbox-metadata ${showMobilePanel ? 'flex fixed right-0 top-0 h-full w-[85vw] max-w-[320px] z-50' : 'hidden lg:flex'} flex-col border-l border-border/10 glass flex-shrink-0 overflow-y-auto lg:relative lg:h-auto lg:w-[320px] lg:z-10`}>
+        <div className={`tour-inbox-metadata ${showMobilePanel ? 'flex fixed right-0 top-0 h-full w-[85vw] max-w-[320px] z-50' : 'hidden lg:flex'} flex-col border-l border-border/30 bg-card flex-shrink-0 overflow-y-auto lg:relative lg:h-auto lg:w-[320px] lg:z-10`}>
           {/* Botón cerrar — solo visible en móvil */}
           <div className="lg:hidden flex justify-between items-center px-4 pt-3 pb-1">
             <span className="text-xs font-bold text-primary uppercase tracking-widest">Detalles del chat</span>
@@ -2380,22 +2711,22 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
           {/* ── Tabs (solo con ticket activo) ── */}
           {activeTicket && (
-            <div className="flex border-b border-border/20 shrink-0">
+            <div className="flex border-b border-border/30 shrink-0 bg-muted/30">
               <button
                 onClick={() => setRightPanelTab('caso')}
-                className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${rightPanelTab === 'caso' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wide transition-colors ${rightPanelTab === 'caso' ? 'text-primary border-b-2 border-primary bg-card' : 'text-foreground/50 hover:text-foreground/80 hover:bg-card/60'}`}
               >
                 Cliente
               </button>
               <button
                 onClick={() => setRightPanelTab('acciones')}
-                className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${rightPanelTab === 'acciones' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wide transition-colors ${rightPanelTab === 'acciones' ? 'text-primary border-b-2 border-primary bg-card' : 'text-foreground/50 hover:text-foreground/80 hover:bg-card/60'}`}
               >
                 Acciones
               </button>
               <button
                 onClick={() => setRightPanelTab('agenda')}
-                className={`flex-1 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${rightPanelTab === 'agenda' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'}`}
+                className={`flex-1 py-3 text-[12px] font-bold uppercase tracking-wide transition-colors ${rightPanelTab === 'agenda' ? 'text-primary border-b-2 border-primary bg-card' : 'text-foreground/50 hover:text-foreground/80 hover:bg-card/60'}`}
               >
                 Agenda
               </button>
@@ -2412,10 +2743,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                   const isNuevo = t.customer_type === 'cliente_nuevo';
                   const addr = t.customer_address || clientAddress;
                   const InfoRow = ({ label, value, onCopy }: { label: string; value: string | null | undefined; onCopy?: () => void }) => (
-                    <div className="flex justify-between items-start gap-2 group/field py-2 border-b border-border/10 last:border-0">
-                      <span className="text-[11px] text-muted-foreground shrink-0">{label}</span>
+                    <div className="flex justify-between items-start gap-2 group/field py-2.5 border-b border-border/20 last:border-0">
+                      <span className="text-[12px] text-muted-foreground font-medium shrink-0">{label}</span>
                       <div className="flex items-center gap-1 min-w-0">
-                        <span className="text-[12px] text-foreground text-right break-words leading-tight">{value || '—'}</span>
+                        <span className="text-[13px] text-foreground font-semibold text-right break-words leading-tight">{value || '—'}</span>
                         {value && onCopy && (
                           <button onClick={onCopy} className="opacity-0 group-hover/field:opacity-100 transition-opacity h-4 w-4 flex items-center justify-center rounded hover:bg-primary/10 text-muted-foreground hover:text-primary shrink-0">
                             <Copy className="w-2.5 h-2.5" />
@@ -2429,7 +2760,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       {/* ── Información del cliente ── */}
                       <div className="space-y-1">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2">
+                          <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2">
                             <div className="w-1 h-1 rounded-full bg-primary" />
                             {isNuevo ? 'Cliente Nuevo' : 'Información del cliente'}
                           </h4>
@@ -2439,7 +2770,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                             </span>
                           )}
                         </div>
-                        <div className="bento-card px-3 py-1">
+                        <div className="rounded-2xl bg-muted/40 border border-border/30 px-3 py-1">
                           <InfoRow label="Nombre" value={t.customer_name} onCopy={() => { navigator.clipboard.writeText(t.customer_name); toast({ title: 'Nombre copiado' }); }} />
                           {isNuevo ? (
                             <>
@@ -2457,15 +2788,15 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                             </>
                           )}
                           {/* Categoría */}
-                          <div className="flex justify-between items-center py-2 border-b border-border/10">
-                            <span className="text-[11px] text-muted-foreground">Categoría</span>
-                            <Badge variant="outline" className="text-[9px]">
+                          <div className="flex justify-between items-center py-2.5 border-b border-border/20">
+                            <span className="text-[12px] text-muted-foreground font-medium">Categoría</span>
+                            <Badge variant="outline" className="text-[11px] font-semibold">
                               {{ soporte_tecnico: "Soporte Técnico", ventas: "Ventas", pagos: "Pagos", consulta_comercial: "Consulta Comercial" }[t.category as string] || t.category || 'General'}
                             </Badge>
                           </div>
                           {/* IA */}
-                          <div className="flex items-center justify-between py-2 border-b border-border/10">
-                            <span className="text-[11px] text-muted-foreground flex items-center gap-2">
+                          <div className="flex items-center justify-between py-2.5 border-b border-border/20">
+                            <span className="text-[12px] text-muted-foreground font-medium flex items-center gap-2">
                               <Bot className="w-3.5 h-3.5" /> IA
                             </span>
                             <span className={`text-[10px] font-bold tracking-widest flex items-center gap-1.5 ${selectedConv.is_agent_active ? 'text-emerald-400' : 'text-muted-foreground/50'}`}>
@@ -2474,9 +2805,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                             </span>
                           </div>
                           {/* Motivo */}
-                          <div className="py-2 space-y-1">
-                            <span className="text-[11px] text-muted-foreground block">Motivo</span>
-                            <p className={`text-[12px] text-foreground leading-relaxed break-words ${motivoExpanded ? '' : 'line-clamp-3'}`}>
+                          <div className="py-2.5 space-y-1.5">
+                            <span className="text-[12px] text-muted-foreground font-medium block">Motivo</span>
+                            <p className={`text-[13px] text-foreground leading-relaxed break-words ${motivoExpanded ? '' : 'line-clamp-3'}`}>
                               {t.description || '—'}
                             </p>
                             {t.description && t.description.length > 80 && (
@@ -2512,7 +2843,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
                       {/* ── Estado del ticket ── */}
                       <div className="space-y-2">
-                        <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                        <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-1">
                           <div className="w-1 h-1 rounded-full bg-primary" />
                           Estado del Ticket
                         </h4>
@@ -2548,7 +2879,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
                       {/* ── Nota del caso ── */}
                       <div className="space-y-2">
-                        <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                        <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-1">
                           <div className="w-1 h-1 rounded-full bg-primary" />
                           Nota del caso
                         </h4>
@@ -2556,17 +2887,17 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                           value={noteInput}
                           onChange={e => setNoteInput(e.target.value)}
                           placeholder="Escribe una nota interna sobre este caso..."
-                          className="w-full bg-background/50 border border-input rounded-lg px-3 py-2 text-[11px] resize-none min-h-[76px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                          className="w-full bg-background border border-border/50 rounded-lg px-3 py-2.5 text-[13px] resize-none min-h-[80px] placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/40"
                           rows={3}
                         />
-                        <Button onClick={saveNote} disabled={savingNote} size="sm" variant="outline" className="w-full h-8 text-[10px] font-bold uppercase tracking-wider gap-1.5">
+                        <Button onClick={saveNote} disabled={savingNote} size="sm" variant="outline" className="w-full h-9 text-[12px] font-bold uppercase tracking-wide gap-1.5">
                           {savingNote ? <Loader2 className="w-3 h-3 animate-spin" /> : <StickyNote className="w-3 h-3" />}
                           Guardar nota
                         </Button>
                         <div className="flex items-center justify-between px-1 pt-1">
                           <label className="flex items-center gap-2 cursor-pointer select-none">
                             <Flame className={`w-3.5 h-3.5 transition-colors ${selectedConv.priority === 'alta' ? 'text-amber-500' : 'text-muted-foreground/40'}`} />
-                            <span className="text-[11px] font-semibold text-muted-foreground">Alta prioridad</span>
+                            <span className="text-[12px] font-semibold text-muted-foreground">Alta prioridad</span>
                           </label>
                           <button type="button" role="switch" aria-checked={selectedConv.priority === 'alta'} onClick={() => handleToggleHighPriority(selectedConv.priority !== 'alta')} className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 focus:outline-none ${selectedConv.priority === 'alta' ? 'bg-amber-500' : 'bg-muted-foreground/20'}`}>
                             <span className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 ${selectedConv.priority === 'alta' ? 'translate-x-5' : 'translate-x-1'}`} />
@@ -2597,7 +2928,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 {rightPanelTab === 'acciones' && (
                   <div className="space-y-4">
                     <div className="space-y-2">
-                      <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                      <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-1">
                         <div className="w-1 h-1 rounded-full bg-primary" /> Ejecución Rápida
                       </h4>
                       <div className="space-y-2">
@@ -2624,10 +2955,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                         <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:bg-orange-500/10 font-bold uppercase tracking-wider" variant="outline">
                           ⚠️ Reportar Error IA
                         </Button>
+                        <Button onClick={() => setInfoClientModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-cyan-500/30 text-cyan-500 hover:bg-cyan-500/10 font-bold uppercase tracking-wider" variant="outline">
+                          <RefreshCw className="w-3.5 h-3.5" /> Actualizar Info Cliente
+                        </Button>
                       </div>
                     </div>
                     <div className="space-y-2 border-t border-border/10 pt-2">
-                      <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                      <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-1">
                         <div className="w-1 h-1 rounded-full bg-primary" /> Buscador de Tickets
                       </h4>
                       <CustomerTicketsSearch key={activeTicket?.id || 'empty'} defaultRut={activeTicket?.customer_rut || ""} companyId={companyId} />
@@ -2639,7 +2973,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               /* ══ SIN TICKET: solo acciones ══ */
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                  <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-1">
                     <div className="w-1 h-1 rounded-full bg-primary" /> Ejecución Rápida
                   </h4>
                   <div className="space-y-2">
@@ -2669,7 +3003,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                   </div>
                 </div>
                 <div className="space-y-2 border-t border-border/10 pt-2">
-                  <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-1">
+                  <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-1">
                     <div className="w-1 h-1 rounded-full bg-primary" /> Buscador de Tickets
                   </h4>
                   <CustomerTicketsSearch key="no-ticket" defaultRut="" companyId={companyId} />
@@ -2827,6 +3161,96 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             <Button variant="outline" onClick={() => setReportModalOpen(false)}>Cancelar</Button>
             <Button onClick={handleSubmitReport} className="bg-orange-500 hover:bg-orange-600 text-white">
               Enviar Reporte
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── ACTUALIZAR INFO CLIENTE ─────────────────────────────────────────── */}
+      <Dialog
+        open={infoClientModalOpen}
+        onOpenChange={open => {
+          setInfoClientModalOpen(open);
+          if (!open) { setInfoClientRut(""); setInfoClientMotivo(""); setInfoClientRutError(""); }
+        }}
+      >
+        <DialogContent className="border-border/30 bg-card sm:max-w-md" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <RefreshCw className="w-4 h-4 text-cyan-500" />
+              Actualizar Información del Cliente
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="info-rut" className="text-sm font-semibold">
+                RUT del cliente <span className="text-destructive">*</span>
+              </Label>
+              <div className="relative">
+                <Input
+                  id="info-rut"
+                  placeholder="Ej: 12345678-9"
+                  value={infoClientRut}
+                  onChange={e => {
+                    const formatted = formatRutInput(e.target.value);
+                    setInfoClientRut(formatted);
+                    // Validar en tiempo real una vez que tenga longitud mínima
+                    if (formatted.replace(/[^0-9kK]/g, '').length >= 8) {
+                      setInfoClientRutError(isRutValid(formatted) ? "" : "RUT inválido — verifica los dígitos.");
+                    } else {
+                      setInfoClientRutError("");
+                    }
+                  }}
+                  className={`h-10 pr-8 text-[14px] font-mono tracking-wider ${infoClientRutError ? 'border-destructive focus-visible:ring-destructive' : infoClientRut && isRutValid(infoClientRut) ? 'border-emerald-500 focus-visible:ring-emerald-500' : ''}`}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) handleInfoClient(); }}
+                  autoFocus
+                  maxLength={11}
+                />
+                {/* Indicador válido/inválido */}
+                {infoClientRut.length > 0 && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-bold select-none">
+                    {isRutValid(infoClientRut)
+                      ? <span className="text-emerald-500">✓</span>
+                      : <span className="text-destructive">✗</span>
+                    }
+                  </span>
+                )}
+              </div>
+              {infoClientRutError && (
+                <p className="text-[12px] text-destructive font-medium">{infoClientRutError}</p>
+              )}
+              <p className="text-[11px] text-foreground/50">Formato: 12345678-9 · Sin puntos, con guion</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="info-motivo" className="text-sm font-semibold">
+                Motivo <span className="text-foreground/50 text-[12px] font-normal">(opcional)</span>
+              </Label>
+              <Textarea
+                id="info-motivo"
+                placeholder="Describe el motivo de la actualización..."
+                value={infoClientMotivo}
+                onChange={e => setInfoClientMotivo(e.target.value)}
+                className="resize-none h-[80px] text-[13px]"
+              />
+            </div>
+          </div>
+          <DialogFooter className="mt-4 gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setInfoClientModalOpen(false)}
+              disabled={infoClientLoading}
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleInfoClient}
+              disabled={infoClientLoading || !infoClientRut.trim() || !isRutValid(infoClientRut)}
+              className="bg-cyan-500 hover:bg-cyan-600 text-white gap-2"
+            >
+              {infoClientLoading
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando...</>
+                : <><RefreshCw className="w-3.5 h-3.5" /> Enviar solicitud</>
+              }
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3125,6 +3549,65 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Notificación in-app (mensajes nuevos con etiqueta) ─────────────── */}
+      {inAppNotif && (
+        <div
+          className="fixed bottom-6 right-6 z-[9999] w-80 bg-card border border-border/30 rounded-2xl shadow-2xl overflow-hidden cursor-pointer"
+          style={{ animation: 'slideInNotif 0.25s ease-out' }}
+          onClick={() => {
+            const conv = conversations.find(c => c.id === inAppNotif.convId);
+            if (conv) {
+              setSelectedConv(conv);
+              selectedConvRef.current = conv.id;
+            }
+            if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
+            setInAppNotif(null);
+          }}
+        >
+          <div className="flex items-start gap-3 p-4">
+            <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <MessageCircle className="w-4 h-4 text-primary" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-semibold text-sm truncate">{inAppNotif.clientName}</span>
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                  style={{ backgroundColor: inAppNotif.labelColor + '28', color: inAppNotif.labelColor }}
+                >
+                  {inAppNotif.label}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground truncate">{inAppNotif.preview || 'Nuevo mensaje'}</p>
+            </div>
+            <button
+              className="text-muted-foreground hover:text-foreground flex-shrink-0 mt-0.5"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
+                setInAppNotif(null);
+              }}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="h-0.5 bg-primary/20">
+            <div className="h-full bg-primary/50" style={{ animation: 'notifProgress 5s linear forwards' }} />
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideInNotif {
+          from { opacity: 0; transform: translateY(12px) scale(0.97); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes notifProgress {
+          from { width: 100%; }
+          to   { width: 0%; }
+        }
+      `}</style>
 
     </div>
   );

@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, Suspense } from "react";
+import React, { useState, useEffect, useCallback, Suspense, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Loader2 } from "lucide-react";
+import { Loader2, MessageCircle, X } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
 // ── Siempre cargados (layout visible desde el primer render) ──────────────────
@@ -82,6 +82,16 @@ export default function Dashboard() {
   const [runTour, setRunTour] = useState(false);
   const [ticketInitialFilter, setTicketInitialFilter] = useState<string | undefined>();
   const navigate = useNavigate();
+
+  // ── Notificaciones globales (activas fuera de la sección Bandeja) ────────────
+  const [globalNotif, setGlobalNotif] = useState<{
+    convId: string; clientName: string; preview: string;
+    label: string; labelColor: string;
+  } | null>(null);
+  const globalNotifTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevConvUnreadRef = useRef<Record<string, number>>({});
+  const globalInitDoneRef = useRef(false);
+  const activeViewRef = useRef<string>("");
 
   const effectiveIsAdmin = simulatedCompanyId ? false : isAdmin;
   const effectiveCompanyId = simulatedCompanyId || companyId;
@@ -281,6 +291,102 @@ export default function Dashboard() {
     navigate("/portal");
   };
 
+  // Mantener ref de activeView sincronizado (para usarlo dentro del closure de realtime)
+  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
+
+  // ── Suscripción global a conversaciones para notificaciones fuera de Bandeja ─
+  useEffect(() => {
+    if (!effectiveCompanyId) return;
+
+    const TICKET_LABELS: Record<string, { name: string; color: string }> = {
+      abierto:              { name: 'Abierto',              color: '#22c55e' },
+      en_proceso:           { name: 'En Proceso',           color: '#3b82f6' },
+      esperando_respuesta:  { name: 'Esperando Resp.',      color: '#f59e0b' },
+      resuelto:             { name: 'Resuelto',             color: '#a855f7' },
+    };
+
+    const playSound = () => {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const master = ctx.createGain();
+        master.connect(ctx.destination);
+        const playNote = (freq: number, startAt: number, duration: number, vol: number) => {
+          const osc  = ctx.createOscillator();
+          const osc2 = ctx.createOscillator();
+          const g    = ctx.createGain();
+          osc.type = 'sine'; osc2.type = 'sine';
+          osc.frequency.setValueAtTime(freq, startAt);
+          osc2.frequency.setValueAtTime(freq * 2, startAt);
+          g.gain.setValueAtTime(0, startAt);
+          g.gain.linearRampToValueAtTime(vol, startAt + 0.005);
+          g.gain.exponentialRampToValueAtTime(0.001, startAt + duration);
+          osc.connect(g); osc2.connect(g); g.connect(master);
+          osc.start(startAt); osc.stop(startAt + duration);
+          osc2.start(startAt); osc2.stop(startAt + duration);
+        };
+        playNote(1046, ctx.currentTime,        0.22, 0.22);
+        playNote(880,  ctx.currentTime + 0.21, 0.22, 0.18);
+      } catch (_) {}
+    };
+
+    const triggerNotif = async (conv: any) => {
+      // Solo si no estamos en la bandeja
+      if (activeViewRef.current === 'inbox') return;
+      // Verificar que tenga ticket activo (no resuelto)
+      const { data: ticket } = await (supabase as any)
+        .from('tickets')
+        .select('status')
+        .eq('conversation_id', conv.id)
+        .is('deleted_at', null)
+        .neq('status', 'resuelto')
+        .limit(1)
+        .maybeSingle();
+      if (!ticket) return;
+      const labelInfo = TICKET_LABELS[ticket.status] || { name: ticket.status, color: '#888' };
+      const clientName = conv.profile_name || conv.wa_id || 'Cliente';
+      const preview = (conv.last_message_preview || '').slice(0, 50);
+      playSound();
+      if (globalNotifTimeoutRef.current) clearTimeout(globalNotifTimeoutRef.current);
+      setGlobalNotif({ convId: conv.id, clientName, preview, label: labelInfo.name, labelColor: labelInfo.color });
+      globalNotifTimeoutRef.current = setTimeout(() => setGlobalNotif(null), 5000);
+    };
+
+    const channel = supabase
+      .channel(`global-notif-${effectiveCompanyId}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'conversations',
+        filter: `company_id=eq.${effectiveCompanyId}`,
+      }, (payload) => {
+        const updated = payload.new as any;
+        const prevUnread = prevConvUnreadRef.current[updated.id] ?? updated.unread_count;
+        if (globalInitDoneRef.current && (updated.unread_count || 0) > prevUnread) {
+          triggerNotif(updated);
+        }
+        prevConvUnreadRef.current[updated.id] = updated.unread_count || 0;
+      })
+      .subscribe();
+
+    // Cargar baseline de unread_count para no notificar mensajes viejos al montar
+    (supabase as any)
+      .from('conversations')
+      .select('id, unread_count')
+      .eq('company_id', effectiveCompanyId)
+      .then(({ data }: any) => {
+        if (data) {
+          for (const c of data) prevConvUnreadRef.current[c.id] = c.unread_count || 0;
+        }
+        globalInitDoneRef.current = true;
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+      globalInitDoneRef.current = false;
+      prevConvUnreadRef.current = {};
+    };
+  }, [effectiveCompanyId]);
+
   // Check if current user has permission for a view
   const hasPermission = (view: string): boolean => {
     if (effectiveIsAdmin) return true;
@@ -301,8 +407,9 @@ export default function Dashboard() {
   }
 
   return (
+    <>
     <SidebarProvider>
-      <div className="h-screen overflow-hidden flex w-full bg-gradient-to-br from-background via-background to-background/95">
+      <div className="h-screen overflow-hidden flex w-full bg-background">
         <DashboardSidebar
           isAdmin={effectiveIsAdmin}
           activeView={activeView}
@@ -338,10 +445,44 @@ export default function Dashboard() {
             />
           )}
 
-          <main className={`flex-1 min-h-0 flex flex-col ${["home", "conversations-analytics"].includes(activeView) ? "overflow-y-auto" : "overflow-hidden"} ${activeView === "inbox" ? "p-0" : "p-4 md:p-6 lg:p-8"}`}>
+          <main className={`flex-1 min-h-0 flex flex-col ${activeView === "conversations-analytics" ? "overflow-y-auto" : "overflow-hidden"} ${activeView === "inbox" ? "p-0" : "p-4 md:p-6 lg:p-8"}`}>
             <Suspense fallback={<ViewLoader />}>
-            <div className={`flex-1 flex flex-col w-full max-w-none ${["home", "conversations-analytics"].includes(activeView) ? "" : "min-h-0"}`}>
-              {activeView === "home" && effectiveIsAdmin && <AdminDashboardHome />}
+            <div className={`flex-1 flex flex-col w-full max-w-none ${activeView === "conversations-analytics" ? "" : "min-h-0"}`}>
+              {activeView === "home" && effectiveIsAdmin && (
+                <AdminDashboardHome
+                  onSimulate={async (id, name) => {
+                    let adminName = "";
+                    let simulatedUserId = "";
+                    try {
+                      const { data: cu } = await supabase
+                        .from("company_users" as any)
+                        .select("user_id")
+                        .eq("company_id", id)
+                        .eq("role", "administrador")
+                        .limit(1)
+                        .single();
+                      if (cu) {
+                        simulatedUserId = (cu as any).user_id;
+                        const { data: profile } = await supabase
+                          .from("profiles")
+                          .select("display_name")
+                          .eq("user_id", simulatedUserId)
+                          .single();
+                        adminName = profile?.display_name || "";
+                      }
+                    } catch {}
+                    adminIconSizeRef.current = sidebarIconSize;
+                    const simSize = simulatedUserId ? await loadIconSizeForUser(simulatedUserId) : 24;
+                    setSidebarIconSize(simSize);
+                    setSimulatedCompanyId(id);
+                    setSimulatedCompanyName(name);
+                    setSimulatedUserName(adminName);
+                    setSimulatedUserRole(null);
+                    setSimulatedUserOperatorRoles([]);
+                    setActiveView("home");
+                  }}
+                />
+              )}
               {activeView === "home" && !effectiveIsAdmin && (
                 <ClientDashboardHome
                   companyId={effectiveCompanyId}
@@ -488,7 +629,7 @@ export default function Dashboard() {
               )}
               {activeView === "billing" && effectiveCompanyId && !effectiveIsAdmin && (
                 <div className="flex-1 min-h-0 flex flex-col">
-                  <BillingManager companyId={effectiveCompanyId} userId={session.user.id} />
+                  <BillingManager companyId={effectiveCompanyId} userId={session.user.id} userEmail={session.user.email} />
                 </div>
               )}
               {activeView === "my-reports" && (
@@ -536,5 +677,61 @@ export default function Dashboard() {
         </div>
       </div>
     </SidebarProvider>
+    {/* ── Notificación global (visible en cualquier sección excepto Bandeja) ── */}
+    {globalNotif && activeView !== 'inbox' && (
+      <div
+        className="fixed bottom-6 right-6 z-[9999] w-80 bg-card border border-border/30 rounded-2xl shadow-2xl overflow-hidden cursor-pointer"
+        style={{ animation: 'slideInNotif 0.25s ease-out' }}
+        onClick={() => {
+          setPendingConversationId(globalNotif.convId);
+          setActiveView('inbox');
+          if (globalNotifTimeoutRef.current) clearTimeout(globalNotifTimeoutRef.current);
+          setGlobalNotif(null);
+        }}
+      >
+        <div className="flex items-start gap-3 p-4">
+          <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <MessageCircle className="w-4 h-4 text-primary" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-semibold text-sm truncate">{globalNotif.clientName}</span>
+              <span
+                className="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                style={{ backgroundColor: globalNotif.labelColor + '28', color: globalNotif.labelColor }}
+              >
+                {globalNotif.label}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground truncate">{globalNotif.preview || 'Nuevo mensaje'}</p>
+          </div>
+          <button
+            className="text-muted-foreground hover:text-foreground flex-shrink-0 mt-0.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (globalNotifTimeoutRef.current) clearTimeout(globalNotifTimeoutRef.current);
+              setGlobalNotif(null);
+            }}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="h-0.5 bg-primary/20">
+          <div className="h-full bg-primary/50" style={{ animation: 'notifProgress 5s linear forwards' }} />
+        </div>
+      </div>
+    )}
+
+    <style>{`
+      @keyframes slideInNotif {
+        from { opacity: 0; transform: translateY(12px) scale(0.97); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      @keyframes notifProgress {
+        from { width: 100%; }
+        to   { width: 0%; }
+      }
+    `}</style>
+    </>
   );
 }

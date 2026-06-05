@@ -194,10 +194,10 @@ export default function ScheduleTab({
               setSchedView(v);
               if (v === 'availability' && !availLoaded) loadAvailability();
             }}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10px] font-bold transition-all duration-150 ${
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-150 ${
               schedView === v
                 ? 'bg-card text-primary shadow-sm border border-border/40'
-                : 'text-muted-foreground hover:text-foreground'
+                : 'text-foreground/55 hover:text-foreground'
             }`}
           >
             <Icon className="w-3 h-3" />
@@ -220,14 +220,14 @@ export default function ScheduleTab({
             {displayAppts.length > 0 ? (
               <>
                 <div className="flex items-center justify-between px-0.5">
-                  <p className="text-[10px] text-muted-foreground/60">Citas de este cliente</p>
+                  <p className="text-[11px] text-muted-foreground font-medium">Citas de este cliente</p>
                   {clientAppts.some(a => a.status === 'cancelado') && (
                     <button
                       onClick={() => setShowCancelled(v => !v)}
-                      className={`text-[9px] font-bold transition-colors ${
+                      className={`text-[10px] font-bold transition-colors ${
                         showCancelled
                           ? 'text-primary'
-                          : 'text-muted-foreground/40 hover:text-muted-foreground'
+                          : 'text-foreground/50 hover:text-foreground'
                       }`}
                     >
                       {showCancelled ? 'Ocultar canceladas' : 'Ver canceladas'}
@@ -248,7 +248,7 @@ export default function ScheduleTab({
                       initial={{ opacity: 0, y: 4 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: i * 0.04 }}
-                      className="rounded-xl border border-border/20 bg-secondary/10 overflow-hidden"
+                      className="rounded-xl border border-border/40 bg-muted/30 overflow-hidden"
                     >
                       {/* Appointment info (clickable → open form) */}
                       <button
@@ -261,34 +261,34 @@ export default function ScheduleTab({
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-[11px] font-semibold leading-tight">{appt.service_type}</span>
+                            <span className="text-[13px] font-semibold leading-tight">{appt.service_type}</span>
                             <Badge
                               variant="outline"
-                              className={`text-[9px] px-1.5 py-0 leading-4 flex-shrink-0 ${STATUS_COLORS[appt.status]}`}
+                              className={`text-[10px] px-1.5 py-0 leading-4 flex-shrink-0 ${STATUS_COLORS[appt.status]}`}
                             >
                               {STATUS_LABELS[appt.status]}
                             </Badge>
                           </div>
                           <div className="flex items-center gap-1 mt-0.5">
-                            <Clock className="w-2.5 h-2.5 text-muted-foreground/40" />
-                            <span className="text-[10px] text-muted-foreground">
+                            <Clock className="w-2.5 h-2.5 text-muted-foreground/60" />
+                            <span className="text-[11px] text-muted-foreground">
                               {format(start, 'EEE d MMM', { locale: es })} · {format(start, 'HH:mm')}–{format(end, 'HH:mm')}
                             </span>
                           </div>
-                          <p className="text-[10px] text-muted-foreground/60 mt-0.5">{tech?.name || '—'}</p>
+                          <p className="text-[11px] text-muted-foreground/80 mt-0.5">{tech?.name || '—'}</p>
                         </div>
                       </button>
 
                       {/* Feature 2: inline status change */}
                       {canChangeStatus && (
                         <div className="px-2.5 pb-2 flex items-center gap-2">
-                          <span className="text-[9px] text-muted-foreground/50 flex-shrink-0">Estado:</span>
+                          <span className="text-[11px] text-muted-foreground/70 flex-shrink-0 font-medium">Estado:</span>
                           <Select
                             value={appt.status}
                             disabled={!!isUpd}
                             onValueChange={v => updateApptStatus(appt.id, v as AppointmentStatus)}
                           >
-                            <SelectTrigger className="h-6 text-[10px] rounded-lg flex-1 border-border/30 bg-transparent">
+                            <SelectTrigger className="h-7 text-[11px] rounded-lg flex-1 border-border/40 bg-background/70">
                               {isUpd
                                 ? <Loader2 className="w-3 h-3 animate-spin mx-auto" />
                                 : <SelectValue />
@@ -296,7 +296,7 @@ export default function ScheduleTab({
                             </SelectTrigger>
                             <SelectContent>
                               {(['pendiente', 'en_camino', 'en_espera', 'completado', 'cancelado'] as AppointmentStatus[]).map(s => (
-                                <SelectItem key={s} value={s} className="text-[11px]">
+                                <SelectItem key={s} value={s} className="text-[12px]">
                                   {STATUS_LABELS[s]}
                                 </SelectItem>
                               ))}
@@ -309,7 +309,7 @@ export default function ScheduleTab({
                 })}
               </>
             ) : (
-              <p className="text-[11px] text-muted-foreground/50 px-0.5">
+              <p className="text-[12px] text-muted-foreground/80 px-0.5">
                 Sin citas registradas para este cliente
               </p>
             )}
@@ -335,7 +335,7 @@ export default function ScheduleTab({
       {/* Quick booking button */}
       <Button
         onClick={() => { setEditAppt(undefined); setFormOpen(true); }}
-        className="w-full justify-center text-[11px] h-10 gap-2 rounded-xl border border-primary/30 text-primary hover:bg-primary/10 font-bold uppercase tracking-wider shadow-none"
+        className="w-full justify-center text-[12px] h-10 gap-2 rounded-xl border border-primary/40 text-primary hover:bg-primary/10 font-bold uppercase tracking-wide shadow-none"
         variant="outline"
       >
         <CalendarPlus className="w-3.5 h-3.5" /> Agendar cita
@@ -529,16 +529,16 @@ function AvailabilityView({
 function SectionTitle({ onOpenPreview, onOpenFull }: { onOpenPreview?: () => void; onOpenFull?: () => void }) {
   return (
     <div className="flex items-center justify-between">
-      <h4 className="text-[10px] font-bold text-primary uppercase tracking-widest flex items-center gap-2 px-0.5">
+      <h4 className="text-[11px] font-bold text-primary uppercase tracking-wide flex items-center gap-2 px-0.5">
         <div className="w-1 h-1 rounded-full bg-primary" /> Agenda
       </h4>
       {onOpenPreview && (
         <button
           onClick={onOpenPreview}
-          className="text-[10px] text-primary/60 hover:text-primary flex items-center gap-0.5 transition-colors"
+          className="text-[11px] text-foreground/60 hover:text-primary flex items-center gap-1 transition-colors font-semibold"
           title="Ver agenda completa"
         >
-          <Maximize2 className="w-3 h-3 mr-0.5" /> Ver agenda
+          <Maximize2 className="w-3 h-3" /> Ver agenda
         </button>
       )}
     </div>

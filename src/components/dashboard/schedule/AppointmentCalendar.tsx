@@ -781,7 +781,7 @@ export default function AppointmentCalendar({
           <ChevronRight className="w-4 h-4" />
         </button>
 
-        <p className="flex-1 text-[11px] font-bold text-center capitalize truncate text-foreground/60">
+        <p className="flex-1 text-[12px] font-bold text-center capitalize truncate text-foreground/85">
           {navLabel}
         </p>
 
@@ -838,7 +838,7 @@ export default function AppointmentCalendar({
                   }`}
                 >
                   <span className={`text-[9px] font-bold uppercase tracking-wide ${
-                    sel ? 'opacity-70' : today_ ? 'text-primary/70' : 'text-muted-foreground/60'
+                    sel ? 'opacity-70' : today_ ? 'text-primary/80' : 'text-muted-foreground/75'
                   }`}>
                     {format(day, 'EEE', { locale: es }).slice(0, 3)}
                   </span>
