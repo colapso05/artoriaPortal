@@ -32,3 +32,12 @@ dist-ssr
 # Build artifacts & deploy
 *.zip
 .claude
+
+# Playwright
+test-results/
+playwright-report/
+.env.test
+
+# Media files grandes
+*.mp4
+logo.png
