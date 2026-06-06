@@ -361,9 +361,12 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      // El webhook puede devolver el texto en distintos campos — buscar el más probable
-      const generated = data?.generated_text ?? data?.text ?? data?.result ?? data?.output ?? Object.values(data)[0];
+      // El webhook de n8n devuelve array: [{ output: "..." }]
+      // Soportamos también objeto directo por si cambia en el futuro
+      const item = Array.isArray(data) ? data[0] : data;
+      const generated = item?.output ?? item?.generated_text ?? item?.text ?? item?.result;
       if (!generated || typeof generated !== "string") throw new Error("Respuesta vacía del webhook");
+
       setTempGeneratedText(generated.trim());
     } catch (err: any) {
       toast({ title: "No se pudo generar el texto", description: err.message, variant: "destructive" });
