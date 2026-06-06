@@ -68,6 +68,7 @@ export default function Dashboard() {
   const [pendingInboxPhone, setPendingInboxPhone] = useState<string | null>(null);
   const [pendingInboxMessage, setPendingInboxMessage] = useState<string | null>(null);
   const [tourContextoTemporal, setTourContextoTemporal] = useState(false);
+  const [tourAlreadySeen, setTourAlreadySeen] = useState(false);
 
   const [activeToggle, setActiveToggle] = useState<UserToggle | null>(null);
   const [companyRole, setCompanyRole] = useState<string | null>(null);
@@ -162,6 +163,12 @@ export default function Dashboard() {
   }, [navigate]);
 
   const initializeDashboard = async (userId: string) => {
+    // Verificar si el usuario ya vio el tour del Contexto Temporal
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      const seenTours: string[] = user?.user_metadata?.seen_tours ?? [];
+      setTourAlreadySeen(seenTours.includes('contexto_temporal_v1'));
+    });
+
     // Cargar preferencia de ancho del sidebar desde Supabase
     (supabase as any).from('user_preferences')
       .select('value')
@@ -434,7 +441,11 @@ export default function Dashboard() {
               simulatedUserName={simulatedUserName}
               simulatedUserRole={simulatedUserRole}
               onAgendaClick={() => setActiveView("schedule")}
-              onContextoTemporalClick={() => { setActiveView("settings"); setTourContextoTemporal(true); }}
+              onContextoTemporalClick={() => {
+                setActiveView("settings");
+                // Solo mostrar el tour si el usuario no lo vio antes
+                if (!tourAlreadySeen) setTourContextoTemporal(true);
+              }}
               onStopSimulation={() => {
                 setSidebarIconSize(adminIconSizeRef.current); // restaurar preferencia del admin
                 setSimulatedCompanyId(null);
@@ -646,7 +657,18 @@ export default function Dashboard() {
                   userId={session.user.id}
                   isSimulating={!!simulatedCompanyId}
                   tourActive={tourContextoTemporal}
-                  onTourComplete={() => setTourContextoTemporal(false)}
+                  onTourComplete={async () => {
+                    setTourContextoTemporal(false);
+                    setTourAlreadySeen(true);
+                    // Guardar en Supabase user_metadata para que no se muestre de nuevo
+                    const { data: { user } } = await supabase.auth.getUser();
+                    const seenTours: string[] = user?.user_metadata?.seen_tours ?? [];
+                    if (!seenTours.includes('contexto_temporal_v1')) {
+                      await supabase.auth.updateUser({
+                        data: { seen_tours: [...seenTours, 'contexto_temporal_v1'] },
+                      });
+                    }
+                  }}
                 />
               )}
               {activeView === "schedule" && effectiveCompanyId && (
