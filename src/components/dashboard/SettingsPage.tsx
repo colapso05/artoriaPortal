@@ -159,6 +159,8 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   // Fecha inicio y fin en formato datetime-local (YYYY-MM-DDTHH:mm), hora local del usuario
   const [tempStartDate, setTempStartDate] = useState("");
   const [tempEndDate, setTempEndDate] = useState("");
+  // Texto generado por IA — editable antes de aplicarlo al campo principal
+  const [tempGeneratedText, setTempGeneratedText] = useState("");
 
   // Formatea una diferencia en ms como "Xd Yh" / "Yh Zmin" / "Zmin"
   const formatDiff = (diffMs: number): string => {
@@ -350,18 +352,33 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   const generateWithAI = async () => {
     if (!tempBrief.trim() || !companyId) return;
     setGeneratingPrompt(true);
-    const { data, error } = await supabase.functions.invoke('generate-temp-prompt', {
-      body: { description: tempBrief.trim(), company_id: companyId },
-    });
-    setGeneratingPrompt(false);
-    if (error || !data?.generated_text) {
-      toast({ title: "No se pudo generar el texto", description: "Verifica que la edge function esté activa.", variant: "destructive" });
-      return;
+    setTempGeneratedText(""); // limpiar resultado anterior
+    try {
+      const res = await fetch("https://bot.artoria.cl/webhook/contexto_temporal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: tempBrief.trim(), company_id: companyId }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // El webhook puede devolver el texto en distintos campos — buscar el más probable
+      const generated = data?.generated_text ?? data?.text ?? data?.result ?? data?.output ?? Object.values(data)[0];
+      if (!generated || typeof generated !== "string") throw new Error("Respuesta vacía del webhook");
+      setTempGeneratedText(generated.trim());
+    } catch (err: any) {
+      toast({ title: "No se pudo generar el texto", description: err.message, variant: "destructive" });
+    } finally {
+      setGeneratingPrompt(false);
     }
-    setSettings(s => ({ ...s, temp_prompt_section: data.generated_text }));
-    setShowAiHelper(false);
+  };
+
+  const applyGeneratedText = () => {
+    if (!tempGeneratedText.trim()) return;
+    setSettings(s => ({ ...s, temp_prompt_section: tempGeneratedText.trim() }));
+    setTempGeneratedText("");
     setTempBrief("");
-    toast({ title: "✨ Texto generado", description: "Puedes editarlo antes de activar." });
+    setShowAiHelper(false);
+    toast({ title: "✅ Texto aplicado", description: "Revisalo y ajústalo si es necesario antes de activar." });
   };
 
   useEffect(() => {
@@ -793,29 +810,72 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                           exit={{ opacity: 0, height: 0 }}
                           className="overflow-hidden"
                         >
-                          <div className="mt-2.5 space-y-2 p-3 rounded-xl bg-primary/5 border border-primary/10">
-                            <p className="text-[11px] text-muted-foreground/70">
-                              Describe brevemente lo que quieres informar y la IA lo redactará como instrucción para el bot.
-                            </p>
-                            <Textarea
-                              value={tempBrief}
-                              onChange={e => setTempBrief(e.target.value)}
-                              rows={2}
-                              className="text-sm bg-background/60 border-border/20 rounded-xl"
-                              placeholder='Ej: "feriado el lunes, no hay atención" o "promoción 50% en plan fibra esta semana"'
-                            />
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={generateWithAI}
-                              disabled={generatingPrompt || !tempBrief.trim()}
-                              className="gap-2 text-xs border-primary/30 text-primary hover:bg-primary/10"
-                            >
-                              {generatingPrompt
-                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                : <Wand2 className="w-3.5 h-3.5" />}
-                              {generatingPrompt ? "Generando..." : "Generar texto para el bot"}
-                            </Button>
+                          <div className="mt-2.5 space-y-3 p-3 rounded-xl bg-primary/5 border border-primary/10">
+                            {/* ── Paso 1: Brief ── */}
+                            <div className="space-y-2">
+                              <p className="text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-wider">
+                                1. Describí brevemente qué querés informar
+                              </p>
+                              <Textarea
+                                value={tempBrief}
+                                onChange={e => setTempBrief(e.target.value)}
+                                rows={2}
+                                className="text-sm bg-background/60 border-border/20 rounded-xl"
+                                placeholder='Ej: "feriado el lunes, no hay atención" o "promoción 50% en plan fibra esta semana"'
+                              />
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={generateWithAI}
+                                disabled={generatingPrompt || !tempBrief.trim()}
+                                className="gap-2 text-xs border-primary/30 text-primary hover:bg-primary/10"
+                              >
+                                {generatingPrompt
+                                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  : <Wand2 className="w-3.5 h-3.5" />}
+                                {generatingPrompt ? "La IA está redactando..." : "Generar texto con IA"}
+                              </Button>
+                            </div>
+
+                            {/* ── Paso 2: Resultado editable (aparece cuando llega la respuesta) ── */}
+                            <AnimatePresence>
+                              {tempGeneratedText && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: 6 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0, y: 6 }}
+                                  className="space-y-2 pt-2 border-t border-primary/10"
+                                >
+                                  <p className="text-[11px] font-semibold text-muted-foreground/80 uppercase tracking-wider">
+                                    2. Revisá y editá el texto generado
+                                  </p>
+                                  <Textarea
+                                    value={tempGeneratedText}
+                                    onChange={e => setTempGeneratedText(e.target.value)}
+                                    rows={5}
+                                    className="text-sm bg-background border-primary/20 rounded-xl focus-visible:ring-primary/30"
+                                  />
+                                  <div className="flex gap-2">
+                                    <Button
+                                      size="sm"
+                                      onClick={applyGeneratedText}
+                                      className="gap-2 text-xs bg-primary hover:bg-primary/90 text-primary-foreground"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                      Usar este texto
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => setTempGeneratedText("")}
+                                      className="text-xs text-muted-foreground hover:text-foreground"
+                                    >
+                                      Descartar
+                                    </Button>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                           </div>
                         </motion.div>
                       )}
