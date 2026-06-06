@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -152,16 +152,13 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   const [showAiHelper, setShowAiHelper] = useState(false);
   const [generatingPrompt, setGeneratingPrompt] = useState(false);
   const [savingTemp, setSavingTemp] = useState(false);
+  const [tempCountdown, setTempCountdown] = useState("");
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const isTempActive = () => {
-    if (!settings.temp_prompt_section?.trim()) return false;
-    if (!settings.temp_prompt_expires_at) return false;
-    return new Date(settings.temp_prompt_expires_at) > new Date();
-  };
-
-  const getTempCountdown = () => {
-    if (!settings.temp_prompt_expires_at) return "";
-    const diff = new Date(settings.temp_prompt_expires_at).getTime() - Date.now();
+  // Calcula el string de countdown a partir de un timestamp ISO
+  const calcCountdown = (expiresAt: string | null): string => {
+    if (!expiresAt) return "";
+    const diff = new Date(expiresAt).getTime() - Date.now();
     if (diff <= 0) return "Expirado";
     const totalMinutes = Math.floor(diff / 60000);
     const days = Math.floor(totalMinutes / 1440);
@@ -171,6 +168,79 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     if (hours > 0) return `Expira en ${hours}h ${minutes}min`;
     return `Expira en ${minutes}min`;
   };
+
+  const isTempActive = () => {
+    if (!settings.temp_prompt_section?.trim()) return false;
+    if (!settings.temp_prompt_expires_at) return false;
+    return new Date(settings.temp_prompt_expires_at) > new Date();
+  };
+
+  // Limpia el contexto temporal en BD y estado local
+  const clearTempPromptSilent = useCallback(async (cId: string) => {
+    await supabase
+      .from("company_config")
+      .update({ temp_prompt_section: null, temp_prompt_expires_at: null } as any)
+      .eq("id", cId);
+    setSettings(s => ({ ...s, temp_prompt_section: "", temp_prompt_expires_at: null }));
+    setTempCountdown("");
+  }, []);
+
+  // Arranca / detiene el intervalo de countdown según el estado activo
+  useEffect(() => {
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+
+    if (!settings.temp_prompt_expires_at || !settings.temp_prompt_section?.trim()) {
+      setTempCountdown("");
+      return;
+    }
+
+    // Tick inmediato
+    const tick = () => {
+      const remaining = new Date(settings.temp_prompt_expires_at!).getTime() - Date.now();
+      if (remaining <= 0) {
+        // Expiró — limpiar
+        if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+        setTempCountdown("Expirado");
+        if (companyId) clearTempPromptSilent(companyId).then(() => {
+          toast({ title: "⏰ Contexto temporal expirado", description: "El agente ya no tiene instrucciones temporales activas." });
+        });
+      } else {
+        setTempCountdown(calcCountdown(settings.temp_prompt_expires_at));
+      }
+    };
+
+    tick();
+    // Actualizar cada minuto (60s) — suficiente precisión, evita renders innecesarios
+    countdownIntervalRef.current = setInterval(tick, 60_000);
+
+    return () => {
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    };
+  }, [settings.temp_prompt_expires_at, settings.temp_prompt_section, companyId, clearTempPromptSilent]);
+
+  // Suscripción Realtime a company_config — sincroniza cambios de otros agentes en tiempo real
+  useEffect(() => {
+    if (!companyId) return;
+
+    const channel = supabase
+      .channel(`temp-prompt-${companyId}`)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "company_config",
+        filter: `id=eq.${companyId}`,
+      }, (payload) => {
+        const updated = payload.new as any;
+        setSettings(s => ({
+          ...s,
+          temp_prompt_section: updated.temp_prompt_section ?? "",
+          temp_prompt_expires_at: updated.temp_prompt_expires_at ?? null,
+        }));
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [companyId]);
 
   const activateTempPrompt = async () => {
     if (!companyId || !settings.temp_prompt_section?.trim()) return;
@@ -192,14 +262,10 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
 
   const clearTempPrompt = async () => {
     if (!companyId) return;
-    const { error } = await supabase
-      .from("company_config")
-      .update({ temp_prompt_section: null, temp_prompt_expires_at: null } as any)
-      .eq("id", companyId);
+    const { error } = await clearTempPromptSilent(companyId).then(() => ({ error: null })).catch(e => ({ error: e }));
     if (error) {
-      toast({ title: "Error al desactivar", description: error.message, variant: "destructive" });
+      toast({ title: "Error al desactivar", description: String(error), variant: "destructive" });
     } else {
-      setSettings(s => ({ ...s, temp_prompt_section: "", temp_prompt_expires_at: null }));
       toast({ title: "Contexto temporal desactivado" });
     }
   };
@@ -608,9 +674,9 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                         </p>
                       </div>
                     </div>
-                    {isTempActive() && (
+                    {isTempActive() && tempCountdown && (
                       <span className="text-[11px] text-amber-500/80 font-medium whitespace-nowrap flex-shrink-0">
-                        {getTempCountdown()}
+                        {tempCountdown}
                       </span>
                     )}
                   </div>
