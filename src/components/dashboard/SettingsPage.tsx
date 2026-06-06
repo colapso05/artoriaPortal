@@ -357,7 +357,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
       const res = await fetch("https://bot.artoria.cl/webhook/contexto_temporal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description: tempBrief.trim(), company_id: companyId }),
+        body: JSON.stringify({ brief: tempBrief.trim(), company_id: companyId }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
