@@ -154,25 +154,57 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   const [savingTemp, setSavingTemp] = useState(false);
   const [tempCountdown, setTempCountdown] = useState("");
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Modo de fecha: "duration" (horas/días) o "range" (fecha inicio + fin)
+  const [tempDateMode, setTempDateMode] = useState<"duration" | "range">("duration");
+  // Fecha inicio y fin en formato datetime-local (YYYY-MM-DDTHH:mm), hora local del usuario
+  const [tempStartDate, setTempStartDate] = useState("");
+  const [tempEndDate, setTempEndDate] = useState("");
 
-  // Calcula el string de countdown a partir de un timestamp ISO
-  const calcCountdown = (expiresAt: string | null): string => {
-    if (!expiresAt) return "";
-    const diff = new Date(expiresAt).getTime() - Date.now();
-    if (diff <= 0) return "Expirado";
-    const totalMinutes = Math.floor(diff / 60000);
+  // Formatea una diferencia en ms como "Xd Yh" / "Yh Zmin" / "Zmin"
+  const formatDiff = (diffMs: number): string => {
+    const totalMinutes = Math.floor(diffMs / 60000);
     const days = Math.floor(totalMinutes / 1440);
     const hours = Math.floor((totalMinutes % 1440) / 60);
     const minutes = totalMinutes % 60;
-    if (days > 0) return `Expira en ${days}d ${hours}h`;
-    if (hours > 0) return `Expira en ${hours}h ${minutes}min`;
-    return `Expira en ${minutes}min`;
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}min`;
+    return `${minutes}min`;
   };
 
+  // Calcula el string de estado a partir de los timestamps
+  const calcCountdown = (startsAt: string | null, expiresAt: string | null): string => {
+    if (!expiresAt) return "";
+    const now = Date.now();
+    const expireMs = new Date(expiresAt).getTime();
+    if (expireMs <= now) return "Expirado";
+
+    // Si tiene fecha de inicio y aún no llegó → pendiente
+    if (startsAt) {
+      const startMs = new Date(startsAt).getTime();
+      if (startMs > now) return `Activa en ${formatDiff(startMs - now)}`;
+    }
+
+    return `Expira en ${formatDiff(expireMs - now)}`;
+  };
+
+  // ¿El contexto está activo AHORA? (inicio ya pasó y no expiró)
   const isTempActive = () => {
     if (!settings.temp_prompt_section?.trim()) return false;
     if (!settings.temp_prompt_expires_at) return false;
-    return new Date(settings.temp_prompt_expires_at) > new Date();
+    const now = new Date();
+    if (new Date(settings.temp_prompt_expires_at) <= now) return false;
+    const startsAt = (settings as any).temp_prompt_starts_at;
+    if (startsAt && new Date(startsAt) > now) return false; // pendiente, no activo aún
+    return true;
+  };
+
+  // ¿El contexto está programado pero aún no comenzó?
+  const isTempPending = () => {
+    if (!settings.temp_prompt_section?.trim()) return false;
+    if (!settings.temp_prompt_expires_at) return false;
+    const startsAt = (settings as any).temp_prompt_starts_at;
+    if (!startsAt) return false;
+    return new Date(startsAt) > new Date() && new Date(settings.temp_prompt_expires_at) > new Date();
   };
 
   // Limpia el contexto temporal en BD y estado local
@@ -194,29 +226,41 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
       return;
     }
 
-    // Tick inmediato
+    const startsAt: string | null = (settings as any).temp_prompt_starts_at ?? null;
+
     const tick = () => {
-      const remaining = new Date(settings.temp_prompt_expires_at!).getTime() - Date.now();
-      if (remaining <= 0) {
-        // Expiró — limpiar
+      const now = Date.now();
+      const expireMs = new Date(settings.temp_prompt_expires_at!).getTime();
+      const startMs = startsAt ? new Date(startsAt).getTime() : null;
+
+      if (expireMs <= now) {
+        // Expiró → limpiar
         if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
         setTempCountdown("Expirado");
         if (companyId) clearTempPromptSilent(companyId).then(() => {
           toast({ title: "⏰ Contexto temporal expirado", description: "El agente ya no tiene instrucciones temporales activas." });
         });
-      } else {
-        setTempCountdown(calcCountdown(settings.temp_prompt_expires_at));
+        return;
       }
+
+      if (startMs && startMs <= now && startsAt) {
+        // Acaba de llegar la hora de inicio → notificar (el campo ya está en BD, n8n lo verá)
+        // Limpiamos starts_at localmente para que isTempActive() lo refleje
+        setSettings(s => ({ ...s, temp_prompt_starts_at: null } as any));
+        toast({ title: "🟡 Contexto temporal activado", description: "El agente ya tiene las instrucciones temporales activas." });
+      }
+
+      setTempCountdown(calcCountdown(startsAt, settings.temp_prompt_expires_at));
     };
 
     tick();
-    // Actualizar cada minuto (60s) — suficiente precisión, evita renders innecesarios
     countdownIntervalRef.current = setInterval(tick, 60_000);
 
     return () => {
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
     };
-  }, [settings.temp_prompt_expires_at, settings.temp_prompt_section, companyId, clearTempPromptSilent]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.temp_prompt_expires_at, (settings as any).temp_prompt_starts_at, settings.temp_prompt_section, companyId, clearTempPromptSilent]);
 
   // Suscripción Realtime a company_config — sincroniza cambios de otros agentes en tiempo real
   useEffect(() => {
@@ -244,19 +288,52 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
 
   const activateTempPrompt = async () => {
     if (!companyId || !settings.temp_prompt_section?.trim()) return;
+
+    let expiresAt: string;
+    let startsAt: string | null = null;
+
+    if (tempDateMode === "range") {
+      if (!tempEndDate) {
+        toast({ title: "Falta la fecha de fin", description: "Selecciona una fecha y hora de término.", variant: "destructive" });
+        return;
+      }
+      // datetime-local es hora local del navegador → convertir a UTC
+      expiresAt = new Date(tempEndDate).toISOString();
+      if (tempStartDate) {
+        const startMs = new Date(tempStartDate).getTime();
+        if (startMs >= new Date(tempEndDate).getTime()) {
+          toast({ title: "Fechas inválidas", description: "La fecha de inicio debe ser anterior a la de fin.", variant: "destructive" });
+          return;
+        }
+        // Solo guardar starts_at si es en el futuro
+        if (startMs > Date.now()) {
+          startsAt = new Date(tempStartDate).toISOString();
+        }
+      }
+    } else {
+      const hours = parseInt(tempDuration);
+      expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+    }
+
     setSavingTemp(true);
-    const hours = parseInt(tempDuration);
-    const expiresAt = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
     const { error } = await supabase
       .from("company_config")
-      .update({ temp_prompt_section: settings.temp_prompt_section, temp_prompt_expires_at: expiresAt } as any)
+      .update({
+        temp_prompt_section: settings.temp_prompt_section,
+        temp_prompt_expires_at: expiresAt,
+        temp_prompt_starts_at: startsAt,
+      } as any)
       .eq("id", companyId);
     setSavingTemp(false);
+
     if (error) {
       toast({ title: "Error al activar", description: error.message, variant: "destructive" });
     } else {
-      setSettings(s => ({ ...s, temp_prompt_expires_at: expiresAt }));
-      toast({ title: "✅ Contexto temporal activado" });
+      setSettings(s => ({ ...s, temp_prompt_expires_at: expiresAt, temp_prompt_starts_at: startsAt } as any));
+      const msg = startsAt
+        ? `Programado — se activará el ${new Date(startsAt).toLocaleString()}`
+        : "El agente ya tiene las instrucciones activas.";
+      toast({ title: startsAt ? "⏱ Contexto programado" : "✅ Contexto temporal activado", description: msg });
     }
   };
 
@@ -663,7 +740,12 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                               ● ACTIVO
                             </span>
                           )}
-                          {settings.temp_prompt_section && !isTempActive() && settings.temp_prompt_expires_at && (
+                          {isTempPending() && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-blue-500/15 text-blue-500 uppercase tracking-wider">
+                              ⏱ PROGRAMADO
+                            </span>
+                          )}
+                          {settings.temp_prompt_section && !isTempActive() && !isTempPending() && settings.temp_prompt_expires_at && (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-muted/40 text-muted-foreground uppercase tracking-wider">
                               EXPIRADO
                             </span>
@@ -740,21 +822,62 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                     </AnimatePresence>
                   </div>
 
-                  {/* Duración + Activar / Desactivar */}
-                  <div className="flex items-center gap-2 flex-wrap pt-1">
-                    <Select value={tempDuration} onValueChange={setTempDuration}>
-                      <SelectTrigger className="w-32 h-8 text-xs border-border/20">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1">1 hora</SelectItem>
-                        <SelectItem value="4">4 horas</SelectItem>
-                        <SelectItem value="8">8 horas</SelectItem>
-                        <SelectItem value="24">1 día</SelectItem>
-                        <SelectItem value="48">2 días</SelectItem>
-                        <SelectItem value="168">7 días</SelectItem>
-                      </SelectContent>
-                    </Select>
+                  {/* Selector de modo: Duración vs Fecha específica */}
+                  <div className="flex items-center gap-1 p-0.5 rounded-lg bg-muted/40 border border-border/20 w-fit">
+                    <button
+                      onClick={() => setTempDateMode("duration")}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${tempDateMode === "duration" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      Por duración
+                    </button>
+                    <button
+                      onClick={() => setTempDateMode("range")}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${tempDateMode === "range" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                      Fecha específica
+                    </button>
+                  </div>
+
+                  {/* Controles según modo */}
+                  <div className="flex items-end gap-2 flex-wrap pt-1">
+                    {tempDateMode === "duration" ? (
+                      <Select value={tempDuration} onValueChange={setTempDuration}>
+                        <SelectTrigger className="w-32 h-8 text-xs border-border/20">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="1">1 hora</SelectItem>
+                          <SelectItem value="4">4 horas</SelectItem>
+                          <SelectItem value="8">8 horas</SelectItem>
+                          <SelectItem value="24">1 día</SelectItem>
+                          <SelectItem value="48">2 días</SelectItem>
+                          <SelectItem value="168">7 días</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-muted-foreground w-10 shrink-0">Inicio</span>
+                          <input
+                            type="datetime-local"
+                            value={tempStartDate}
+                            onChange={e => setTempStartDate(e.target.value)}
+                            className="h-8 text-xs px-2 rounded-md border border-border/30 bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                          />
+                          <span className="text-[10px] text-muted-foreground">(opcional)</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-muted-foreground w-10 shrink-0">Fin</span>
+                          <input
+                            type="datetime-local"
+                            value={tempEndDate}
+                            onChange={e => setTempEndDate(e.target.value)}
+                            className="h-8 text-xs px-2 rounded-md border border-border/30 bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     <Button
                       size="sm"
                       onClick={activateTempPrompt}
@@ -764,16 +887,16 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                       {savingTemp
                         ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         : <Clock className="w-3.5 h-3.5" />}
-                      {isTempActive() ? "Reactivar" : "Activar"}
+                      {isTempActive() ? "Reactivar" : isTempPending() ? "Reprogramar" : "Activar"}
                     </Button>
-                    {(isTempActive() || (settings.temp_prompt_expires_at != null)) && (
+                    {(isTempActive() || isTempPending() || (settings.temp_prompt_expires_at != null)) && (
                       <Button
                         size="sm"
                         variant="ghost"
                         onClick={clearTempPrompt}
                         className="gap-1.5 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                       >
-                        <X className="w-3.5 h-3.5" /> Desactivar
+                        <X className="w-3.5 h-3.5" /> Cancelar
                       </Button>
                     )}
                   </div>
