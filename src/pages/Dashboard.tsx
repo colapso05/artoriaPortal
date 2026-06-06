@@ -67,6 +67,7 @@ export default function Dashboard() {
   const [pendingConversationId, setPendingConversationId] = useState<string | null>(null);
   const [pendingInboxPhone, setPendingInboxPhone] = useState<string | null>(null);
   const [pendingInboxMessage, setPendingInboxMessage] = useState<string | null>(null);
+  const [tourContextoTemporal, setTourContextoTemporal] = useState(false);
 
   const [activeToggle, setActiveToggle] = useState<UserToggle | null>(null);
   const [companyRole, setCompanyRole] = useState<string | null>(null);
@@ -433,6 +434,7 @@ export default function Dashboard() {
               simulatedUserName={simulatedUserName}
               simulatedUserRole={simulatedUserRole}
               onAgendaClick={() => setActiveView("schedule")}
+              onContextoTemporalClick={() => { setActiveView("settings"); setTourContextoTemporal(true); }}
               onStopSimulation={() => {
                 setSidebarIconSize(adminIconSizeRef.current); // restaurar preferencia del admin
                 setSimulatedCompanyId(null);
@@ -643,6 +645,8 @@ export default function Dashboard() {
                   userRole={effectiveCompanyRole}
                   userId={session.user.id}
                   isSimulating={!!simulatedCompanyId}
+                  tourActive={tourContextoTemporal}
+                  onTourComplete={() => setTourContextoTemporal(false)}
                 />
               )}
               {activeView === "schedule" && effectiveCompanyId && (

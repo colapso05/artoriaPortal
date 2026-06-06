@@ -25,6 +25,8 @@ interface Props {
   userRole: string | null;
   userId: string;
   isSimulating?: boolean;
+  tourActive?: boolean;
+  onTourComplete?: () => void;
 }
 
 type Section = "personalizar" | "tickets" | "cuenta" | "alertas";
@@ -85,9 +87,10 @@ function slugify(text: string): string {
     .slice(0, 40);
 }
 
-export default function SettingsPage({ companyId, userRole, userId, isSimulating = false }: Props) {
+export default function SettingsPage({ companyId, userRole, userId, isSimulating = false, tourActive = false, onTourComplete }: Props) {
   const isAdmin = userRole === "administrador" || userRole === "admin";
   const [section, setSection] = useState<Section>(isAdmin ? "personalizar" : "cuenta");
+  const [tourStep, setTourStep] = useState(0); // 0 = inactivo
   const [settings, setSettings] = useState<CompanySettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -389,6 +392,21 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     else setLoading(false);
   }, [companyId, isAdmin]);
 
+  // ── Arrancar el tour cuando tourActive cambia a true ─────────────────────
+  useEffect(() => {
+    if (!tourActive) return;
+    // Asegurar que estamos en la sección correcta
+    setSection("personalizar");
+    // Pequeño delay para que el DOM se renderice antes de iniciar
+    const t = setTimeout(() => {
+      setTourStep(1);
+      // Scroll al área del contexto temporal
+      const el = document.querySelector("[data-tour='temp-prompt-section']");
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [tourActive]);
+
   useEffect(() => {
     if (section === "tickets" && isAdmin && companyId) loadLabels();
   }, [section, companyId, isAdmin]);
@@ -615,6 +633,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   const visibleNav = navItems.filter(n => !n.adminOnly || isAdmin);
 
   return (
+    <>
     <div className="flex h-full min-h-[600px] gap-0">
       {/* Sidebar */}
       <aside className="w-52 flex-shrink-0 border-r border-border/20 bg-card/30 p-4 flex flex-col gap-1">
@@ -746,7 +765,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                 </div>
 
                 {/* ── Contexto Temporal del Agente ── */}
-                <div className={`space-y-3 rounded-xl border p-4 transition-colors ${isTempActive() ? "border-amber-500/40 bg-amber-500/5" : "border-border/20 bg-card/40"}`}>
+                <div data-tour="temp-prompt-section" className={`space-y-3 rounded-xl border p-4 transition-colors ${isTempActive() ? "border-amber-500/40 bg-amber-500/5" : "border-border/20 bg-card/40"} ${tourStep >= 1 && tourStep <= 5 ? "ring-2 ring-amber-500/60 ring-offset-2 ring-offset-background" : ""}`}>
                   {/* Header */}
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-start gap-2 flex-1">
@@ -1527,5 +1546,136 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
         )}
       </div>
     </div>
+
+    {/* ── Tour guiado: Contexto Temporal del Agente ── */}
+    <AnimatePresence>
+      {tourStep > 0 && (
+        <>
+          {/* Overlay semitransparente */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[90] pointer-events-none"
+          />
+
+          {/* Tooltip flotante */}
+          <motion.div
+            key={tourStep}
+            initial={{ opacity: 0, y: 12, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.97 }}
+            transition={{ type: "spring", damping: 20, stiffness: 300 }}
+            className="fixed z-[100] bottom-10 left-1/2 -translate-x-1/2 w-[480px] max-w-[92vw]"
+          >
+            <div className="bg-card border border-border/30 rounded-2xl shadow-2xl overflow-hidden">
+              {/* Barra de progreso */}
+              <div className="h-1 bg-muted/30">
+                <motion.div
+                  className="h-full bg-amber-500 rounded-full"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${(tourStep / TOUR_STEPS.length) * 100}%` }}
+                  transition={{ duration: 0.4 }}
+                />
+              </div>
+
+              <div className="p-6">
+                {/* Ícono + step count */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center text-xl">
+                      {TOUR_STEPS[tourStep - 1].emoji}
+                    </div>
+                    <span className="text-[11px] font-bold text-muted-foreground/50 uppercase tracking-widest">
+                      Paso {tourStep} de {TOUR_STEPS.length}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => { setTourStep(0); onTourComplete?.(); }}
+                    className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors px-2 py-1 rounded-lg hover:bg-muted/30"
+                  >
+                    Saltar tour
+                  </button>
+                </div>
+
+                {/* Título y descripción */}
+                <h3 className="text-[18px] font-bold leading-snug mb-2">
+                  {TOUR_STEPS[tourStep - 1].title}
+                </h3>
+                <p className="text-[14px] text-muted-foreground/80 leading-relaxed">
+                  {TOUR_STEPS[tourStep - 1].desc}
+                </p>
+
+                {/* Botones */}
+                <div className="flex items-center justify-between mt-6">
+                  <button
+                    onClick={() => tourStep > 1 && setTourStep(s => s - 1)}
+                    className={`text-sm font-medium px-4 py-2 rounded-xl transition-colors ${tourStep > 1 ? "text-muted-foreground hover:text-foreground hover:bg-muted/30" : "invisible"}`}
+                  >
+                    ← Anterior
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (tourStep < TOUR_STEPS.length) {
+                        setTourStep(s => s + 1);
+                        // Scroll al target del siguiente paso
+                        const next = TOUR_STEPS[tourStep]; // tourStep no incrementado aún → es el índice siguiente
+                        if (next?.target) {
+                          setTimeout(() => {
+                            document.querySelector(`[data-tour='${next.target}']`)
+                              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          }, 100);
+                        }
+                      } else {
+                        setTourStep(0);
+                        onTourComplete?.();
+                      }
+                    }}
+                    className="text-sm font-bold px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition-colors shadow-lg shadow-amber-500/20"
+                  >
+                    {tourStep < TOUR_STEPS.length ? "Siguiente →" : "¡Entendido! 🎉"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+    </>
   );
 }
+
+// ── Pasos del tour ────────────────────────────────────────────────────────────
+const TOUR_STEPS = [
+  {
+    emoji: "🎉",
+    title: "¡Nueva función: Contexto Temporal!",
+    desc: "Ahora podés darle instrucciones temporales al agente IA — feriados, promociones, cambios de horario — que se activan y se borran automáticamente cuando se acaba el tiempo. Sin tocar el prompt principal.",
+    target: "temp-prompt-section",
+  },
+  {
+    emoji: "✍️",
+    title: "Escribí qué debe saber el bot",
+    desc: "En el campo de texto describís la situación. Por ejemplo: 'El lunes es feriado, no hay atención presencial. Solo emergencias por WhatsApp.' Podés ser tan detallado como necesites.",
+    target: "temp-prompt-section",
+  },
+  {
+    emoji: "✨",
+    title: "¿No sabés cómo redactarlo? La IA te ayuda",
+    desc: "Hacé clic en 'Ayudarme a redactar con IA', describí la situación en palabras simples y la IA lo transforma en una instrucción clara para el bot. Podés editarla antes de aplicarla.",
+    target: "temp-prompt-section",
+  },
+  {
+    emoji: "⏱",
+    title: "Elegí cuánto tiempo durará",
+    desc: "Podés poner una duración (1 hora, 1 día, etc.) o una fecha exacta de inicio y fin. Cuando se acabe el tiempo, el contexto se borra automáticamente — el bot vuelve a su comportamiento normal.",
+    target: "temp-prompt-section",
+  },
+  {
+    emoji: "🚀",
+    title: "Activar y olvidarte",
+    desc: "Hacé clic en 'Activar' y listo. El agente IA ya tiene el contexto. Podés ver el tiempo restante en el badge 'ACTIVO'. Si algo cambia, podés desactivarlo manualmente en cualquier momento.",
+    target: "temp-prompt-section",
+  },
+];
