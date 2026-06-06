@@ -358,7 +358,7 @@ export default function ScheduleTab({
 
       {/* ── Agenda preview overlay ── */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-5xl w-[95vw] h-[88vh] flex flex-col p-0 gap-0 overflow-hidden">
+        <DialogContent className="max-w-5xl w-[95vw] h-[88vh] flex flex-col p-0 gap-0 overflow-hidden" aria-describedby={undefined}>
           <DialogHeader className="px-5 py-3.5 border-b border-border/50 shrink-0 flex-row items-center gap-3">
             <div className="w-8 h-8 rounded-xl bg-primary/10 flex items-center justify-center">
               <Calendar className="w-4 h-4 text-primary" />

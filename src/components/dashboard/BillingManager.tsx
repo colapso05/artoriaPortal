@@ -227,9 +227,13 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
 
   function closeBrick() {
     setBrickOpen(false);
-    setBrickInvoice(null);
-    setBrickPrefId(null);
-    setBrickError(null);
+    // Delay para que termine la animación de cierre del Dialog antes de
+    // desmontar el Brick — evita el error "removeChild: parameter is not a Node"
+    setTimeout(() => {
+      setBrickInvoice(null);
+      setBrickPrefId(null);
+      setBrickError(null);
+    }, 350);
     setSubmitting(false);
     setIsSubscription(false);
   }
@@ -301,7 +305,7 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
 
       {/* ── Dialog con el formulario de pago embebido ── */}
       <Dialog open={brickOpen} onOpenChange={(open) => { if (!open) closeBrick(); }}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CreditCard className="w-5 h-5" style={{ color: "#009ee3" }} />
