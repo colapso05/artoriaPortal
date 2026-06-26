@@ -9,6 +9,9 @@ import Portal from "./pages/Portal";
 import Dashboard from "./pages/Dashboard";
 import NotFound from "./pages/NotFound";
 import BillingReturn from "./pages/BillingReturn";
+import Privacidad from "./pages/Privacidad";
+import Terminos from "./pages/Terminos";
+import Cookies from "./pages/Cookies";
 
 const queryClient = new QueryClient();
 
@@ -24,6 +27,9 @@ const App = () => (
             <Route path="/portal" element={<Portal />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/billing/return" element={<BillingReturn />} />
+            <Route path="/privacidad" element={<Privacidad />} />
+            <Route path="/terminos" element={<Terminos />} />
+            <Route path="/cookies" element={<Cookies />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

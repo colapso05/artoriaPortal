@@ -14,6 +14,9 @@ export default defineConfig(({ mode }) => ({
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  build: {
+    sourcemap: false, // no exponer source maps en producción
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

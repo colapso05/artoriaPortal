@@ -94,6 +94,21 @@
 }
 
 @layer base {
+  /* ── Tema "Azul fibra" — SOLO para la landing pública (#inicio) ──
+     Redefine los tokens de color dentro de .landing-theme. El dashboard
+     y el portal NO llevan esta clase, así que mantienen el morado global. */
+  .landing-theme {
+    --primary: 200 95% 52%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 200 95% 52%;
+    --accent-foreground: 0 0% 100%;
+    --ring: 200 95% 52%;
+    --secondary: 187 85% 45%;
+    --secondary-foreground: 226 28% 8%;
+    --glow: 199 90% 56%;
+    --glow-secondary: 187 92% 56%;
+  }
+
   * {
     @apply border-border;
   }

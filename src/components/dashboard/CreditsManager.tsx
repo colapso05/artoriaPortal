@@ -93,6 +93,8 @@ export default function CreditsManager({ companyId, userId }: Props) {
   const [markingSent, setMarkingSent] = useState(false);
   const [modal, setModal] = useState<PurchaseModal | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [ycloudBalance, setYcloudBalance] = useState<{ amount: number; currency: string } | null>(null);
+  const [loadingYCloud, setLoadingYCloud] = useState(false);
   const { toast } = useToast();
 
   const loadCredits = useCallback(async () => {
@@ -129,7 +131,39 @@ export default function CreditsManager({ companyId, userId }: Props) {
     setPendingRequests(data ?? []);
   }, [companyId]);
 
-  useEffect(() => { loadCredits(); loadPackages(); loadHistory(); loadPendingRequests(); }, [loadCredits, loadPackages, loadHistory, loadPendingRequests]);
+  const loadYCloudBalance = useCallback(async () => {
+    if (companyId !== "01f8520b-5727-4e7c-937f-180c567609d9") return;
+    setLoadingYCloud(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("get-ycloud-balance", {
+        body: { companyId },
+      });
+      if (error) {
+        console.warn("No se pudo obtener el saldo de YCloud:", error);
+        setYcloudBalance(null);
+      } else if (data?.error) {
+        console.warn("Error retornado de YCloud:", data.error);
+        setYcloudBalance(null);
+      } else if (data && typeof data.amount === "number") {
+        setYcloudBalance({ amount: data.amount, currency: data.currency || "USD" });
+      }
+    } catch (e) {
+      console.error("Error al cargar saldo de YCloud:", e);
+      setYcloudBalance(null);
+    } finally {
+      setLoadingYCloud(false);
+    }
+  }, [companyId]);
+
+  useEffect(() => { 
+    loadCredits(); 
+    loadPackages(); 
+    loadHistory(); 
+    loadPendingRequests(); 
+    if (companyId === "01f8520b-5727-4e7c-937f-180c567609d9") {
+      loadYCloudBalance(); 
+    }
+  }, [companyId, loadCredits, loadPackages, loadHistory, loadPendingRequests, loadYCloudBalance]);
 
   // Realtime: balance updates
   useEffect(() => {
@@ -224,57 +258,92 @@ export default function CreditsManager({ companyId, userId }: Props) {
   return (
     <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-1">
 
-      {/* Balance card */}
-      <div className="rounded-xl border border-border/40 bg-card shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-border/20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-              <MessageCircle className="w-4 h-4 text-primary" />
+      {/* Grid containing internal credits and YCloud balance if available */}
+      <div className={`grid grid-cols-1 ${ycloudBalance ? "md:grid-cols-2" : ""} gap-4`}>
+        {/* Balance card */}
+        <div className="rounded-xl border border-border/40 bg-card shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-border/20 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                <MessageCircle className="w-4 h-4 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold font-['Space_Grotesk']">Créditos WhatsApp</h2>
+                <p className="text-[10px] text-muted-foreground">Mensajes disponibles para envío</p>
+              </div>
             </div>
-            <div>
-              <h2 className="text-sm font-bold font-['Space_Grotesk']">Créditos WhatsApp</h2>
-              <p className="text-[10px] text-muted-foreground">Mensajes disponibles para envío</p>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { loadCredits(); loadHistory(); loadYCloudBalance(); }}>
+              <RefreshCw className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+          <div className="p-5 space-y-4">
+            {loadingCredits ? (
+              <div className="h-16 rounded-xl bg-muted/20 animate-pulse" />
+            ) : (
+              <>
+                {lowBalance && (
+                  <div className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
+                    <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-[12px] text-amber-600 dark:text-amber-400 font-medium leading-snug">
+                      ⚠️ Te quedan pocos mensajes. Carga más para no interrumpir la atención a tus clientes.
+                    </p>
+                  </div>
+                )}
+                <div className="flex items-end justify-between gap-4">
+                  <div>
+                    <p className={`text-3xl font-black tabular-nums tracking-tight ${lowBalance ? "text-amber-500" : ""}`}>
+                      {credits?.balance.toLocaleString("es-CL")}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">mensajes disponibles</p>
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="h-2 rounded-full bg-secondary/60 overflow-hidden">
+                    <motion.div
+                      className={`h-full rounded-full ${lowBalance ? "bg-amber-500" : "bg-primary"}`}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${balancePct}%` }}
+                      transition={{ duration: 0.6, ease: "easeOut" }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground text-right">{balancePct}% restante</p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* YCloud Balance Card */}
+        {ycloudBalance && (
+          <div className="rounded-xl border border-border/40 bg-card shadow-sm overflow-hidden flex flex-col justify-between">
+            <div className="px-5 py-4 border-b border-border/20 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+                  <CreditCard className="w-4 h-4 text-emerald-500" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold font-['Space_Grotesk']">Saldo YCloud (WhatsApp Oficial)</h2>
+                  <p className="text-[10px] text-muted-foreground">Saldo real en el proveedor de WhatsApp</p>
+                </div>
+              </div>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={loadYCloudBalance} disabled={loadingYCloud}>
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingYCloud ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
+            <div className="p-5 flex-1 flex flex-col justify-center min-h-[90px]">
+              {loadingYCloud ? (
+                <div className="h-8 rounded bg-muted/20 animate-pulse w-24" />
+              ) : (
+                <>
+                  <p className="text-3xl font-black text-emerald-500 tabular-nums tracking-tight">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: ycloudBalance.currency }).format(ycloudBalance.amount)}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">fondos disponibles en YCloud</p>
+                </>
+              )}
             </div>
           </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { loadCredits(); loadHistory(); }}>
-            <RefreshCw className="w-3.5 h-3.5" />
-          </Button>
-        </div>
-        <div className="p-5 space-y-4">
-          {loadingCredits ? (
-            <div className="h-16 rounded-xl bg-muted/20 animate-pulse" />
-          ) : (
-            <>
-              {lowBalance && (
-                <div className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
-                  <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-[12px] text-amber-600 dark:text-amber-400 font-medium leading-snug">
-                    ⚠️ Te quedan pocos mensajes. Carga más para no interrumpir la atención a tus clientes.
-                  </p>
-                </div>
-              )}
-              <div className="flex items-end justify-between gap-4">
-                <div>
-                  <p className={`text-3xl font-black tabular-nums tracking-tight ${lowBalance ? "text-amber-500" : ""}`}>
-                    {credits?.balance.toLocaleString("es-CL")}
-                  </p>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">mensajes disponibles</p>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="h-2 rounded-full bg-secondary/60 overflow-hidden">
-                  <motion.div
-                    className={`h-full rounded-full ${lowBalance ? "bg-amber-500" : "bg-primary"}`}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${balancePct}%` }}
-                    transition={{ duration: 0.6, ease: "easeOut" }}
-                  />
-                </div>
-                <p className="text-[10px] text-muted-foreground text-right">{balancePct}% restante</p>
-              </div>
-            </>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Packages */}

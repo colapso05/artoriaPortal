@@ -17,6 +17,7 @@ import {
   Palette, HelpCircle, Save, Loader2, Minus, Plus, User, Lock, Tag,
   Trash2, Check, GripVertical, PlusCircle, Pencil, X, Bell, Phone, PanelLeft,
   Home, MessageCircle, Ticket, Zap, MapPin, Users, Clock, Wand2,
+  FileText, Upload, File, FileSpreadsheet, AlertCircle, Plug, Key, Eye, EyeOff,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -29,7 +30,7 @@ interface Props {
   onTourComplete?: () => void;
 }
 
-type Section = "personalizar" | "tickets" | "cuenta" | "alertas";
+type Section = "personalizar" | "tickets" | "cuenta" | "alertas" | "documentos" | "integraciones";
 
 interface CompanySettings {
   delay: number;
@@ -47,6 +48,111 @@ interface TicketLabel {
   sort_order: number;
   is_initial?: boolean;
   is_final?: boolean;
+}
+
+interface CompanyIntegration {
+  id: string;
+  service_name: string;
+  api_key: string | null;
+  api_url: string | null;
+  metadata: Record<string, any> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const SUPABASE_URL_BASE = import.meta.env.VITE_SUPABASE_URL || "https://supabase.artoria.cl";
+
+interface ServiceDef {
+  name: string;
+  label: string;
+  description: string;
+  badge?: string;
+  needsUrl?: boolean;
+  keyPlaceholder?: string;
+  urlPlaceholder?: string;
+}
+
+interface ServiceCategory {
+  key: string;
+  label: string;
+  icon: string;
+  services: ServiceDef[];
+}
+
+const SERVICE_CATALOG: ServiceCategory[] = [
+  {
+    key: "ai_model",
+    label: "Modelo de IA",
+    icon: "🤖",
+    services: [
+      {
+        name: "gemini_flash",
+        label: "Gemini 2.5 Flash",
+        description: "Rápido, confiable y muy buenas respuestas. El estándar recomendado.",
+        badge: "Recomendado",
+        keyPlaceholder: "AIzaSy...",
+      },
+      {
+        name: "deepseek_flash",
+        label: "DeepSeek Flash",
+        description: "Opción económica con muy buen rendimiento en español.",
+        keyPlaceholder: "sk-...",
+      },
+    ],
+  },
+  {
+    key: "isp_mgmt",
+    label: "Sistema de gestión ISP",
+    icon: "🌐",
+    services: [
+      {
+        name: "mikrowisp",
+        label: "MikroWisp",
+        description: "Plataforma de gestión y facturación para ISPs.",
+        needsUrl: true,
+        keyPlaceholder: "Token de API MikroWisp",
+        urlPlaceholder: "https://panel.tuisp.com",
+      },
+      {
+        name: "wisphub",
+        label: "WispHub",
+        description: "Sistema de gestión ISP en la nube.",
+        keyPlaceholder: "Token de API WispHub",
+      },
+    ],
+  },
+];
+
+// Mapa plano para display en la lista actual
+const ALL_SERVICE_DEFS: Record<string, ServiceDef & { categoryLabel: string }> = {};
+SERVICE_CATALOG.forEach(cat =>
+  cat.services.forEach(svc => { ALL_SERVICE_DEFS[svc.name] = { ...svc, categoryLabel: cat.label }; })
+);
+// Servicios de sistema no editables por el usuario
+const SYSTEM_SERVICES: Record<string, { label: string; description: string }> = {
+  ycloud:      { label: "yCloud", description: "Proveedor de WhatsApp Business API" },
+  mercadopago: { label: "MercadoPago", description: "Pasarela de pagos" },
+};
+
+const maskKey = (key: string | null): string => {
+  if (!key || key.length < 4) return "••••••••";
+  return `••••${key.slice(-4)}`;
+};
+
+// Valida una API key de Gemini directo desde el browser (CORS habilitado por Google)
+async function validateGeminiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (res.ok) return { valid: true, message: "API key válida ✓" };
+    if (res.status === 400) return { valid: false, message: "API key inválida o mal formada" };
+    if (res.status === 403) return { valid: false, message: "API key sin permisos para Gemini" };
+    return { valid: false, message: `Error HTTP ${res.status}` };
+  } catch {
+    return { valid: false, message: "No se pudo conectar con Google. Verificá tu conexión." };
+  }
 }
 
 const DEFAULT_SETTINGS: CompanySettings = {
@@ -623,10 +729,375 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     }
   };
 
+  // ── Integraciones ────────────────────────────────────────────────────────
+  const [integrations, setIntegrations] = useState<CompanyIntegration[]>([]);
+  const [integrationsLoading, setIntegrationsLoading] = useState(false);
+  const [editingIntegration, setEditingIntegration] = useState<string | null>(null);
+  const [intFormKey, setIntFormKey] = useState("");
+  const [intFormUrl, setIntFormUrl] = useState("");
+  const [intFormMeta, setIntFormMeta] = useState("");
+  const [intFormMetaError, setIntFormMetaError] = useState("");
+  const [savingIntegration, setSavingIntegration] = useState(false);
+  const [showKeyMap, setShowKeyMap] = useState<Record<string, boolean>>({});
+  // Wizard "agregar integración"
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardCategory, setWizardCategory] = useState<string | null>(null);
+  const [wizardService, setWizardService] = useState<ServiceDef | null>(null);
+  const [wizardKey, setWizardKey] = useState("");
+  const [wizardUrl, setWizardUrl] = useState("");
+  const [wizardValidation, setWizardValidation] = useState<{ status: "idle" | "loading" | "ok" | "error"; message: string }>({ status: "idle", message: "" });
+  const [savingWizard, setSavingWizard] = useState(false);
+
+  const getServiceKey = async (): Promise<string | null> => {
+    const { data, error } = await supabase.functions.invoke("get-service-key");
+    if (error || !data?.service_key) return null;
+    return data.service_key as string;
+  };
+
+  const loadIntegrations = async () => {
+    if (!companyId) return;
+    setIntegrationsLoading(true);
+    const serviceKey = await getServiceKey();
+    if (!serviceKey) {
+      toast({ title: "Error de acceso a integraciones", variant: "destructive" });
+      setIntegrationsLoading(false);
+      return;
+    }
+    const res = await fetch(
+      `${SUPABASE_URL_BASE}/rest/v1/company_integrations?company_id=eq.${companyId}&select=*&order=created_at.asc`,
+      { headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey } }
+    );
+    const data = await res.json();
+    setIntegrations(Array.isArray(data) ? data : []);
+    setIntegrationsLoading(false);
+  };
+
+  const startEditIntegration = (integration: CompanyIntegration) => {
+    setEditingIntegration(integration.id);
+    setIntFormKey("");
+    setIntFormUrl(integration.api_url ?? "");
+    setIntFormMeta(integration.metadata ? JSON.stringify(integration.metadata, null, 2) : "");
+    setIntFormMetaError("");
+  };
+
+  const cancelEditIntegration = () => {
+    setEditingIntegration(null);
+    setIntFormKey("");
+    setIntFormUrl("");
+    setIntFormMeta("");
+    setIntFormMetaError("");
+  };
+
+  const saveIntegrationEdit = async (integration: CompanyIntegration) => {
+    let parsedMeta: Record<string, any> | null = integration.metadata;
+    if (intFormMeta.trim()) {
+      try { parsedMeta = JSON.parse(intFormMeta); setIntFormMetaError(""); }
+      catch { setIntFormMetaError("JSON inválido"); return; }
+    } else {
+      parsedMeta = null;
+    }
+
+    setSavingIntegration(true);
+    const serviceKey = await getServiceKey();
+    if (!serviceKey) { setSavingIntegration(false); return; }
+
+    const body: Record<string, any> = { api_url: intFormUrl.trim() || null, metadata: parsedMeta };
+    if (intFormKey.trim()) body.api_key = intFormKey.trim();
+
+    const res = await fetch(
+      `${SUPABASE_URL_BASE}/rest/v1/company_integrations?id=eq.${integration.id}&company_id=eq.${companyId}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
+          "Content-Type": "application/json",
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    setSavingIntegration(false);
+    if (!res.ok) {
+      toast({ title: "Error al guardar", description: `HTTP ${res.status}`, variant: "destructive" });
+    } else {
+      toast({ title: "✅ Integración actualizada" });
+      cancelEditIntegration();
+      await loadIntegrations();
+    }
+  };
+
+  const resetWizard = () => {
+    setWizardOpen(false);
+    setWizardCategory(null);
+    setWizardService(null);
+    setWizardKey("");
+    setWizardUrl("");
+    setWizardValidation({ status: "idle", message: "" });
+  };
+
+  const validateWizardKey = async () => {
+    if (!wizardService || !wizardKey.trim()) return;
+    setWizardValidation({ status: "loading", message: "Verificando..." });
+
+    if (wizardService.name === "gemini_flash") {
+      const result = await validateGeminiKey(wizardKey.trim());
+      setWizardValidation({ status: result.valid ? "ok" : "error", message: result.message });
+      return;
+    }
+
+    // Para otros servicios: edge function validate-integration (sin auth requerida)
+    try {
+      const res = await fetch(`${SUPABASE_URL_BASE}/functions/v1/validate-integration`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": import.meta.env.VITE_SUPABASE_ANON_KEY ?? "",
+        },
+        body: JSON.stringify({
+          service_name: wizardService.name,
+          api_key: wizardKey.trim(),
+          ...(wizardService.needsUrl && wizardUrl.trim() ? { api_url: wizardUrl.trim() } : {}),
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const data = await res.json();
+      if (data?.valid) {
+        setWizardValidation({ status: "ok", message: data.message ?? "API key válida ✓" });
+      } else {
+        setWizardValidation({ status: "error", message: data?.message ?? "API key inválida" });
+      }
+    } catch {
+      setWizardValidation({ status: "error", message: "No se pudo conectar con el servicio de validación" });
+    }
+  };
+
+  const saveWizardIntegration = async () => {
+    if (!wizardService || !wizardKey.trim() || !companyId) return;
+    setSavingWizard(true);
+    const serviceKey = await getServiceKey();
+    if (!serviceKey) { setSavingWizard(false); return; }
+
+    const body = {
+      company_id: companyId,
+      service_name: wizardService.name,
+      api_key: wizardKey.trim(),
+      api_url: wizardUrl.trim() || null,
+      metadata: null,
+    };
+
+    const res = await fetch(`${SUPABASE_URL_BASE}/rest/v1/company_integrations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+        apikey: serviceKey,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify(body),
+    });
+    setSavingWizard(false);
+    if (!res.ok) {
+      toast({ title: "Error al guardar", description: `HTTP ${res.status}`, variant: "destructive" });
+    } else {
+      toast({ title: `✅ ${wizardService.label} conectada` });
+      resetWizard();
+      await loadIntegrations();
+    }
+  };
+
+  useEffect(() => {
+    if (section === "integraciones" && isAdmin && companyId) loadIntegrations();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, companyId, isAdmin]);
+
+  // ── Documentos RAG ───────────────────────────────────────────────────────
+  interface CompanyDocument {
+    id: string;
+    name: string;
+    storage_path: string;
+    file_type: string;
+    size_bytes: number;
+    created_at: string;
+    description?: string | null;
+  }
+
+  const [documents, setDocuments] = useState<CompanyDocument[]>([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [fileDescription, setFileDescription] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const ALLOWED_TYPES: Record<string, string> = {
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "text/csv": "csv",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel": "xls",
+  };
+  const MAX_SIZE_MB = 20;
+
+  const loadDocuments = async () => {
+    if (!companyId) return;
+    setLoadingDocs(true);
+    const { data, error } = await (supabase as any)
+      .from("company_documents")
+      .select("id, name, storage_path, file_type, size_bytes, created_at, description")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false });
+    setLoadingDocs(false);
+    if (!error && data) setDocuments(data);
+  };
+
+  useEffect(() => {
+    if (section === "documentos" && isAdmin && companyId) loadDocuments();
+  }, [section, companyId, isAdmin]);
+
+  // Valida formato y tamaño, luego sube directamente con descripción fija
+  const handleFilePicked = (file: File) => {
+    const mimeType = file.type || "";
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const fileType = ALLOWED_TYPES[mimeType] ?? ext;
+    if (!Object.values(ALLOWED_TYPES).includes(fileType)) {
+      toast({ title: "Formato no soportado", description: "Subí PDF, TXT, CSV o Excel. Si tenés Word, exportalo como PDF primero.", variant: "destructive" });
+      return;
+    }
+    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+      toast({ title: "Archivo muy grande", description: `El límite es ${MAX_SIZE_MB} MB.`, variant: "destructive" });
+      return;
+    }
+    handleFileUpload(file, "Grilla de canales");
+  };
+
+  const handleFileUpload = async (file: File, description: string) => {
+    if (!companyId) return;
+
+    const mimeType = file.type || "";
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const fileType = ALLOWED_TYPES[mimeType] ?? ext;
+
+    setPendingFile(null);
+    setFileDescription("");
+    setUploadingFile(true);
+    setUploadProgress(10);
+
+    const timestamp = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storagePath = `${companyId}/${timestamp}_${safeName}`;
+
+    // 1. Subir al bucket
+    const { error: storageError } = await (supabase as any).storage
+      .from("company-documents")
+      .upload(storagePath, file, { cacheControl: "3600", upsert: false });
+
+    setUploadProgress(70);
+
+    if (storageError) {
+      setUploadingFile(false);
+      setUploadProgress(0);
+      toast({ title: "Error al subir", description: storageError.message, variant: "destructive" });
+      return;
+    }
+
+    // 2. Guardar metadata en la tabla
+    const { data: docData, error: dbError } = await (supabase as any)
+      .from("company_documents")
+      .insert({
+        company_id: companyId,
+        name: file.name,
+        storage_path: storagePath,
+        file_type: fileType,
+        size_bytes: file.size,
+        created_by: userId,
+        description: description.trim() || null,
+      })
+      .select("id")
+      .single();
+
+    setUploadProgress(100);
+    setUploadingFile(false);
+    setUploadProgress(0);
+
+    if (dbError) {
+      toast({ title: "Error al registrar", description: dbError.message, variant: "destructive" });
+    } else {
+      toast({ title: "✅ Archivo subido", description: `${file.name} está siendo procesado por el agente IA.` });
+      loadDocuments();
+
+      // 3. Notificar a n8n para chunking + embeddings (fire & forget)
+      fetch("https://bot.artoria.cl/webhook/rag_artoria", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company_id: companyId,
+          document_id: docData?.id ?? null,
+          storage_path: storagePath,
+          file_type: fileType,
+          name: file.name,
+          description: description.trim() || null,
+        }),
+      }).catch(err => console.warn("[RAG webhook] Error al notificar a n8n:", err));
+    }
+  };
+
+  const handleDeleteDocument = async (doc: CompanyDocument) => {
+    if (!confirm(`¿Eliminar "${doc.name}"? Esta acción no se puede deshacer.`)) return;
+
+    // 1. Borrar del storage
+    await (supabase as any).storage.from("company-documents").remove([doc.storage_path]);
+
+    // 2. Borrar el registro de la tabla — el CASCADE elimina los chunks automáticamente
+    const { error } = await (supabase as any)
+      .from("company_documents")
+      .delete()
+      .eq("id", doc.id)
+      .eq("company_id", companyId); // doble filtro por seguridad
+
+    if (error) {
+      toast({ title: "Error al eliminar", description: error.message, variant: "destructive" });
+    } else {
+      toast({ title: "Documento eliminado", description: "Los chunks del agente IA también fueron limpiados." });
+      setDocuments(prev => prev.filter(d => d.id !== doc.id));
+    }
+  };
+
+  // Elimina el archivo actual silenciosamente y abre el selector para subir uno nuevo
+  const handleReplaceDocument = async (doc: CompanyDocument) => {
+    await (supabase as any).storage.from("company-documents").remove([doc.storage_path]);
+    await (supabase as any).from("company_documents").delete().eq("id", doc.id).eq("company_id", companyId);
+    setDocuments([]);
+    setTimeout(() => fileInputRef.current?.click(), 100);
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const docIcon = (type: string) => {
+    if (["xlsx", "xls", "csv"].includes(type)) return FileSpreadsheet;
+    if (["pdf"].includes(type)) return FileText;
+    return File;
+  };
+
+  const docColor = (type: string) => {
+    if (["pdf"].includes(type)) return "text-red-500 bg-red-500/10";
+    if (["xlsx", "xls"].includes(type)) return "text-emerald-500 bg-emerald-500/10";
+    if (["csv"].includes(type)) return "text-emerald-600 bg-emerald-600/10";
+    if (["docx", "doc"].includes(type)) return "text-blue-500 bg-blue-500/10";
+    return "text-muted-foreground bg-muted/30";
+  };
+
   const navItems: { id: Section; label: string; icon: any; adminOnly: boolean }[] = [
     { id: "personalizar", label: "Personalizar", icon: Palette, adminOnly: true },
     { id: "tickets", label: "Etiquetas", icon: Tag, adminOnly: true },
     { id: "alertas", label: "Alertas", icon: Bell, adminOnly: true },
+    { id: "documentos", label: "Grilla de Canales", icon: FileSpreadsheet, adminOnly: true },
+    { id: "integraciones", label: "Integraciones", icon: Plug, adminOnly: true },
     { id: "cuenta", label: "Mi Cuenta", icon: User, adminOnly: false },
   ];
 
@@ -1430,6 +1901,430 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                 )}
               </AnimatePresence>
             </div>
+          </motion.div>
+        )}
+
+        {/* ── GRILLA DE CANALES ── */}
+        {section === "documentos" && (
+          <motion.div key="documentos" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl space-y-6">
+            <div>
+              <h2 className="text-lg font-bold">Grilla de Canales</h2>
+              <p className="text-sm text-muted-foreground/70 mt-1">
+                Cargá la grilla de canales actualizada para que el asistente pueda responder consultas sobre la programación.
+                Solo se permite un archivo a la vez — para actualizarla, reemplazá la versión anterior.
+              </p>
+            </div>
+
+            {/* Input oculto siempre presente */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept=".pdf,.txt,.csv,.xlsx,.xls"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleFilePicked(f); e.target.value = ""; }}
+            />
+
+            {/* ── Zona de carga / confirmación / progreso ── */}
+            <AnimatePresence mode="wait">
+              {uploadingFile ? (
+                <motion.div
+                  key="uploading"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="border-2 border-dashed border-primary/40 rounded-2xl p-10 flex flex-col items-center gap-3 bg-primary/5"
+                >
+                  <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                  <p className="text-sm font-semibold text-primary">Subiendo grilla...</p>
+                  <div className="w-full max-w-xs h-1.5 bg-muted/40 rounded-full overflow-hidden">
+                    <motion.div
+                      className="h-full bg-primary rounded-full"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${uploadProgress}%` }}
+                      transition={{ duration: 0.3 }}
+                    />
+                  </div>
+                </motion.div>
+              ) : !loadingDocs && documents.length === 0 ? (
+                /* ── Drop zone (solo si no hay archivo cargado) ── */
+                <motion.div
+                  key="dropzone"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={e => {
+                    e.preventDefault();
+                    setDragOver(false);
+                    const file = e.dataTransfer.files[0];
+                    if (file) handleFilePicked(file);
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-2xl p-10 flex flex-col items-center gap-3 cursor-pointer transition-all
+                    ${dragOver ? "border-primary bg-primary/5 scale-[1.01]" : "border-border/30 hover:border-primary/40 hover:bg-muted/20"}`}
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center">
+                    <Upload className="w-7 h-7 text-primary" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-[15px] font-semibold">
+                      {dragOver ? "Soltá el archivo aquí" : "Arrastrá la grilla o hacé clic"}
+                    </p>
+                    <p className="text-xs text-muted-foreground/60 mt-1">
+                      PDF · TXT · CSV · Excel — máx. {MAX_SIZE_MB} MB
+                    </p>
+                    <p className="text-[11px] text-muted-foreground/40 mt-1">
+                      Si tenés Word, exportá como PDF antes de subir
+                    </p>
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+
+            {/* ── Archivo actual ── */}
+            {loadingDocs ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground/40" />
+              </div>
+            ) : (
+              <AnimatePresence>
+                {documents.map(doc => {
+                  const Icon = docIcon(doc.file_type);
+                  const colorClass = docColor(doc.file_type);
+                  return (
+                    <motion.div
+                      key={doc.id}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, x: -10 }}
+                      className="flex items-center gap-3 p-4 rounded-xl border border-border/20 bg-card/40"
+                    >
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${colorClass}`}>
+                        <Icon className="w-5 h-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[13px] font-semibold truncate">{doc.name}</p>
+                        {doc.description && (
+                          <p className="text-[12px] text-muted-foreground/70 truncate">{doc.description}</p>
+                        )}
+                        <p className="text-[11px] text-muted-foreground/40 mt-0.5">
+                          {doc.file_type.toUpperCase()} · {formatBytes(doc.size_bytes)} · Subida el {new Date(doc.created_at).toLocaleDateString("es-CL")}
+                        </p>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs gap-1.5 border-border/30"
+                          onClick={() => handleReplaceDocument(doc)}
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          Reemplazar
+                        </Button>
+                        <button
+                          onClick={() => handleDeleteDocument(doc)}
+                          className="p-2 rounded-lg hover:bg-destructive/10 hover:text-destructive text-muted-foreground/40 transition-colors"
+                          title="Eliminar grilla"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            )}
+
+            {/* Info */}
+            <div className="flex gap-3 p-4 rounded-xl bg-muted/20 border border-border/15">
+              <AlertCircle className="w-4 h-4 text-muted-foreground/40 flex-shrink-0 mt-0.5" />
+              <p className="text-[11px] text-muted-foreground/50 leading-relaxed">
+                Una vez subida, la grilla es procesada automáticamente para que el asistente pueda responder
+                consultas de canales y señales. Puede tardar unos minutos en estar disponible.
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {/* ── INTEGRACIONES ── */}
+        {section === "integraciones" && isAdmin && (
+          <motion.div key="integraciones" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-xl space-y-6">
+            <div>
+              <h2 className="text-xl font-bold tracking-tight">Integraciones</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Conecta los servicios externos que usa tu empresa. Las API keys se almacenan cifradas.
+              </p>
+            </div>
+
+            {integrationsLoading ? (
+              <div className="space-y-3">
+                {[1, 2].map(i => <div key={i} className="h-20 rounded-xl bg-muted/20 animate-pulse" />)}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <AnimatePresence>
+                  {integrations.map(intg => {
+                    const def = ALL_SERVICE_DEFS[intg.service_name] ?? SYSTEM_SERVICES[intg.service_name];
+                    const isSystem = !!SYSTEM_SERVICES[intg.service_name] && !ALL_SERVICE_DEFS[intg.service_name];
+                    const isEditing = editingIntegration === intg.id;
+                    const showKey = showKeyMap[intg.id];
+                    const defTyped = ALL_SERVICE_DEFS[intg.service_name];
+                    return (
+                      <motion.div
+                        key={intg.id}
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, x: -16 }}
+                        className="rounded-xl border border-border/20 bg-card/40 overflow-hidden"
+                      >
+                        <div className="flex items-center gap-3 px-4 py-3">
+                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                            <Plug className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm font-semibold">{def?.label ?? intg.service_name}</p>
+                              {isSystem && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground uppercase tracking-wider">Sistema</span>
+                              )}
+                              {(def as any)?.categoryLabel && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-primary/10 text-primary uppercase tracking-wider">{(def as any).categoryLabel}</span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-muted-foreground/60">{def?.description ?? ""}</p>
+                          </div>
+                          {!isEditing && !isSystem && (
+                            <button
+                              onClick={() => startEditIntegration(intg)}
+                              className="w-7 h-7 rounded-lg bg-secondary/60 text-muted-foreground hover:bg-secondary hover:text-foreground flex items-center justify-center transition-colors"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+
+                        {!isEditing && (
+                          <div className="px-4 pb-3 border-t border-border/10 pt-2.5 space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <Key className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+                              <span className="font-mono text-xs text-muted-foreground/70 flex-1">
+                                {showKey ? (intg.api_key ?? "—") : maskKey(intg.api_key)}
+                              </span>
+                              {intg.api_key && (
+                                <button onClick={() => setShowKeyMap(m => ({ ...m, [intg.id]: !m[intg.id] }))} className="text-muted-foreground/40 hover:text-muted-foreground transition-colors">
+                                  {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                              )}
+                            </div>
+                            {intg.api_url && (
+                              <p className="text-[11px] text-muted-foreground/50 font-mono truncate pl-5">{intg.api_url}</p>
+                            )}
+                          </div>
+                        )}
+
+                        {isEditing && (
+                          <div className="px-4 pb-4 pt-2.5 border-t border-border/10 space-y-3">
+                            <div className="space-y-1.5">
+                              <Label className="text-xs text-muted-foreground">Nueva API Key <span className="text-muted-foreground/40">(vacío = no cambiar)</span></Label>
+                              <Input
+                                type="password"
+                                value={intFormKey}
+                                onChange={e => setIntFormKey(e.target.value)}
+                                placeholder={defTyped?.keyPlaceholder ?? "••••••••••••"}
+                                className="h-8 text-sm font-mono bg-muted/10 border-border/20"
+                                autoFocus
+                              />
+                            </div>
+                            {defTyped?.needsUrl && (
+                              <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">URL base</Label>
+                                <Input value={intFormUrl} onChange={e => setIntFormUrl(e.target.value)} placeholder={defTyped.urlPlaceholder} className="h-8 text-sm bg-muted/10 border-border/20" />
+                              </div>
+                            )}
+                            {intFormMetaError && <p className="text-[11px] text-destructive">{intFormMetaError}</p>}
+                            <div className="flex gap-2 justify-end pt-1">
+                              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={cancelEditIntegration}>Cancelar</Button>
+                              <Button size="sm" className="h-7 text-xs gap-1.5" onClick={() => saveIntegrationEdit(intg)} disabled={savingIntegration}>
+                                {savingIntegration ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                                Guardar
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+
+                {/* ── Wizard: agregar integración ── */}
+                <AnimatePresence mode="wait">
+                  {!wizardOpen ? (
+                    <motion.button
+                      key="add-btn"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      onClick={() => { resetWizard(); setWizardOpen(true); }}
+                      className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-dashed border-border/40 text-sm text-muted-foreground hover:text-foreground hover:border-border/80 hover:bg-secondary/20 transition-all"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      Agregar integración
+                    </motion.button>
+                  ) : (
+                    <motion.div
+                      key="wizard"
+                      initial={{ opacity: 0, y: -8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      className="rounded-xl border border-primary/30 bg-primary/5 overflow-hidden"
+                    >
+                      {/* Wizard header */}
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-primary/10">
+                        <div className="flex items-center gap-2 text-sm font-semibold">
+                          {wizardService ? (
+                            <>
+                              <button onClick={() => { setWizardService(null); setWizardKey(""); setWizardUrl(""); setWizardValidation({ status: "idle", message: "" }); }} className="text-muted-foreground hover:text-foreground transition-colors">
+                                ← {wizardCategory ? SERVICE_CATALOG.find(c => c.key === wizardCategory)?.label : "Categoría"}
+                              </button>
+                              <span className="text-muted-foreground/40">›</span>
+                              <span>{wizardService.label}</span>
+                            </>
+                          ) : wizardCategory ? (
+                            <>
+                              <button onClick={() => setWizardCategory(null)} className="text-muted-foreground hover:text-foreground transition-colors">← Categoría</button>
+                              <span className="text-muted-foreground/40">›</span>
+                              <span>{SERVICE_CATALOG.find(c => c.key === wizardCategory)?.label}</span>
+                            </>
+                          ) : (
+                            <span>¿Qué quieres conectar?</span>
+                          )}
+                        </div>
+                        <button onClick={resetWizard} className="text-muted-foreground/50 hover:text-foreground transition-colors">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="p-4">
+                        {/* Paso 1: Categoría */}
+                        {!wizardCategory && (
+                          <div className="grid grid-cols-2 gap-3">
+                            {SERVICE_CATALOG.map(cat => (
+                              <button
+                                key={cat.key}
+                                onClick={() => setWizardCategory(cat.key)}
+                                className="flex flex-col items-start gap-2 p-4 rounded-xl border border-border/30 bg-background/60 hover:border-primary/40 hover:bg-primary/5 transition-all text-left group"
+                              >
+                                <span className="text-2xl">{cat.icon}</span>
+                                <span className="text-sm font-semibold group-hover:text-primary transition-colors">{cat.label}</span>
+                                <span className="text-[11px] text-muted-foreground/60">{cat.services.length} disponibles</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Paso 2: Servicio */}
+                        {wizardCategory && !wizardService && (
+                          <div className="space-y-2">
+                            {SERVICE_CATALOG.find(c => c.key === wizardCategory)?.services.map(svc => {
+                              const alreadyAdded = integrations.some(i => i.service_name === svc.name);
+                              return (
+                                <button
+                                  key={svc.name}
+                                  onClick={() => { if (!alreadyAdded) setWizardService(svc); }}
+                                  disabled={alreadyAdded}
+                                  className={`w-full flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all ${
+                                    alreadyAdded
+                                      ? "border-border/20 bg-muted/20 opacity-50 cursor-not-allowed"
+                                      : "border-border/30 bg-background/60 hover:border-primary/40 hover:bg-primary/5"
+                                  }`}
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-sm font-semibold">{svc.label}</span>
+                                      {svc.badge && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{svc.badge}</span>
+                                      )}
+                                      {alreadyAdded && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground uppercase tracking-wider">Ya configurado</span>
+                                      )}
+                                    </div>
+                                    <p className="text-[12px] text-muted-foreground/70 mt-0.5">{svc.description}</p>
+                                  </div>
+                                  {!alreadyAdded && <span className="text-muted-foreground/40 text-sm mt-0.5">→</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* Paso 3: API Key */}
+                        {wizardService && (
+                          <div className="space-y-4">
+                            <div className="space-y-1.5">
+                              <Label className="text-xs text-muted-foreground">API Key de {wizardService.label}</Label>
+                              <Input
+                                type="password"
+                                value={wizardKey}
+                                onChange={e => { setWizardKey(e.target.value); setWizardValidation({ status: "idle", message: "" }); }}
+                                placeholder={wizardService.keyPlaceholder ?? "Pega tu API key aquí"}
+                                className="h-9 text-sm font-mono bg-background/80 border-border/30"
+                                autoFocus
+                              />
+                            </div>
+
+                            {wizardService.needsUrl && (
+                              <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">URL del panel</Label>
+                                <Input
+                                  value={wizardUrl}
+                                  onChange={e => { setWizardUrl(e.target.value); setWizardValidation({ status: "idle", message: "" }); }}
+                                  placeholder={wizardService.urlPlaceholder}
+                                  className="h-9 text-sm bg-background/80 border-border/30"
+                                />
+                              </div>
+                            )}
+
+                            {/* Validación */}
+                            <div className="flex items-center gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 text-xs gap-1.5 border-border/30"
+                                onClick={validateWizardKey}
+                                disabled={!wizardKey.trim() || wizardValidation.status === "loading" || (wizardService.needsUrl && !wizardUrl.trim())}
+                              >
+                                {wizardValidation.status === "loading"
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : <Check className="w-3 h-3" />}
+                                Validar key
+                              </Button>
+                              {wizardValidation.status !== "idle" && wizardValidation.status !== "loading" && (
+                                <span className={`text-[12px] font-medium ${wizardValidation.status === "ok" ? "text-emerald-500" : "text-destructive"}`}>
+                                  {wizardValidation.message}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex gap-2 justify-end pt-1 border-t border-primary/10">
+                              <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={resetWizard}>Cancelar</Button>
+                              <Button
+                                size="sm"
+                                className="h-8 text-xs gap-1.5"
+                                onClick={saveWizardIntegration}
+                                disabled={savingWizard || !wizardKey.trim() || (wizardService.needsUrl && !wizardUrl.trim())}
+                              >
+                                {savingWizard ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                                Guardar integración
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
           </motion.div>
         )}
 

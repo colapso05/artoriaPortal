@@ -102,6 +102,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
     tech_template_id: "" as string,
     outbound_template_id: "" as string,
     alert_webhook_path: "" as string,
+    memory_table: "" as string,
   });
   const [editTemplates, setEditTemplates] = useState<WaTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -301,6 +302,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
       tech_template_id: "",
       outbound_template_id: (company as any).outbound_template_id || "",
       alert_webhook_path: company.alert_webhook_path || "",
+      memory_table: (company as any).memory_table || "",
     });
     setEditUserDialogOpen(true);
 
@@ -375,6 +377,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
             bandeja_template_id: editUserData.bandeja_template_id || null,
             outbound_template_id: editUserData.outbound_template_id || null,
             alert_webhook_path: editUserData.alert_webhook_path.trim() || null,
+            memory_table: (editUserData as any).memory_table?.trim() || null,
           })
           .eq("id", editUserData.config_id);
         if (updateConfigError) throw new Error(updateConfigError.message);
@@ -954,6 +957,21 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
                   {botWebhookUrl && editUserData.alert_webhook_path
                     ? <span className="font-mono text-primary/70">{botWebhookUrl.replace(/\/[^/]+$/, "")}/{editUserData.alert_webhook_path}</span>
                     : "Ej: si la URL es …/webhook/alert-dropp, escribe alert-dropp"}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5 text-xs font-semibold">
+                  Tabla de memoria del agente IA
+                </Label>
+                <Input
+                  value={(editUserData as any).memory_table ?? ""}
+                  onChange={(e) => setEditUserData(prev => ({ ...prev, memory_table: e.target.value.trim() } as any))}
+                  placeholder="ej: dropp_chat_client"
+                  className="font-mono text-xs"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Nombre de la tabla PostgreSQL de n8n donde el agente guarda la memoria conversacional.
                 </p>
               </div>
 

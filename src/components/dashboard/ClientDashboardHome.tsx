@@ -6,7 +6,7 @@ import {
   Clock, CheckCircle2, TrendingUp, ArrowRight,
   BarChart3, PieChart as PieChartIcon, CreditCard,
   Plus, Inbox, CalendarDays, ClipboardList, Zap,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, DollarSign, Loader2,
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -122,14 +122,44 @@ export default function ClientDashboardHome({
   const [timeRange, setTimeRange] = useState<"day" | "week" | "month" | "3months" | "all">("week");
   const [loading, setLoading] = useState(true);
   const [credits, setCredits] = useState<CompanyCredits | null>(null);
+  const [ycloudBalance, setYcloudBalance] = useState<{ amount: number; currency: string } | null>(null);
+  const [loadingYCloud, setLoadingYCloud] = useState(false);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
   const chipsFadeLeftRef = useRef<HTMLDivElement>(null);
   const chipsFadeRightRef = useRef<HTMLDivElement>(null);
+  const isDropp = companyName?.toLowerCase().includes("dropp") || companyId === "01f8520b-5727-4e7c-937f-180c567609d9";
 
   useEffect(() => {
     if (companyId) loadData();
     else setLoading(false);
   }, [companyId]);
+
+  useEffect(() => {
+    if (!companyId) return;
+    if (!isDropp) return;
+
+    const loadYCloudBalance = async () => {
+      setLoadingYCloud(true);
+      try {
+        const { data, error } = await supabase.functions.invoke("get-ycloud-balance", {
+          body: { companyId },
+        });
+        if (!error && data && typeof data.amount === "number") {
+          setYcloudBalance({ amount: data.amount, currency: data.currency || "USD" });
+        }
+      } catch (e) {
+        console.error("Error al cargar saldo de YCloud:", e);
+      } finally {
+        setLoadingYCloud(false);
+      }
+    };
+
+    loadYCloudBalance();
+    
+    // Refrescar cada 10 minutos (600,000 ms)
+    const interval = setInterval(loadYCloudBalance, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [companyId, companyName]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -630,54 +660,90 @@ export default function ClientDashboardHome({
         {/* ── Columna derecha: Resumen Rápido + Accesos Rápidos ── */}
         <div className="flex flex-col gap-3 min-h-0 w-[220px] flex-shrink-0">
 
-          {/* Resumen Rápido */}
+          {/* Resumen Rápido / Saldo YCloud */}
           <div className={`flex-[3] flex flex-col min-h-0 ${cardClass}`}>
             <div className={cardHeaderClass}>
-              <div className={`${cardIconClass} bg-primary/10`}><TrendingUp className="w-3 h-3 text-primary" /></div>
-              <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground whitespace-nowrap">Resumen Rápido</span>
-            </div>
-            <div className="flex-1 flex flex-col min-h-0 p-2.5 gap-1.5">
-              {/* Donut + total */}
-              <div className="flex items-center gap-2.5 flex-shrink-0 min-w-0">
-                <div className="relative w-14 h-14 flex-shrink-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={ticketStatusData.length > 0 ? ticketStatusData : [{ name: "Sin datos", value: 1, color: "hsl(var(--muted))" }]}
-                        cx="50%" cy="50%" innerRadius="40%" outerRadius="78%" dataKey="value" stroke="none" paddingAngle={2}>
-                        {(ticketStatusData.length > 0 ? ticketStatusData : [{ name: "Sin datos", value: 1, color: "hsl(var(--muted))" }]).map((entry, i) => (
-                          <Cell key={i} fill={entry.color} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div>
-                  <p className="text-3xl font-black text-foreground leading-none">{totalTickets}</p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">Tickets totales<br/>en el período</p>
-                </div>
+              <div className={`${cardIconClass} bg-primary/10`}>
+                {isDropp ? (
+                  <DollarSign className="w-3 h-3 text-primary" />
+                ) : (
+                  <TrendingUp className="w-3 h-3 text-primary" />
+                )}
               </div>
-              {/* Lista compacta de estados */}
-              <div className="flex-1 overflow-y-auto min-h-0 space-y-1.5">
-                {ticketStatusData.map(item => {
-                  const pct = totalTickets > 0 ? Math.round((item.value / totalTickets) * 100) : 0;
-                  return (
-                    <div key={item.name} className="flex items-center gap-1.5">
-                      <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
-                      <span className="text-[11px] text-foreground/70 font-medium flex-1 truncate">{item.name}</span>
-                      <span className="text-[11px] font-bold tabular-nums flex-shrink-0" style={{ color: item.color }}>{item.value}</span>
-                      <span className="text-[10px] text-muted-foreground/50 w-6 text-right tabular-nums flex-shrink-0">{pct}%</span>
+              <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground whitespace-nowrap">
+                {isDropp ? "Saldo Proveedor" : "Resumen Rápido"}
+              </span>
+            </div>
+            {isDropp ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-3 text-center gap-1.5 select-none min-h-0">
+                {loadingYCloud && !ycloudBalance ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
+                    <span className="text-[10px] text-muted-foreground">Cargando saldo...</span>
+                  </div>
+                ) : ycloudBalance ? (
+                  <>
+                    <div className="w-11 h-11 rounded-2xl bg-emerald-500/10 flex items-center justify-center mb-1 border border-emerald-500/20 shadow-[0_0_12px_-3px_rgba(16,185,129,0.2)]">
+                      <DollarSign className="w-5 h-5 text-emerald-500" />
                     </div>
-                  );
-                })}
+                    <p className="text-2xl font-black text-emerald-500 tabular-nums tracking-tight leading-none">
+                      {new Intl.NumberFormat("en-US", { style: "currency", currency: ycloudBalance.currency }).format(ycloudBalance.amount)}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground/80 font-bold uppercase tracking-wider mt-1.5">Saldo YCloud</p>
+                    <p className="text-[8px] text-muted-foreground/45 leading-tight mt-0.5">Refresco automático (10 min)</p>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center gap-1 p-2 text-center">
+                    <AlertTriangle className="w-5 h-5 text-amber-500" />
+                    <p className="text-[10px] font-semibold text-muted-foreground">No disponible</p>
+                    <p className="text-[9px] text-muted-foreground/40 leading-snug">Revisa la API Key en configuración</p>
+                  </div>
+                )}
               </div>
-              {/* Ver reporte completo */}
-              <button
-                onClick={onNavigateToTickets ? () => onNavigateToTickets("") : undefined}
-                className="flex-shrink-0 flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
-              >
-                Ver reporte completo <ArrowRight className="w-3 h-3" />
-              </button>
-            </div>
+            ) : (
+              <div className="flex-1 flex flex-col min-h-0 p-2.5 gap-1.5">
+                {/* Donut + total */}
+                <div className="flex items-center gap-2.5 flex-shrink-0 min-w-0">
+                  <div className="relative w-14 h-14 flex-shrink-0">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={ticketStatusData.length > 0 ? ticketStatusData : [{ name: "Sin datos", value: 1, color: "hsl(var(--muted))" }]}
+                          cx="50%" cy="50%" innerRadius="40%" outerRadius="78%" dataKey="value" stroke="none" paddingAngle={2}>
+                          {(ticketStatusData.length > 0 ? ticketStatusData : [{ name: "Sin datos", value: 1, color: "hsl(var(--muted))" }]).map((entry, i) => (
+                            <Cell key={i} fill={entry.color} />
+                          ))}
+                        </Pie>
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div>
+                    <p className="text-3xl font-black text-foreground leading-none">{totalTickets}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">Tickets totales<br/>en el período</p>
+                  </div>
+                </div>
+                {/* Lista compacta de estados */}
+                <div className="flex-1 overflow-y-auto min-h-0 space-y-1.5">
+                  {ticketStatusData.map(item => {
+                    const pct = totalTickets > 0 ? Math.round((item.value / totalTickets) * 100) : 0;
+                    return (
+                      <div key={item.name} className="flex items-center gap-1.5">
+                        <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
+                        <span className="text-[11px] text-foreground/70 font-medium flex-1 truncate">{item.name}</span>
+                        <span className="text-[11px] font-bold tabular-nums flex-shrink-0" style={{ color: item.color }}>{item.value}</span>
+                        <span className="text-[10px] text-muted-foreground/50 w-6 text-right tabular-nums flex-shrink-0">{pct}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Ver reporte completo */}
+                <button
+                  onClick={onNavigateToTickets ? () => onNavigateToTickets("") : undefined}
+                  className="flex-shrink-0 flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                >
+                  Ver reporte completo <ArrowRight className="w-3 h-3" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Accesos Rápidos */}

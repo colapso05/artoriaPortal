@@ -3,6 +3,7 @@ import { useTheme } from "next-themes";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import AlertZonesMap from "./AlertZonesMap";
+import AlertPresetPicker from "./AlertPresetPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -198,6 +199,7 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
   const [localAlertMessage, setLocalAlertMessage] = useState("");
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [confirmFinalizeOpen, setConfirmFinalizeOpen] = useState(false);
   const [drawingMode, setDrawingMode] = useState(false);
   const [editingZoneId, setEditingZoneId] = useState<string | null>(null);
   const [pendingPolygon, setPendingPolygon] = useState<number[][]>([]);
@@ -1212,6 +1214,15 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
                         </div>
                         <h4 className="font-bold text-sm uppercase tracking-wide">Mensaje de Alerta</h4>
                       </div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[11px] text-muted-foreground/60">Mensaje</span>
+                        {company?.id && (
+                          <AlertPresetPicker
+                            companyId={company.id}
+                            onSelect={(msg) => setLocalAlertMessage(msg)}
+                          />
+                        )}
+                      </div>
                       <Textarea
                         value={localAlertMessage}
                         onChange={(e) => setLocalAlertMessage(e.target.value)}
@@ -1236,7 +1247,7 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
                         <Button
                           size="sm"
                           className="w-full gap-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                          onClick={() => sendAlertWebhook("ultimo")}
+                          onClick={() => setConfirmFinalizeOpen(true)}
                           disabled={!localAlertMessage.trim() || !company.alert_active}
                           title={!company.alert_active ? "Activa el estado global primero" : undefined}
                         >
@@ -1334,6 +1345,53 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
           </div>
         )}
       </div>
+
+      {/* Diálogo de confirmación — Finalizar alerta */}
+      <Dialog open={confirmFinalizeOpen} onOpenChange={setConfirmFinalizeOpen}>
+        <DialogContent className="max-w-sm border-border/20 bg-card z-[1200]">
+          <DialogHeader>
+            <div className="flex items-center gap-3 mb-1">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+                <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+              </div>
+              <DialogTitle className="text-base font-bold leading-tight">
+                ¿Finalizar la alerta?
+              </DialogTitle>
+            </div>
+            <DialogDescription className="text-sm text-muted-foreground leading-relaxed pl-[52px]">
+              Se enviará este mensaje a <strong>todos los clientes</strong> en las zonas afectadas y la alerta quedará desactivada. Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+
+          {localAlertMessage.trim() && (
+            <div className="mx-1 rounded-xl bg-muted/20 border border-border/20 px-4 py-3">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-1">Mensaje a enviar</p>
+              <p className="text-[12px] text-foreground/80 leading-relaxed line-clamp-4">{localAlertMessage.trim()}</p>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => setConfirmFinalizeOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+              onClick={() => {
+                setConfirmFinalizeOpen(false);
+                sendAlertWebhook("ultimo");
+              }}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Confirmar y enviar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <style>{`
         /* Evitar que el contenedor base de Leaflet quede invisible */
         .leaflet-container {

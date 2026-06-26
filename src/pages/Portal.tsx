@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +8,7 @@ import { LogIn, ArrowLeft, Eye, EyeOff, Mail, Lock, CheckCircle2, Loader2, Refre
 import { useToast } from "@/hooks/use-toast";
 import PasswordStrengthBar, { isPasswordValid } from "@/components/ui/PasswordStrengthBar";
 import { motion, AnimatePresence } from "framer-motion";
+import { Logo } from "@/components/Logo";
 
 const MAX_ATTEMPTS = 5;
 
@@ -180,21 +181,33 @@ export default function Portal() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+    <div
+      className="dark landing-theme min-h-screen text-foreground flex items-center justify-center px-4 relative overflow-hidden"
+      style={{ background: "radial-gradient(ellipse at top, #0a1628 0%, #050a14 60%, #04070e 100%)" }}
+    >
+      {/* Glows ambientales azul/cyan */}
+      <div className="absolute top-1/4 -left-24 w-80 h-80 rounded-full bg-primary/10 blur-[100px] pointer-events-none" />
+      <div className="absolute bottom-1/4 -right-24 w-80 h-80 rounded-full bg-cyan-400/10 blur-[100px] pointer-events-none" />
+
       {/* Suprimir el ojo nativo del navegador (Edge/IE/Chrome) en campos password */}
       <style>{`
         input[type="password"]::-ms-reveal,
         input[type="password"]::-ms-clear { display: none; }
         input::-webkit-credentials-auto-fill-button { display: none !important; }
       `}</style>
-      <div className="w-full max-w-sm">
+      <div className="w-full max-w-sm relative z-10">
         <button
           onClick={goBack}
-          className="flex items-center gap-2 text-muted-foreground hover:text-primary mb-8 transition-colors"
+          className="flex items-center gap-2 text-muted-foreground hover:text-primary mb-6 transition-colors"
         >
           <ArrowLeft size={16} />
           {view === "login" ? "Volver al inicio" : "Volver"}
         </button>
+
+        {/* Logo de marca */}
+        <div className="flex justify-center mb-6">
+          <Logo size={40} glow idSuffix="-portal" />
+        </div>
 
         <div className="glass rounded-xl p-8">
 
@@ -452,6 +465,15 @@ export default function Portal() {
             </>
           )}
 
+        </div>
+
+        {/* Enlaces legales */}
+        <div className="mt-6 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground/50">
+          <Link to="/privacidad" className="hover:text-primary transition-colors">Privacidad</Link>
+          <span className="opacity-40">·</span>
+          <Link to="/terminos" className="hover:text-primary transition-colors">Términos</Link>
+          <span className="opacity-40">·</span>
+          <Link to="/cookies" className="hover:text-primary transition-colors">Cookies</Link>
         </div>
       </div>
     </div>

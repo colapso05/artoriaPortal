@@ -146,7 +146,7 @@ export default function Dashboard() {
     let dashboardInitialized = false;
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || !session) {
+      if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESH_FAILURE' || !session) {
         dashboardInitialized = false;
         navigate("/portal");
         return;
@@ -620,7 +620,15 @@ export default function Dashboard() {
                 <ShortcutsManager companyId={effectiveCompanyId || undefined} />
               )}
               {activeView === "conversations-analytics" && !effectiveIsAdmin && (
-                <ConversationsAnalytics companyName={effectiveCompanyName} />
+                <ConversationsAnalytics
+                  companyId={effectiveCompanyId || ""}
+                  companyName={effectiveCompanyName}
+                  isAdminView={isAdmin}
+                  onOpenConversation={(convId) => {
+                    setPendingConversationId(convId);
+                    setActiveView("inbox");
+                  }}
+                />
               )}
               {activeView === "credits" && effectiveCompanyId && creditsEnabled && (
                 <div className="flex-1 min-h-0 flex flex-col">

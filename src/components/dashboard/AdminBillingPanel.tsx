@@ -57,7 +57,6 @@ interface BillingConfig {
   amount: number;
   currency: string;
   grace_period_days: number;
-  bank_details: string;
   billing_enabled: boolean;
 }
 
@@ -89,7 +88,6 @@ const EMPTY_CONFIG: BillingConfig = {
   amount: 0,
   currency: "CLP",
   grace_period_days: 5,
-  bank_details: "",
   billing_enabled: false,
 };
 
@@ -154,16 +152,15 @@ export default function AdminBillingPanel() {
     setLoadingCfg(true);
     const { data } = await (supabase as any)
       .from("billing_config")
-      .select("billing_day, amount, currency, grace_period_days, bank_details, billing_enabled")
+      .select("billing_day, amount, currency, grace_period_days, billing_enabled")
       .eq("company_id", companyId)
       .maybeSingle();
     setBillingCfg(data ? {
-      billing_day:      data.billing_day       ?? 5,
-      amount:           data.amount            ?? 0,
-      currency:         data.currency          ?? "CLP",
+      billing_day:       data.billing_day       ?? 5,
+      amount:            data.amount            ?? 0,
+      currency:          data.currency          ?? "CLP",
       grace_period_days: data.grace_period_days ?? 5,
-      bank_details:     data.bank_details      ?? "",
-      billing_enabled:  data.billing_enabled   ?? false,
+      billing_enabled:   data.billing_enabled   ?? false,
     } : EMPTY_CONFIG);
     setLoadingCfg(false);
   }
@@ -460,7 +457,7 @@ export default function AdminBillingPanel() {
                   </div>
                   <div>
                     <h3 className="text-[12px] font-bold uppercase tracking-widest">Configuración por empresa</h3>
-                    <p className="text-[10px] text-muted-foreground/50">Monto, día de facturación y datos de transferencia</p>
+                    <p className="text-[10px] text-muted-foreground/50">Monto, día de facturación y período de gracia</p>
                   </div>
                 </div>
 

@@ -3,10 +3,11 @@ import { Menu, X, LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { Logo } from "@/components/Logo";
 
 const navLinks = [
-  { name: "Beneficios", href: "#beneficios" },
-  { name: "Servicios", href: "#servicios" },
+  { name: "Por qué Artoria", href: "#beneficios" },
+  { name: "Plataforma", href: "#plataforma" },
   { name: "Proceso", href: "#proceso" },
 ];
 
@@ -28,12 +29,7 @@ export function Navbar() {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <a href="#" className="flex items-center gap-2">
-            <motion.span
-              className="text-2xl font-display font-bold gradient-text"
-              whileHover={{ scale: 1.05 }}
-            >
-              ARTORIA
-            </motion.span>
+            <Logo size={30} idSuffix="-nav" />
           </a>
 
           {/* Desktop Navigation */}
@@ -59,7 +55,7 @@ export function Navbar() {
               variant="outline"
               className="border-primary/50 hover:bg-primary/10"
             >
-              Solicita tu Agente
+              Contáctanos
             </Button>
           </div>
 
@@ -104,7 +100,7 @@ export function Navbar() {
                   variant="outline"
                   className="border-primary/50 hover:bg-primary/10 w-full"
                 >
-                  Solicita tu Agente
+                  Contáctanos
                 </Button>
               </div>
             </motion.div>

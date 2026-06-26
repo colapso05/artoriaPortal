@@ -18,8 +18,8 @@ export function AnimatedClock({ isHovered }: { isHovered: boolean }) {
           </feMerge>
         </filter>
         <linearGradient id="clockGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="hsl(280, 100%, 70%)" />
-          <stop offset="100%" stopColor="hsl(320, 100%, 60%)" />
+          <stop offset="0%" stopColor="hsl(199, 90%, 58%)" />
+          <stop offset="100%" stopColor="hsl(187, 92%, 55%)" />
         </linearGradient>
       </defs>
 
@@ -44,7 +44,7 @@ export function AnimatedClock({ isHovered }: { isHovered: boolean }) {
           cx={50 + 35 * Math.sin((angle * Math.PI) / 180)}
           cy={50 - 35 * Math.cos((angle * Math.PI) / 180)}
           r={i % 3 === 0 ? 3 : 1.5}
-          fill="hsl(280, 100%, 70%)"
+          fill="hsl(199, 90%, 58%)"
           initial={{ opacity: 0, scale: 0 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.1 * i, duration: 0.3 }}
@@ -67,7 +67,7 @@ export function AnimatedClock({ isHovered }: { isHovered: boolean }) {
         y1="50"
         x2="50"
         y2="28"
-        stroke="hsl(280, 100%, 70%)"
+        stroke="hsl(199, 90%, 58%)"
         strokeWidth="4"
         strokeLinecap="round"
         style={{ originX: "50px", originY: "50px" }}
@@ -85,7 +85,7 @@ export function AnimatedClock({ isHovered }: { isHovered: boolean }) {
         y1="50"
         x2="50"
         y2="18"
-        stroke="hsl(320, 100%, 60%)"
+        stroke="hsl(187, 92%, 55%)"
         strokeWidth="2.5"
         strokeLinecap="round"
         style={{ originX: "50px", originY: "50px" }}
@@ -118,8 +118,8 @@ export function AnimatedLightning({ isHovered }: { isHovered: boolean }) {
           </feMerge>
         </filter>
         <linearGradient id="lightningGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="hsl(280, 100%, 70%)" />
-          <stop offset="100%" stopColor="hsl(320, 100%, 60%)" />
+          <stop offset="0%" stopColor="hsl(199, 90%, 58%)" />
+          <stop offset="100%" stopColor="hsl(187, 92%, 55%)" />
         </linearGradient>
       </defs>
 
@@ -155,7 +155,7 @@ export function AnimatedLightning({ isHovered }: { isHovered: boolean }) {
               cx={spark.x}
               cy={spark.y}
               r="2"
-              fill="hsl(280, 100%, 70%)"
+              fill="hsl(199, 90%, 58%)"
               initial={{ opacity: 0, scale: 0 }}
               animate={{
                 opacity: [0, 1, 0],
@@ -179,7 +179,7 @@ export function AnimatedLightning({ isHovered }: { isHovered: boolean }) {
         <>
           <motion.path
             d="M25 50 Q30 45 28 40"
-            stroke="hsl(280, 100%, 70%)"
+            stroke="hsl(199, 90%, 58%)"
             strokeWidth="1.5"
             fill="none"
             initial={{ pathLength: 0, opacity: 0 }}
@@ -188,7 +188,7 @@ export function AnimatedLightning({ isHovered }: { isHovered: boolean }) {
           />
           <motion.path
             d="M75 45 Q72 50 78 55"
-            stroke="hsl(320, 100%, 60%)"
+            stroke="hsl(187, 92%, 55%)"
             strokeWidth="1.5"
             fill="none"
             initial={{ pathLength: 0, opacity: 0 }}
@@ -219,8 +219,8 @@ export function AnimatedSavings({ isHovered }: { isHovered: boolean }) {
           </feMerge>
         </filter>
         <linearGradient id="savingsGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="hsl(280, 100%, 70%)" />
-          <stop offset="100%" stopColor="hsl(320, 100%, 60%)" />
+          <stop offset="0%" stopColor="hsl(199, 90%, 58%)" />
+          <stop offset="100%" stopColor="hsl(187, 92%, 55%)" />
         </linearGradient>
       </defs>
 
@@ -306,7 +306,7 @@ export function AnimatedSavings({ isHovered }: { isHovered: boolean }) {
               cx={30 + i * 20}
               cy={90}
               r="5"
-              fill="hsl(280, 100%, 70%)"
+              fill="hsl(199, 90%, 58%)"
               initial={{ y: 0, opacity: 1 }}
               animate={{
                 y: -40 - i * 10,

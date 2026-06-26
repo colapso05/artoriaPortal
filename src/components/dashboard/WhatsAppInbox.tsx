@@ -56,6 +56,8 @@ interface Message {
   sender_type?: string;
   media_url?: string | null;
   media_type?: string | null;
+  context_message_id?: string | null;
+  quoted_content?: string | null;
   created_at: string;
 }
 
@@ -208,7 +210,14 @@ function MessageMedia({ message }: { message: Message }) {
         alt="WhatsApp Image"
         className="rounded-lg max-w-[280px] md:max-w-xs max-h-[320px] object-cover cursor-pointer hover:opacity-90 transition mb-1.5 shadow-sm"
         onClick={() => window.open(url, "_blank")}
-        loading="lazy"
+        onError={(e) => {
+          const el = e.currentTarget;
+          el.style.display = "none";
+          const placeholder = document.createElement("div");
+          placeholder.className = "flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/40 border border-border/30 text-xs text-muted-foreground mb-1.5";
+          placeholder.innerHTML = "📷 Imagen no disponible (enlace expirado)";
+          el.parentNode?.insertBefore(placeholder, el.nextSibling);
+        }}
       />
     );
   }
@@ -507,10 +516,17 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [closeSummaryData, setCloseSummaryData] = useState<any>(null);
   const [closeSummaryText, setCloseSummaryText] = useState("");
+  const closeSummaryRef = useRef<HTMLTextAreaElement>(null);
+  const [closeSummaryKey, setCloseSummaryKey] = useState(0);
   const [pendingCloseStatus, setPendingCloseStatus] = useState<string | null>(null);
 
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportType, setReportType] = useState("informacion_incorrecta");
+
+  // ── Presencia en tiempo real (estilo Google Docs) ─────────────────────────────
+  interface Viewer { user_id: string; user_name: string; initials: string; color: string; }
+  const [activeViewers, setActiveViewers] = useState<Viewer[]>([]);
+  const presenceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // ── Actualizar Info Cliente ──
   const [infoClientModalOpen, setInfoClientModalOpen] = useState(false);
@@ -680,6 +696,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const selectedConvRef = useRef<string | null>(null);
+  const selectedWaIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const retryMapRef = useRef<Record<string, boolean>>({});
@@ -901,6 +918,19 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     realtimeDebounceRef.current = setTimeout(() => loadConversations(), 350);
   }, []);
 
+  // Recarga solo los contadores del sidebar (1 RPC, sin recargar conversaciones)
+  const filterCountsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const companyIdRef = useRef<string | null>(null);
+  const debouncedLoadFilterCounts = useCallback(() => {
+    if (filterCountsDebounceRef.current) clearTimeout(filterCountsDebounceRef.current);
+    filterCountsDebounceRef.current = setTimeout(async () => {
+      const cid = companyIdRef.current;
+      if (!cid) return;
+      const { data } = await (supabase as any).rpc('get_inbox_filter_counts', { p_company_id: cid });
+      if (data && data.length > 0) setFilterCounts(data);
+    }, 1200);
+  }, []);
+
   // ── Monitor de reconexión WebSocket ──────────────────────────────────────────
   // Cuando el WebSocket cae (firewall, timeout nginx, etc.) los canales quedan
   // en estado "zombie": registrados pero sin recibir eventos. Este monitor
@@ -935,6 +965,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   }, [companyId]);
 
   useEffect(() => {
+    companyIdRef.current = companyId ?? null;
+  }, [companyId]);
+
+  useEffect(() => {
     loadConversations();
     const filter = companyId ? `company_id=eq.${companyId}` : undefined;
     const channel = supabase
@@ -944,18 +978,62 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         schema: "public",
         table: "conversations",
         ...(filter ? { filter } : {})
-      }, () => debouncedLoadConversations())
+      }, (payload) => {
+        const ev = payload.eventType;
+        if (ev === "INSERT") {
+          const raw = payload.new as any;
+          const enriched = { ...raw, status: raw.is_agent_active ? "abierto" : "en_progreso" };
+          setConversations(prev =>
+            prev.find(c => c.id === enriched.id) ? prev : [enriched as any, ...prev]
+          );
+        } else if (ev === "UPDATE") {
+          const raw = payload.new as any;
+          if (raw.status === "cerrado") {
+            setConversations(prev => prev.filter(c => c.id !== raw.id));
+          } else {
+            const enriched = { ...raw, status: raw.is_agent_active ? "abierto" : "en_progreso" };
+            setConversations(prev => {
+              const found = prev.find(c => c.id === enriched.id);
+              if (!found) {
+                // Conversación no está en la lista (ej: recién cerrada y bot reactivado)
+                // fallback a recarga completa
+                debouncedLoadConversations();
+                return prev;
+              }
+              return prev.map(c => c.id === enriched.id ? { ...c, ...enriched } : c);
+            });
+            if (selectedConvRef.current === enriched.id) {
+              setSelectedConv((prev: any) => prev ? { ...prev, ...enriched } : prev);
+            }
+          }
+        } else if (ev === "DELETE") {
+          const deletedId = (payload.old as any)?.id;
+          if (deletedId) setConversations(prev => prev.filter(c => c.id !== deletedId));
+        }
+        // Contadores del sidebar: refrescar en background con debounce
+        debouncedLoadFilterCounts();
+      })
       .on("postgres_changes", {
         event: "*",
         schema: "public",
         table: "tickets",
       }, (payload) => {
-        debouncedLoadConversations();
-        // Si el ticket pertenece a la conversación activa, refrescar activeTicket en tiempo real
-        const convId = (payload.new as any)?.conversation_id;
-        if (convId && convId === selectedConvRef.current) {
+        const ticket = payload.new as any;
+        // Actualización quirúrgica del mapa convId→ticketStatus
+        if (ticket?.conversation_id && ticket?.status) {
+          setTicketStatusByConvId(prev => ({ ...prev, [ticket.conversation_id]: ticket.status }));
+        }
+        // Refrescar activeTicket si es la conversación activa
+        const convId = ticket?.conversation_id;
+        const ticketPhone = (ticket?.customer_phone ?? "").replace(/^\+/, "");
+        const currentWaId = (selectedWaIdRef.current ?? "").replace(/^\+/, "");
+        const matchesConv = convId && convId === selectedConvRef.current;
+        const matchesPhone = ticketPhone && currentWaId && ticketPhone === currentWaId;
+        if (matchesConv || matchesPhone) {
           setTicketRefreshCounter(c => c + 1);
         }
+        // Contadores del sidebar
+        debouncedLoadFilterCounts();
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -1039,28 +1117,39 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       .on("postgres_changes", {
         event: "INSERT", schema: "public", table: "messages",
         filter: `conversation_id=eq.${convId}`,
-      }, (payload) => {
+      }, async (payload) => {
+        // Fetch completo para traer quoted_content, context_message_id y demás campos nuevos
+        const { data: fullMsg } = await supabase
+          .from("messages").select("*").eq("id", payload.new.id).single();
+        const msg = (fullMsg || payload.new) as Message;
+
         setMessages((prev) => {
-          // Evitar duplicados si ya fue cargado por el loadMessages posterior
-          if (prev.find(m => m.id === payload.new.id)) return prev;
-          // Reemplazar mensaje optimista si tiene el mismo contenido, dirección
-          // y fue creado en los últimos 15 segundos (ventana de tolerancia)
+          if (prev.find(m => m.id === msg.id)) return prev;
           const withoutOptimistic = prev.filter(m => {
             if (!m.id.startsWith('opt-')) return true;
-            const sameContent = m.content === payload.new.content;
-            const sameDirection = m.direction === payload.new.direction;
+            const sameContent = m.content === msg.content;
+            const sameDirection = m.direction === msg.direction;
             const closeInTime = Math.abs(
-              new Date(m.created_at).getTime() - new Date(payload.new.created_at).getTime()
+              new Date(m.created_at).getTime() - new Date(msg.created_at).getTime()
             ) < 15_000;
             return !(sameContent && sameDirection && closeInTime);
           });
-          return [...withoutOptimistic, payload.new as Message];
+          return [...withoutOptimistic, msg];
         });
 
         setConversations(prev => prev.map(c =>
-          c.id === payload.new.conversation_id
-            ? { ...c, last_message_preview: payload.new.content, last_message_at: payload.new.created_at }
+          c.id === msg.conversation_id
+            ? { ...c, last_message_preview: msg.content, last_message_at: msg.created_at }
             : c
+        ));
+      })
+      .on("postgres_changes", {
+        event: "UPDATE", schema: "public", table: "messages",
+        filter: `conversation_id=eq.${convId}`,
+      }, (payload) => {
+        // Actualiza status (read/delivered) en tiempo real sin recargar
+        setMessages((prev) => prev.map(m =>
+          m.id === payload.new.id ? { ...m, status: payload.new.status } : m
         ));
       })
       .subscribe((status) => {
@@ -1108,6 +1197,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   useEffect(() => {
     selectedConvRef.current = selectedConv ? selectedConv.id : null;
+    selectedWaIdRef.current = selectedConv ? selectedConv.wa_id : null;
     if (selectedConv) {
       (async () => {
         const fetchFallbacks = async () => {
@@ -1289,6 +1379,54 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setClientEmail(null);
     setClientNextAppt(null);
   }, [selectedConv?.id]);
+
+  // ── Presencia en tiempo real: quién está viendo este chat ahora ───────────────
+  // Se actualiza al seleccionar / deseleccionar una conversación.
+  // El canal se destruye al salir — Supabase lo limpia automáticamente.
+  useEffect(() => {
+    // Limpiar canal anterior si existe
+    if (presenceChannelRef.current) {
+      presenceChannelRef.current.untrack().catch(() => {});
+      supabase.removeChannel(presenceChannelRef.current);
+      presenceChannelRef.current = null;
+    }
+    setActiveViewers([]);
+
+    if (!selectedConv?.id || !userId) return;
+
+    const displayName = userName || "Agente";
+    const channel = supabase.channel(`presence:conv:${selectedConv.id}`, {
+      config: { presence: { key: userId } },
+    });
+
+    channel
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState<{ user_id: string; user_name: string; initials: string; color: string }>();
+        const viewers: Viewer[] = Object.values(state)
+          .flat()
+          .filter((v) => v.user_id !== userId); // no mostrarse a uno mismo
+        setActiveViewers(viewers);
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await channel.track({
+            user_id: userId,
+            user_name: displayName,
+            initials: getAgentInitials(displayName),
+            color: stringToColor(userId),
+          });
+        }
+      });
+
+    presenceChannelRef.current = channel;
+
+    return () => {
+      channel.untrack().catch(() => {});
+      supabase.removeChannel(channel);
+      presenceChannelRef.current = null;
+      setActiveViewers([]);
+    };
+  }, [selectedConv?.id, userId]);
 
   // ── Cargar dirección y correo desde clientes (siempre al cambiar conv) ──────
   useEffect(() => {
@@ -1754,18 +1892,69 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setHasContent(false);
 
     try {
-      if (selectedConv.is_agent_active) {
-        await handleToggleBot(false); // Auto intervenir
+      const convSnap = selectedConv;
+
+      if (convSnap.is_agent_active) {
+        // Optimistic UI inmediato
+        const interventionConv = {
+          ...convSnap,
+          is_agent_active: false,
+          status: 'en_progreso' as any,
+          assigned_user_id: userId || convSnap.assigned_user_id,
+        };
+        setSelectedConv(interventionConv);
+        setConversations(prev => prev.map(c => c.id === convSnap.id ? interventionConv : c));
+        toast({ title: "¡Interviniendo!", description: "Tomando control de la conversación." });
+
+        // Todo en background — no bloquea el envío del mensaje
+        supabase.from("conversations").update({
+          is_agent_active: false,
+          assigned_user_id: userId,
+        }).eq("id", convSnap.id).then(() => {
+          supabase.functions.invoke("ycloud-toggle-bot", {
+            body: { conversationId: convSnap.id, action: "deactivate_bot" },
+          }).catch((e: any) => console.warn("[ycloud-toggle-bot]", e));
+        });
+
+        if (!activeTicket) {
+          supabase.functions.invoke("create-ticket", {
+            body: {
+              company_id: convSnap.company_id || companyId,
+              conversation_id: convSnap.id,
+              wa_id: convSnap.wa_id,
+              customer_name: convSnap.profile_name || null,
+              rut: null,
+              reason: "Intervenido por especialista",
+              category: "soporte_tecnico",
+              skip_nocodb: !nocodbEnabled,
+            },
+          }).then(({ data: newTicket }: any) => {
+            if (newTicket?.ticket) setActiveTicket(newTicket.ticket);
+          }).catch((e: any) => console.warn("[create-ticket]", e));
+        }
       }
-      const { error } = await supabase.functions.invoke("ycloud-send", {
+
+      // Enviar mensaje también en background — input se libera al instante
+      setSending(false);
+      supabase.functions.invoke("ycloud-send", {
         body: {
-          to: selectedConv.wa_id,
+          to: convSnap.wa_id,
           message: text,
-          conversationId: selectedConv.id,
-          senderName: effectiveSenderName
+          conversationId: convSnap.id,
+          senderName: effectiveSenderName,
         },
+      }).then(({ error }: any) => {
+        if (error) throw error;
+      }).catch((err: any) => {
+        setMessages(prev => prev.filter(m => m.id !== optimisticId));
+        if (msgTextareaRef.current) {
+          msgTextareaRef.current.value = text;
+          msgTextareaRef.current.style.height = "auto";
+        }
+        setHasContent(true);
+        toast({ title: "Error al enviar", description: err?.message || "Intenta de nuevo", variant: "destructive" });
       });
-      if (error) throw error;
+      return; // el finally no debe volver a setSending(false)
     } catch (err: any) {
       // Revertir el mensaje optimista si el envío falló
       setMessages(prev => prev.filter(m => m.id !== optimisticId));
@@ -1784,15 +1973,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     if (!selectedConv) return;
     try {
       const action = activate ? 'activate_bot' : 'deactivate_bot';
-      toast({ title: "Procesando...", description: activate ? "Activando agente IA..." : "Tomando control de la conversación..." });
 
-      // Actualizar BD siempre, independiente del resultado de la edge function
-      await supabase.from("conversations").update({
-        is_agent_active: activate,
-        assigned_user_id: activate ? null : userId
-      }).eq("id", selectedConv.id);
-
-      // Actualizar estado local inmediatamente (no esperar realtime)
+      // Optimistic UI: actualizar estado local inmediatamente antes de cualquier await
       const newStatus = activate ? 'abierto' : 'en_progreso';
       const updatedConv = {
         ...selectedConv,
@@ -1802,6 +1984,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       };
       setSelectedConv(updatedConv);
       setConversations(prev => prev.map(c => c.id === selectedConv.id ? updatedConv : c));
+
+      // Actualizar BD en paralelo con el resto del flujo
+      await supabase.from("conversations").update({
+        is_agent_active: activate,
+        assigned_user_id: activate ? null : userId
+      }).eq("id", selectedConv.id);
 
       // Sincronizar con YCloud (apaga/enciende el bot en el contacto)
       const { error: toggleErr } = await supabase.functions.invoke("ycloud-toggle-bot", {
@@ -1978,6 +2166,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           ticket_id: tId
         });
         setCloseSummaryText(summaryText);
+        setCloseSummaryKey(k => k + 1);
       } else {
         throw new Error(parsed?.error || "Error generating summary");
       }
@@ -1996,11 +2185,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
     try {
       const tId = closeSummaryData?.ticket_id || activeTicket?.id;
-      
-      if (tId && closeSummaryText.trim()) {
+      const summaryValue = closeSummaryRef.current?.value ?? closeSummaryText;
+
+      if (tId && summaryValue.trim()) {
         const { error: noteError } = await supabase.from("ticket_notes").insert({
           ticket_id: tId,
-          content: closeSummaryText,
+          content: summaryValue,
           author_id: userId,
           is_internal: false
         });
@@ -2131,6 +2321,19 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   const getInitials = (name: string | null, waId: string) =>
     (name || waId).replace("+", "").slice(0, 2).toUpperCase();
+
+  // Helpers para presencia en tiempo real
+  const getAgentInitials = (name: string) => {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+  const stringToColor = (str: string) => {
+    // Genera un color HSL consistente a partir del user_id — mismo usuario = mismo color siempre
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    return `hsl(${Math.abs(hash) % 360}, 65%, 50%)`;
+  };
 
   // Group messages by date — memoizado para no reagrupar en renders no relacionados
   const grouped = useMemo(() => {
@@ -2461,6 +2664,41 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Avatares de presencia — quién está viendo este chat */}
+                {selectedConv && userId && (
+                  <div className="flex items-center -space-x-1.5">
+                    {/* Avatar propio — siempre visible con "Tú" */}
+                    <div
+                      title="Tú"
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white ring-2 ring-background cursor-default select-none flex-shrink-0 relative"
+                      style={{ backgroundColor: stringToColor(userId) }}
+                    >
+                      {getAgentInitials(userName || "Yo")}
+                      {/* Punto verde de "en vivo" */}
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 ring-1 ring-background" />
+                    </div>
+                    {/* Otros agentes viendo el mismo chat */}
+                    {activeViewers.slice(0, 3).map((viewer) => (
+                      <div
+                        key={viewer.user_id}
+                        title={viewer.user_name}
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white ring-2 ring-background cursor-default select-none flex-shrink-0"
+                        style={{ backgroundColor: viewer.color }}
+                      >
+                        {viewer.initials}
+                      </div>
+                    ))}
+                    {activeViewers.length > 3 && (
+                      <div
+                        title={activeViewers.slice(3).map(v => v.user_name).join(", ")}
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-muted-foreground bg-muted ring-2 ring-background cursor-default select-none flex-shrink-0"
+                      >
+                        +{activeViewers.length - 3}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {activeTicket && !ticketLabels.find(l => l.is_final)?.key.includes(activeTicket.status) && (
                   <Button
                     variant="ghost"
@@ -2504,6 +2742,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       const prevMsg = idx > 0 ? group.msgs[idx - 1] : null;
                       const isChained = prevMsg?.direction === msg.direction && prevMsg?.sender_type === msg.sender_type;
 
+                      // Reacciones: mostrar como emoji compacto, no como burbuja
+                      if (msg.message_type === 'reaction' && msg.content) {
+                        return (
+                          <div key={msg.id} className={`flex w-full ${isOut ? "justify-end" : "justify-start"} mt-0.5`}>
+                            <div className="flex items-center gap-1 px-2 py-0.5">
+                              <span className="text-base leading-none">{msg.content}</span>
+                              <span className="text-[10px] text-muted-foreground/50">{formatMessageTime(msg.created_at)}</span>
+                            </div>
+                          </div>
+                        );
+                      }
+
                       return (
                         <div key={msg.id} className={`flex w-full ${isOut ? "justify-end" : "justify-start"} ${isChained ? "mt-0.5" : "mt-2"}`}>
                           <div className={`
@@ -2524,6 +2774,17 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                               <div className={`flex items-center gap-1 mb-1.5 ${isOut ? "opacity-80" : "text-slate-500 dark:text-muted-foreground"}`}>
                                 <badge.icon className="w-3 h-3" />
                                 <span className="text-[10px] font-medium tracking-wide">{badge.label}</span>
+                              </div>
+                            )}
+
+                            {/* Reply: bloque citado encima del mensaje */}
+                            {msg.message_type === 'reply' && msg.quoted_content && (
+                              <div className={`flex items-stretch gap-1.5 mb-2 rounded-lg overflow-hidden text-[11px] max-w-[260px] ${isOut ? "bg-white/10 border border-white/20" : "bg-black/8 border border-black/10 dark:bg-white/5 dark:border-white/10"}`}>
+                                <div className="w-1 shrink-0 bg-primary/60 rounded-l-lg" />
+                                <div className="py-1.5 pr-2 min-w-0">
+                                  <p className="text-primary font-semibold text-[10px] mb-0.5 truncate">Mensaje citado</p>
+                                  <p className="text-foreground/70 leading-snug line-clamp-2 break-words">{msg.quoted_content}</p>
+                                </div>
                               </div>
                             )}
 
@@ -2549,6 +2810,19 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
                             {/* Mostrar texto solo si no hay multimedia o si el texto no es el placeholder de sistema [Multimedia] */}
                             {msg.message_type !== 'sticker' && msg.content && (() => {
+                              // 0. Detectar fallback de plantilla — mostrar como chip sin pasar por formatWhatsAppText
+                              const tplMatch = msg.content.match(/^📋\s*Plantilla:\s*(.+)$/);
+                              if (tplMatch) {
+                                return (
+                                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-muted/30 border border-border/20 w-fit">
+                                    <FileText className="w-3.5 h-3.5 text-muted-foreground/60 flex-shrink-0" />
+                                    <span className="text-[11px] text-muted-foreground/70 font-medium">
+                                      Plantilla: <span className="font-mono">{tplMatch[1].trim()}</span>
+                                    </span>
+                                  </div>
+                                );
+                              }
+
                               // 1. Limpieza de etiquetas técnicas [video] y palabras redundantes solas
                               let clean = msg.content.replace(/\[(video|image|audio|document|sticker|short_video)\]/gi, '').trim();
 
@@ -3190,9 +3464,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                   </div>
                   <div className="space-y-1">
                     <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Resumen de Cierre</span>
-                    <Textarea 
-                      value={closeSummaryText}
-                      onChange={(e) => setCloseSummaryText(e.target.value)}
+                    <Textarea
+                      key={closeSummaryKey}
+                      ref={closeSummaryRef}
+                      defaultValue={closeSummaryText}
                       placeholder="Escribe un resumen o diagnóstico del caso..."
                       className="min-h-[120px] text-sm resize-none"
                     />
@@ -3651,6 +3926,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             if (conv) {
               setSelectedConv(conv);
               selectedConvRef.current = conv.id;
+              selectedWaIdRef.current = conv.wa_id;
             }
             if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
             setInAppNotif(null);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { initMercadoPago, CardPayment } from "@mercadopago/sdk-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -12,6 +12,7 @@ import {
 import {
   Loader2, RefreshCw, Receipt, Clock, CheckCircle2, AlertTriangle,
   X, Calendar, ChevronDown, ChevronUp, CreditCard, Repeat, Ban, Download,
+  Landmark, Copy,
 } from "lucide-react";
 import { format, parseISO, differenceInDays } from "date-fns";
 import { es } from "date-fns/locale";
@@ -74,6 +75,13 @@ function daysLabel(dueDate: string): { text: string; urgent: boolean } {
   return { text: `Vence en ${days} días`, urgent: days <= 2 };
 }
 
+// ── Datos bancarios fijos para transferencias ──────────────────────────────────
+const BANK_DETAILS = `DEMIS ALEJANDRO ZUNIGA
+21.311.925-7
+Banco Bci
+Cuenta Corriente
+50458931`;
+
 // ── MP init — rastrea la última key usada para reinicializar si cambia ─────────
 let mpInitializedKey = "";
 
@@ -88,7 +96,7 @@ interface Subscription {
 
 interface Props { companyId: string; userId: string; userEmail?: string; }
 
-export default function BillingManager({ companyId, userEmail: userEmailProp }: Props) {
+function BillingManager({ companyId, userEmail: userEmailProp }: Props) {
   const { toast } = useToast();
   const [invoices, setInvoices]               = useState<Invoice[]>([]);
   const [loading, setLoading]                 = useState(true);
@@ -115,6 +123,12 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
     userEmailRef.current = resolvedEmail;
   }, [resolvedEmail]);
 
+  // Ref para cancelar el timeout de cierre si el usuario vuelve a abrir antes de 350ms
+  const closeBrickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Ref que refleja brickOpen para usarse en closures (Realtime handler)
+  const brickOpenRef = useRef(false);
+
   // Estado del brick de pago
   const [brickOpen, setBrickOpen]             = useState(false);
   const [brickInvoice, setBrickInvoice]       = useState<Invoice | null>(null);
@@ -124,6 +138,13 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
   const [submitting, setSubmitting]           = useState(false);
   const [brickKey, setBrickKey]               = useState(0);
   const [isSubscription, setIsSubscription]   = useState(false);
+
+  // ── Pago por transferencia manual ──────────────────────────────────────────
+  const [transferOpen, setTransferOpen]       = useState(false);
+  const [transferInvoice, setTransferInvoice] = useState<Invoice | null>(null);
+  const [transferNotes, setTransferNotes]     = useState("");
+  const [submittingTransfer, setSubmittingTransfer] = useState(false);
+  const [copied, setCopied]                   = useState(false);
 
   // ── Detectar retorno desde Mercado Pago (back_url fallback) ──────────────────
   useEffect(() => {
@@ -146,9 +167,15 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
     }
   }, []);
 
+  // Sincronizar ref con estado (para closures del Realtime handler)
+  useEffect(() => { brickOpenRef.current = brickOpen; }, [brickOpen]);
+
   useEffect(() => { load(); }, [companyId]);
 
   // ── Realtime: refrescar boletas automáticamente cuando el webhook actualice la BD ──
+  // Debounce 500ms — un pago dispara 3 eventos Realtime seguidos (invoice UPDATE,
+  // payment INSERT, webhook de MP). Sin debounce causa 3 re-fetches y 3 parpadeos.
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const channel = supabase
       .channel(`invoice-updates-${companyId}`)
@@ -160,17 +187,26 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
           table: "invoices",
           filter: `company_id=eq.${companyId}`,
         },
-        () => { load(); }
+        () => {
+          if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+          realtimeDebounceRef.current = setTimeout(() => {
+            // No recargar mientras el brick de pago está abierto —
+            // los re-renders del componente mientras MP Secure Fields está montado
+            // provocan que el SDK pierda referencia al iframe → fields_setup_failed.
+            if (!brickOpenRef.current) load();
+          }, 500);
+        }
       )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+    };
   }, [companyId]);
 
   async function load() {
     setLoading(true);
-    const { data, error } = await supabase.functions.invoke("billing-get-invoices", {
-      body: { company_id: companyId },
-    });
+    const { data, error } = await supabase.functions.invoke("billing-get-invoices", { body: { company_id: companyId } });
     if (error) toast({ title: "Error al cargar facturación", description: error.message, variant: "destructive" });
     else {
       setInvoices(data?.invoices || []);
@@ -217,6 +253,9 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
       mpInitializedKey = data.public_key;
     }
 
+    // Cancelar cualquier timer de cierre pendiente antes de abrir
+    if (closeBrickTimerRef.current) clearTimeout(closeBrickTimerRef.current);
+
     setBrickInvoice(invoice);
     setBrickPrefId(data.preference_id);
     setBrickReady(false);
@@ -225,14 +264,53 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
     setBrickOpen(true);
   }
 
+  // ── Transferencia manual ──────────────────────────────────────────────────────
+  function openTransfer(invoice: Invoice) {
+    setTransferInvoice(invoice);
+    setTransferNotes("");
+    setTransferOpen(true);
+  }
+
+  function copyBankDetails() {
+    navigator.clipboard.writeText(BANK_DETAILS);
+    setCopied(true);
+    toast({ title: "Datos copiados ✓" });
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function submitTransfer() {
+    if (!transferInvoice) return;
+    if (!transferNotes.trim()) {
+      toast({ title: "Agrega una nota", description: "Describe tu transferencia (banco, monto, referencia).", variant: "destructive" });
+      return;
+    }
+    setSubmittingTransfer(true);
+    const { error } = await supabase.functions.invoke("billing-submit-payment", {
+      body: { invoice_id: transferInvoice.id, payment_notes: transferNotes.trim() },
+    });
+    if (error) {
+      toast({ title: "Error al enviar", description: error.message, variant: "destructive" });
+    } else {
+      toast({ title: "Pago declarado ✓", description: "El administrador revisará tu transferencia pronto." });
+      setTransferOpen(false);
+      setTransferInvoice(null);
+      setTransferNotes("");
+      load();
+    }
+    setSubmittingTransfer(false);
+  }
+
   function closeBrick() {
     setBrickOpen(false);
-    // Delay para que termine la animación de cierre del Dialog antes de
-    // desmontar el Brick — evita el error "removeChild: parameter is not a Node"
-    setTimeout(() => {
+    // Delay para que termine la animación de cierre antes de desmontar el Brick.
+    // Al mismo tiempo incrementamos brickKey para que la próxima apertura
+    // siempre use una instancia limpia de MP — sin estado residual de errores previos.
+    if (closeBrickTimerRef.current) clearTimeout(closeBrickTimerRef.current);
+    closeBrickTimerRef.current = setTimeout(() => {
       setBrickInvoice(null);
       setBrickPrefId(null);
       setBrickError(null);
+      setBrickKey(k => k + 1); // nueva clave = brick fresco en la próxima apertura
     }, 350);
     setSubmitting(false);
     setIsSubscription(false);
@@ -272,7 +350,9 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
                   invoice={active}
                   subscription={subscription}
                   creatingPayment={creatingPayment}
+                  hasBankDetails={true}
                   onMercadoPago={() => handleMercadoPago(active)}
+                  onTransfer={() => openTransfer(active)}
                   onCancelSubscription={handleCancelSubscription}
                 />
               ) : (
@@ -367,8 +447,20 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
             )}
 
             {/* Payment Brick de Mercado Pago */}
+            {/* IMPORTANTE: usar opacity en vez de display:none — los iframes de MP  */}
+            {/* Secure Fields necesitan estar en el layout para inicializarse correctamente */}
             {brickInvoice && (
-              <div className={brickReady ? "block" : "hidden"}>
+              <div className="relative">
+                {/* Overlay "Procesando pago" — cubre el formulario vacío que muestra MP
+                    mientras espera la respuesta del servidor tras hacer submit */}
+                {submitting && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-xl bg-background/90 backdrop-blur-sm">
+                    <Loader2 className="w-7 h-7 animate-spin text-primary" />
+                    <p className="text-sm font-medium text-foreground">Procesando tu pago…</p>
+                    <p className="text-[11px] text-muted-foreground/70">No cierres esta ventana</p>
+                  </div>
+                )}
+                <div className={brickReady ? "opacity-100" : "opacity-0 h-0 overflow-hidden"}>
                 <CardPayment
                   key={brickKey}
                   initialization={{
@@ -387,11 +479,16 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
                   }}
                   onReady={() => setBrickReady(true)}
                   onError={(error) => {
-                    console.error("MP Brick error:", JSON.stringify(error), error);
-                    if ((error as any)?.type === "non_critical") return;
-                    setBrickError("Error en el formulario de pago. Intenta de nuevo.");
+                    const e = error as any;
+                    console.error("MP Brick error:", JSON.stringify(e), e);
+                    // non_critical (ej: BIN sin método) → ignorar, el brick lo maneja solo
+                    if (e?.type === "non_critical") return;
+                    // critical → mostrar mensaje, el usuario elige si reintentar
+                    setSubmitting(false);
+                    setBrickError("Hubo un problema cargando el formulario de pago. Cerrá e intentá de nuevo.");
                   }}
                   onSubmit={async (params) => {
+                    if (submitting) return; // guard doble submit
                     const formData = params as any;
                     const selectedPaymentMethod = formData.payment_method_id;
 
@@ -536,13 +633,96 @@ export default function BillingManager({ companyId, userEmail: userEmailProp }: 
                   }}
                 />
               </div>
+              </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Dialog de transferencia manual ── */}
+      <Dialog open={transferOpen} onOpenChange={(open) => { if (!open) { setTransferOpen(false); setTransferInvoice(null); } }}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Landmark className="w-5 h-5 text-emerald-500" />
+              Pagar con transferencia
+            </DialogTitle>
+            {transferInvoice && (
+              <DialogDescription>
+                {formatPeriod(transferInvoice.period)} — {formatCLP(transferInvoice.amount)}
+              </DialogDescription>
+            )}
+          </DialogHeader>
+
+          <div className="mt-2 space-y-4">
+            {/* Datos para transferir */}
+            <div className="rounded-xl border border-border/50 bg-muted/30 overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/40 bg-muted/40">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/70">
+                  Datos para transferir
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1.5 text-[11px]"
+                  onClick={copyBankDetails}
+                >
+                  {copied ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copied ? "Copiado" : "Copiar"}
+                </Button>
+              </div>
+              <pre className="px-4 py-3 text-[13px] whitespace-pre-wrap break-words font-sans text-foreground/90 leading-relaxed">
+                {BANK_DETAILS}
+              </pre>
+            </div>
+
+            {/* Monto a transferir */}
+            {transferInvoice && (
+              <div className="flex items-center justify-between px-1">
+                <span className="text-sm text-muted-foreground">Monto a transferir</span>
+                <span className="text-xl font-extrabold tabular-nums">{formatCLP(transferInvoice.amount)}</span>
+              </div>
+            )}
+
+            {/* Nota de la transferencia */}
+            <div className="space-y-1.5">
+              <label className="text-[12px] font-semibold text-foreground/80">
+                Detalle de tu transferencia
+              </label>
+              <textarea
+                value={transferNotes}
+                onChange={e => setTransferNotes(e.target.value)}
+                placeholder="Ej: Transferí $65.000 desde Banco Estado, comprobante Nº 12345, 03/06/2026"
+                className="w-full min-h-[90px] resize-y rounded-xl border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <p className="text-[11px] text-muted-foreground/60">
+                Tras declarar el pago, el administrador validará tu transferencia y se confirmará la boleta.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 justify-end">
+              <Button variant="outline" onClick={() => { setTransferOpen(false); setTransferInvoice(null); }} disabled={submittingTransfer}>
+                Cancelar
+              </Button>
+              <Button
+                onClick={submitTransfer}
+                disabled={submittingTransfer || !transferNotes.trim()}
+                className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+              >
+                {submittingTransfer ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                Ya pagué
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
     </div>
   );
 }
+
+// Props son primitivos (strings) → la comparación shallow de memo es suficiente
+// para evitar re-renders cuando el padre actualiza estado (ej: Realtime de mensajes)
+export default memo(BillingManager);
 
 // ── Comprobante de pago ────────────────────────────────────────────────────────
 
@@ -617,17 +797,21 @@ function downloadReceipt(invoice: Invoice) {
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-function ActiveInvoiceCard({ invoice, subscription, creatingPayment, onMercadoPago, onCancelSubscription }: {
+function ActiveInvoiceCard({ invoice, subscription, creatingPayment, hasBankDetails, onMercadoPago, onTransfer, onCancelSubscription }: {
   invoice: Invoice;
   subscription: Subscription;
   creatingPayment: boolean;
+  hasBankDetails: boolean;
   onMercadoPago: () => void;
+  onTransfer: () => void;
   onCancelSubscription: () => void;
 }) {
   const cfg = STATUS_CFG[invoice.status];
   const { text: dueText, urgent } = daysLabel(invoice.due_date);
   const canPay = invoice.status === "pending" || invoice.status === "overdue";
   const subActive = subscription.status === "authorized";
+  // Transferencia declarada esperando validación del admin
+  const transferDeclared = invoice.invoice_payments?.some(p => p.status === "pending");
 
   return (
     <motion.div
@@ -668,9 +852,16 @@ function ActiveInvoiceCard({ invoice, subscription, creatingPayment, onMercadoPa
 
       {/* Pago en procesamiento */}
       {invoice.status === "under_review" && (
-        <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[12px] text-blue-600 dark:text-blue-400">
-          ⏳ Mercado Pago está procesando tu pago. Esto puede tardar unos minutos.
-        </div>
+        transferDeclared ? (
+          <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[12px] text-emerald-600 dark:text-emerald-400 flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <span>Transferencia declarada. El administrador la está revisando y confirmará tu boleta pronto.</span>
+          </div>
+        ) : (
+          <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[12px] text-blue-600 dark:text-blue-400">
+            ⏳ Mercado Pago está procesando tu pago. Esto puede tardar unos minutos.
+          </div>
+        )
       )}
 
       {/* Vencido */}
@@ -716,19 +907,32 @@ function ActiveInvoiceCard({ invoice, subscription, creatingPayment, onMercadoPa
         </div>
       )}
 
-      {/* ── Botón de pago (solo si no hay suscripción activa) ── */}
+      {/* ── Botones de pago (solo si no hay suscripción activa) ── */}
       {canPay && !subActive && (
-        <Button
-          onClick={onMercadoPago}
-          disabled={creatingPayment}
-          className="w-full rounded-xl gap-2 font-bold text-white"
-          style={{ backgroundColor: creatingPayment ? undefined : "#009ee3" }}
-        >
-          {creatingPayment
-            ? <><Loader2 className="w-4 h-4 animate-spin" /> Cargando formulario...</>
-            : <><CreditCard className="w-4 h-4" /> Pagar con Mercado Pago</>
-          }
-        </Button>
+        <div className="space-y-2">
+          <Button
+            onClick={onMercadoPago}
+            disabled={creatingPayment}
+            className="w-full rounded-xl gap-2 font-bold text-white"
+            style={{ backgroundColor: creatingPayment ? undefined : "#009ee3" }}
+          >
+            {creatingPayment
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Cargando formulario...</>
+              : <><CreditCard className="w-4 h-4" /> Pagar con Mercado Pago</>
+            }
+          </Button>
+
+          {/* Transferencia manual — solo si el admin cargó sus datos bancarios */}
+          {hasBankDetails && (
+            <Button
+              onClick={onTransfer}
+              variant="outline"
+              className="w-full rounded-xl gap-2 font-semibold border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+            >
+              <Landmark className="w-4 h-4" /> Pagar con transferencia
+            </Button>
+          )}
+        </div>
       )}
     </motion.div>
   );

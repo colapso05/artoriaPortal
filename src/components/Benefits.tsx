@@ -1,103 +1,79 @@
-import { motion, useInView } from "framer-motion";
-import { useRef, useState } from "react";
-import { AnimatedClock, AnimatedLightning, AnimatedSavings } from "./AnimatedIcons";
+import { useRef } from "react";
+import { Clock, ClipboardList, TrendingUp } from "lucide-react";
 
 const benefits = [
   {
-    Icon: AnimatedClock,
-    title: "Atención 24/7",
-    description: "Tus clientes siempre atendidos, sin importar la hora o el día. Tu negocio nunca duerme.",
+    Icon: Clock,
+    title: "Atención al instante, 24/7",
+    description:
+      "Tus clientes reciben respuesta a cualquier hora, sin esperar a que abra la oficina ni hacer cola en el teléfono.",
   },
   {
-    Icon: AnimatedLightning,
-    title: "Respuestas Instantáneas",
-    description: "Cero tiempos de espera. Tus clientes obtienen respuestas inmediatas a sus consultas.",
+    Icon: ClipboardList,
+    title: "Cada caso, ordenado para tu equipo",
+    description:
+      "El agente recopila los datos de cada consulta y arma el caso, para que tu especialista lo revise y resuelva más rápido.",
   },
   {
-    Icon: AnimatedSavings,
-    title: "Reduce Costos",
-    description: "Ahorra en personal sin sacrificar calidad. Automatiza tareas repetitivas y enfócate en crecer.",
+    Icon: TrendingUp,
+    title: "Crece sin saturar tu soporte",
+    description:
+      "El agente toma el primer contacto y filtra lo repetitivo. Tu equipo se concentra solo en lo que necesita una persona.",
   },
 ];
 
-function BenefitCard({
-  benefit,
-  index,
-  isInView,
-}: {
-  benefit: (typeof benefits)[0];
-  index: number;
-  isInView: boolean;
-}) {
-  const [isHovered, setIsHovered] = useState(false);
+const stats = [
+  { value: "24/7", label: "Atención automática" },
+  { value: "WhatsApp", label: "El canal que tus clientes ya usan" },
+  { value: "1 panel", label: "Todo tu equipo en un solo lugar" },
+  { value: "IA + equipo", label: "El agente filtra, tu equipo resuelve" },
+];
 
+function BenefitCard({ benefit }: { benefit: (typeof benefits)[0] }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 40 }}
-      animate={isInView ? { opacity: 1, y: 0 } : {}}
-      transition={{
-        duration: 0.6,
-        delay: index * 0.15,
-      }}
-      className="relative group"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
+    <div className="relative group">
       <div className="relative glass rounded-2xl p-8 h-full transition-all duration-300 hover:border-primary/30 group-hover:-translate-y-2">
-        {/* Large animated icon container */}
-        <div className="w-32 h-32 mx-auto mb-6 relative">
-          {/* Background glow */}
-          <motion.div
-            className="absolute inset-0 rounded-2xl bg-gradient-to-br from-primary/20 to-accent/10"
-            animate={{
-              scale: isHovered ? 1.1 : 1,
-              opacity: isHovered ? 0.8 : 0.5,
-            }}
-            transition={{ duration: 0.3 }}
-          />
-          {/* Icon */}
-          <div className="relative z-10 w-full h-full p-4">
-            <benefit.Icon isHovered={isHovered} />
+        <div className="relative w-16 h-16 mx-auto mb-6">
+          <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-sky-500 to-cyan-400 opacity-90" />
+          <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-sky-500/40 to-cyan-400/30 blur-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+          <div className="relative w-full h-full flex items-center justify-center">
+            <benefit.Icon className="w-7 h-7 text-white" strokeWidth={2} />
           </div>
-          {/* Hover glow effect */}
-          <motion.div
-            className="absolute inset-0 rounded-2xl bg-gradient-to-br from-primary/30 to-accent/20 blur-xl"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: isHovered ? 1 : 0 }}
-            transition={{ duration: 0.3 }}
-          />
         </div>
-
         <h3 className="text-xl font-display font-semibold mb-3 text-center">{benefit.title}</h3>
-        <p className="text-muted-foreground text-center">{benefit.description}</p>
+        <p className="text-muted-foreground text-center leading-relaxed">{benefit.description}</p>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
 export function Benefits() {
-  const ref = useRef(null);
-  const isInView = useInView(ref, { once: true, margin: "-100px" });
-
   return (
-    <section id="beneficios" className="py-24 relative overflow-hidden" ref={ref}>
+    <section id="beneficios" className="py-24 relative overflow-hidden">
       <div className="container mx-auto px-4">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.5 }}
-          className="text-center mb-16"
-        >
-          <span className="text-primary font-medium text-sm uppercase tracking-widest">Beneficios</span>
+        <div className="text-center mb-16 max-w-2xl mx-auto">
+          <span className="text-primary font-medium text-sm uppercase tracking-widest">Por qué Artoria</span>
           <h2 className="text-3xl md:text-4xl font-display font-bold mt-2">
-            ¿Por qué elegir un agente de IA?
+            Pensado para cómo opera un ISP
           </h2>
-        </motion.div>
+          <p className="mt-4 text-muted-foreground">
+            La mayoría de los mensajes que recibe un proveedor de internet son consultas frecuentes.
+            Artoria las atiende y ordena el resto para tu equipo.
+          </p>
+        </div>
 
         <div className="grid md:grid-cols-3 gap-6 lg:gap-8">
-          {benefits.map((benefit, index) => (
-            <BenefitCard key={benefit.title} benefit={benefit} index={index} isInView={isInView} />
+          {benefits.map((benefit) => (
+            <BenefitCard key={benefit.title} benefit={benefit} />
+          ))}
+        </div>
+
+        <div className="mt-16 grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {stats.map((stat) => (
+            <div key={stat.label} className="glass rounded-2xl p-6 text-center">
+              <p className="text-2xl md:text-3xl font-display font-bold gradient-text">{stat.value}</p>
+              <p className="mt-1.5 text-xs md:text-sm text-muted-foreground leading-snug">{stat.label}</p>
+            </div>
           ))}
         </div>
       </div>
