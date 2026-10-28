@@ -1,0 +1,6 @@
+import{c as r,bh as s,bi as c,cb as i,bm as n,N as d}from"./index-B6WbQMTd.js";/**
+ * @license lucide-react v0.462.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const u=r("Power",[["path",{d:"M12 2v10",key:"mnfbl"}],["path",{d:"M18.4 6.6a9 9 0 1 1-12.77.04",key:"obofu9"}]]);function b(e,t){const a=+s(e);return c(e,a+t)}function f(e,t){return b(e,t*i)}function m(e,t){const a=n(e),o=n(t);return+a==+o}function S(e){return m(e,d(e))}const p=["#6366f1","#ec4899","#10b981","#f59e0b","#3b82f6","#8b5cf6","#ef4444","#06b6d4","#84cc16","#f97316"],D=["Instalación","Reparación","Retiro","Mantenimiento","Visita técnica","Configuración"],M={pendiente:"Pendiente",en_camino:"En camino",completado:"Completado",cancelado:"Cancelado",en_espera:"En espera"},_={pendiente:"text-amber-500 bg-amber-500/10 border-amber-500/30",en_camino:"text-blue-500 bg-blue-500/10 border-blue-500/30",completado:"text-emerald-500 bg-emerald-500/10 border-emerald-500/30",cancelado:"text-red-500 bg-red-500/10 border-red-500/30",en_espera:"text-violet-500 bg-violet-500/10 border-violet-500/30"},T=["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"],E=["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];export{T as D,u as P,_ as S,p as T,S as a,f as b,M as c,E as d,D as e,m as i};
