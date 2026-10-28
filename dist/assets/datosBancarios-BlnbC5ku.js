@@ -1,0 +1,1 @@
+const e=[{label:"Nombre",value:"DEMIS ALEJANDRO ZUNIGA"},{label:"RUT",value:"21.311.925-7"},{label:"Banco",value:"Banco BCI"},{label:"Tipo de cuenta",value:"Cuenta Corriente"},{label:"N° de cuenta",value:"50458931"}];export{e as B};
