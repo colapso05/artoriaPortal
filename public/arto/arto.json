@@ -1,0 +1,37 @@
+{
+  "saludo": {
+    "frames": 16,
+    "cols": 4,
+    "filas": 4,
+    "anchoFrame": 124,
+    "altoFrame": 132
+  },
+  "apunta-abajo": {
+    "frames": 36,
+    "cols": 6,
+    "filas": 6,
+    "anchoFrame": 118,
+    "altoFrame": 132
+  },
+  "apunta-arriba": {
+    "frames": 36,
+    "cols": 6,
+    "filas": 6,
+    "anchoFrame": 114,
+    "altoFrame": 132
+  },
+  "baila": {
+    "frames": 36,
+    "cols": 6,
+    "filas": 6,
+    "anchoFrame": 119,
+    "altoFrame": 132
+  },
+  "celebra": {
+    "frames": 36,
+    "cols": 6,
+    "filas": 6,
+    "anchoFrame": 109,
+    "altoFrame": 132
+  }
+}

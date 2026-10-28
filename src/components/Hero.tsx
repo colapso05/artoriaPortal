@@ -3,8 +3,6 @@ import { motion } from "framer-motion";
 import { MessageSquare, ArrowRight, Wifi } from "lucide-react";
 import { AgentChatPreview } from "@/components/AgentChatPreview";
 
-const platforms = ["MikroWisp", "WispHub", "SmartOLT", "Mikrotik", "Splynx"];
-
 export function Hero() {
   const scrollToContact = () => {
     document.querySelector("#contacto")?.scrollIntoView({ behavior: "smooth" });
@@ -72,23 +70,38 @@ export function Hero() {
               plataforma de gestión que ya usas.
             </motion.p>
 
-            {/* Plataformas compatibles */}
+            {/* Integraciones */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.45 }}
-              className="mt-6 flex flex-wrap items-center gap-x-2 gap-y-2"
+              className="mt-6 space-y-2"
             >
-              <span className="text-xs text-muted-foreground/60 mr-1">Compatible con</span>
-              {platforms.map((p) => (
-                <span
-                  key={p}
-                  className="text-xs font-medium px-2.5 py-1 rounded-md border border-border bg-card/40 text-foreground/80"
-                >
-                  {p}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground/60">Integración completa con</span>
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-md border border-primary/30 bg-primary/10 text-foreground">
+                  MikroWisp
                 </span>
-              ))}
-              <span className="text-xs text-muted-foreground/60">y más</span>
+                <a
+                  href="https://www.ispcontrol.cl/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-md border border-primary/40 bg-primary/15 text-primary hover:bg-primary/25 transition-colors"
+                >
+                  ISPCONTROL
+                  <span className="text-[9px] font-bold uppercase tracking-wide px-1 py-0.5 rounded bg-primary/25 text-primary">
+                    Partner oficial
+                  </span>
+                  <ArrowRight className="w-3 h-3 -rotate-45 group-hover:translate-x-0.5 transition-transform" />
+                </a>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground/60">Compatible también con</span>
+                <span className="text-xs font-medium px-2.5 py-1 rounded-md border border-border bg-card/40 text-foreground/80">
+                  SmartOLT
+                </span>
+                <span className="text-xs text-muted-foreground/60">y más</span>
+              </div>
             </motion.div>
 
             {/* CTA Buttons */}

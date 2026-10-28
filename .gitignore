@@ -41,3 +41,6 @@ playwright-report/
 # Media files grandes
 *.mp4
 logo.png
+# Frames originales de Arto (43 MB). Lo que usa la web son los sprites ya
+# reducidos de public/arto/, generados a partir de esta carpeta.
+Arto_Frames/

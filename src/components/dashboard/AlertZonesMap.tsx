@@ -10,6 +10,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "@geoman-io/leaflet-geoman-free";
 import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
+import { ATRIBUCION_MAPA, ZOOM_NATIVO_MAX, tilesSegunTema, aplicarTemaAlMapa } from "@/lib/mapBasemap";
 
 /* ─── Interfaces ─────────────────────────────────────────── */
 export interface AlertZone {
@@ -53,6 +54,14 @@ interface Props {
   coverageZones?: ReferenceCoverageZone[];
 }
 
+/* El fondo del mapa vive en un solo lugar: `src/lib/mapBasemap.ts`. Ahí están la
+   URL, la atribución, el zoom nativo y el porqué del proveedor (OpenStreetMap),
+   junto con lo que exige su política de uso. Para cambiar de proveedor sin
+   recompilar, define `window.ARTORIA_MAP_TILES` antes de cargar el bundle. */
+
+/** Último encuadre que eligió el usuario. Vive fuera del componente a propósito. */
+let ultimaVista: { centro: [number, number]; zoom: number } | null = null;
+
 export default function AlertZonesMap({ companyId, onClose, coverageZones = [] }: Props) {
   const { theme, resolvedTheme } = useTheme();
   const isDark = (theme === "system" ? resolvedTheme : theme) === "dark";
@@ -86,11 +95,10 @@ export default function AlertZonesMap({ companyId, onClose, coverageZones = [] }
 
   /* ─── Theme sync ──────────────────────────────────────── */
   useEffect(() => {
-    tileLayerRef.current?.setUrl(
-      isDark
-        ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-        : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
-    );
+    // OSM solo publica la versión clara: el tema oscuro se logra oscureciendo el
+    // panel de tiles. Los polígonos y los marcadores no se tocan.
+    tileLayerRef.current?.setUrl(tilesSegunTema(isDark));
+    aplicarTemaAlMapa(leafletMapRef.current, isDark);
   }, [isDark]);
 
   /* ─── Load zones (no fit on reload, only on first load) ── */
@@ -110,7 +118,8 @@ export default function AlertZonesMap({ companyId, onClose, coverageZones = [] }
     // Only auto-fit on the very first load, never on reloads after delete/save
     if (isInitial && !hasInitialFit.current) {
       hasInitialFit.current = true;
-      fitMapToBestView(loaded);
+      // Si ya hay una vista recordada, es la del usuario: encuadrar la pisaría.
+      if (!ultimaVista) fitMapToBestView(loaded);
     }
   };
 
@@ -148,20 +157,37 @@ export default function AlertZonesMap({ companyId, onClose, coverageZones = [] }
     return () => clearTimeout(t);
   }, []);
 
+  /*
+   * Dónde estaba mirando el usuario, fuera del ciclo de vida del componente.
+   *
+   * Al aplicar la edición de vértices el mapa volvía al zoom inicial. El
+   * `fitBounds` solo corre en la primera carga, así que lo que pasaba es que el
+   * componente se vuelve a montar: los refs se reinician, "primera carga" vuelve a
+   * ser cierta y encuadra de nuevo. Guardado en el módulo, el encuadre sobrevive al
+   * remontaje y el usuario queda donde estaba trabajando.
+   */
   const initMap = () => {
     if (!mapRef.current || leafletMapRef.current) return;
     try {
-      const map = L.map(mapRef.current, { center: [-33.45, -70.65], zoom: 12, zoomControl: false });
+      const map = L.map(mapRef.current, {
+        center: ultimaVista?.centro ?? [-33.45, -70.65],
+        zoom: ultimaVista?.zoom ?? 12,
+        zoomControl: false,
+      });
       leafletMapRef.current = map;
 
-      const tile = L.tileLayer(
-        isDark
-          ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-          : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-        { attribution: "© CARTO", maxZoom: 19, subdomains: "abcd" }
-      );
+      // Cada vez que el usuario mueve o acerca, se recuerda dónde quedó.
+      const recordar = () => {
+        const c = map.getCenter();
+        ultimaVista = { centro: [c.lat, c.lng], zoom: map.getZoom() };
+      };
+      map.on("moveend", recordar);
+      map.on("zoomend", recordar);
+
+      const tile = L.tileLayer(tilesSegunTema(isDark), { attribution: ATRIBUCION_MAPA, maxZoom: 19, maxNativeZoom: ZOOM_NATIVO_MAX });
       tile.addTo(map);
       tileLayerRef.current = tile;
+      aplicarTemaAlMapa(map, isDark);
       L.control.zoom({ position: "bottomright" }).addTo(map);
 
       if (map.pm) {
@@ -180,7 +206,7 @@ export default function AlertZonesMap({ companyId, onClose, coverageZones = [] }
         // Reset to "none" so the user must press the button again to draw another zone
         // (same UX as freehand — no stuck "click" mode after completing a polygon)
         setDrawMode("none");
-        autoSave(closePolygon(rdp(extractPoints(e.layer), 0.00005)));
+        autoSave(cleanPolygon(rdp(extractPoints(e.layer), 0.00005)));
       });
 
       const covGroup = new L.FeatureGroup().addTo(map);

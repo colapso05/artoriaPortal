@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Menu, X, LogIn } from "lucide-react";
+import { Menu, X, LogIn, HardHat, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -43,12 +43,30 @@ export function Navbar() {
                 {link.name}
               </button>
             ))}
+            {/* Va antes del Portal: el Portal es para quien ya es cliente, la demo
+                es para el que todavía está decidiendo. */}
+            <Button
+              onClick={() => navigate("/demo")}
+              variant="outline"
+              className="border-primary/50 hover:bg-primary/10"
+            >
+              <Sparkles className="w-4 h-4 mr-2" />
+              Probar el agente
+            </Button>
             <Button
               onClick={() => navigate("/portal")}
               className="bg-primary text-primary-foreground hover:bg-primary/90 glow-box"
             >
               <LogIn className="w-4 h-4 mr-2" />
               Portal
+            </Button>
+            <Button
+              onClick={() => navigate("/portal-tecnicos")}
+              variant="outline"
+              className="border-primary/50 hover:bg-primary/10"
+            >
+              <HardHat className="w-4 h-4 mr-2" />
+              Portal Técnicos
             </Button>
             <Button
               onClick={() => scrollToSection("#contacto")}
@@ -89,11 +107,27 @@ export function Navbar() {
                   </button>
                 ))}
                 <Button
+                  onClick={() => { setIsOpen(false); navigate("/demo"); }}
+                  variant="outline"
+                  className="w-full border-primary/50 hover:bg-primary/10"
+                >
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  Probar el agente
+                </Button>
+                <Button
                   onClick={() => { setIsOpen(false); navigate("/portal"); }}
                   className="bg-primary text-primary-foreground hover:bg-primary/90 w-full"
                 >
                   <LogIn className="w-4 h-4 mr-2" />
                   Portal
+                </Button>
+                <Button
+                  onClick={() => { setIsOpen(false); navigate("/portal-tecnicos"); }}
+                  variant="outline"
+                  className="border-primary/50 hover:bg-primary/10 w-full"
+                >
+                  <HardHat className="w-4 h-4 mr-2" />
+                  Portal Técnicos
                 </Button>
                 <Button
                   onClick={() => scrollToSection("#contacto")}

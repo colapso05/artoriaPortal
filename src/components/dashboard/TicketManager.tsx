@@ -20,9 +20,13 @@ import {
   Ticket, Plus, MessageSquare, Clock, User, AlertTriangle,
   CheckCircle2, CircleDot, Pause, X, Send, Search, ArrowUpDown,
   ArrowUp, ArrowDown, SlidersHorizontal, Info, Sparkles, RotateCcw,
-  Trash2, History, Trash,
+  Trash2, History, Trash, Loader2, Image as ImageIcon, FileText,
+  PackageCheck,
 } from "lucide-react";
-import { format, formatDistanceToNow, differenceInSeconds } from "date-fns";
+import { MediaLightbox, type LightboxMedia } from "@/components/ui/MediaLightbox";
+import { NetworkSignalBadge, NetworkSignalPanel, isInteractiveTarget } from "@/components/ui/NetworkSignal";
+import { useOnuSignal } from "@/hooks/useOnuSignal";
+import { format, differenceInSeconds } from "date-fns";
 import { es } from "date-fns/locale";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -52,6 +56,7 @@ interface TicketData {
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+  onu_external_id?: string | null;
 }
 
 interface TicketNote {
@@ -61,6 +66,13 @@ interface TicketNote {
   author_name: string | null;
   author_id: string | null;
   is_internal: boolean;
+  created_at: string;
+}
+
+interface TicketAttachment {
+  id: string;
+  file_url: string;
+  mime_type: string | null;
   created_at: string;
 }
 
@@ -79,6 +91,10 @@ const statusLabels: Record<string, string> = {
   en_proceso: "En Proceso",
   esperando_cliente: "Esperando Cliente",
   esperando_respuesta: "Esperando Respuesta",
+  // El técnico ya hizo el retiro del equipo y cerró su parte, pero el ticket
+  // no se da por resuelto hasta que un operador confirma que el equipo llegó.
+  // Lo escriben el Portal Técnicos y la app (ver api.ts y TicketRepository.kt).
+  en_espera: "Retiro por confirmar",
   resuelto: "Resuelto",
   cerrado: "Cerrado",
 };
@@ -96,6 +112,7 @@ const statusIcons: Record<string, any> = {
   en_proceso: Clock,
   esperando_cliente: Pause,
   esperando_respuesta: Pause,
+  en_espera: PackageCheck,
   resuelto: CheckCircle2,
   cerrado: X,
 };
@@ -113,6 +130,8 @@ const statusColors: Record<string, string> = {
   en_proceso: "bg-blue-500/10 text-blue-500 border-blue-500/20",
   esperando_cliente: "bg-amber-500/10 text-amber-500 border-amber-500/20",
   esperando_respuesta: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+  // Violeta, el mismo tono con que la agenda marca 'en_espera'.
+  en_espera: "bg-violet-500/10 text-violet-500 border-violet-500/30",
   resuelto: "bg-primary/10 text-primary border-primary/20",
   cerrado: "bg-muted text-muted-foreground border-border",
 };
@@ -122,15 +141,24 @@ const priorityWeight: Record<TicketPriority, number> = {
 };
 
 const statusWeight: Record<string, number> = {
+  // Los retiros por confirmar pesan más que todo: son los únicos que quedan
+  // detenidos esperando a un operador, no al cliente ni al técnico.
+  en_espera: 6,
   abierto: 5, en_progreso: 4, en_proceso: 4, esperando_cliente: 3, esperando_respuesta: 3, resuelto: 2, cerrado: 1,
 };
 
 /* ─── Onboarding Tooltip ────────────────────────────────────────── */
 
-function OnboardingTip({ children, tip, side = "bottom" }: { children: React.ReactNode; tip: string; side?: "top" | "bottom" | "left" | "right" }) {
+/**
+ * El envoltorio es `inline-flex`, que se encoge al ancho del contenido. Para lo
+ * que tiene que ocupar toda la fila —el buscador, la caja de notas— hay que
+ * pasarle `className="w-full"`; si no, el hijo con `flex-1` no tiene contra qué
+ * estirarse y el campo queda diminuto.
+ */
+function OnboardingTip({ children, tip, side = "bottom", className = "" }: { children: React.ReactNode; tip: string; side?: "top" | "bottom" | "left" | "right"; className?: string }) {
   return (
     <Tooltip delayDuration={200}>
-      <TooltipTrigger asChild><span className="inline-flex">{children}</span></TooltipTrigger>
+      <TooltipTrigger asChild><span className={`inline-flex ${className}`}>{children}</span></TooltipTrigger>
       <TooltipContent side={side} className="max-w-[220px] text-xs font-normal bg-card border-border shadow-lg">
         <div className="flex items-start gap-1.5">
           <Info className="w-3 h-3 text-primary mt-0.5 shrink-0" />
@@ -143,16 +171,43 @@ function OnboardingTip({ children, tip, side = "bottom" }: { children: React.Rea
 
 /* ─── Component ──────────────────────────────────────────────────── */
 
-export default function TicketManager({ companyId, onOpenConversation, initialFilter }: { companyId?: string; onOpenConversation?: (conversationId: string) => void; initialFilter?: string }) {
+export default function TicketManager({ companyId, onOpenConversation, initialFilter, initialTicketId, initialSearch, onTicketSelect }: { companyId?: string; onOpenConversation?: (conversationId: string) => void; initialFilter?: string; initialTicketId?: string; initialSearch?: string; onTicketSelect?: (ticketId: string | null) => void }) {
   const [tickets, setTickets] = useState<TicketData[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTicket, setSelectedTicket] = useState<TicketData | null>(null);
+
+  // Restaurar el ticket seleccionado desde la URL (?ticket=) — p.ej. al volver con el
+  // botón atrás del navegador desde "Ver chat", o al recargar la página.
+  const ticketInitAppliedRef = useRef(false);
+  useEffect(() => {
+    if (ticketInitAppliedRef.current || !initialTicketId || tickets.length === 0) return;
+    const target = tickets.find(t => t.id === initialTicketId);
+    if (target) {
+      ticketInitAppliedRef.current = true;
+      setSelectedTicket(target);
+    }
+  }, [initialTicketId, tickets]);
+
+  // Notificar al padre el ticket seleccionado, para reflejarlo en la URL (?ticket=).
+  // Se salta el primer render para no limpiar el ?ticket= con el que se entra antes
+  // de que el efecto de arriba tenga chance de restaurarlo.
+  const ticketSelectSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!ticketSelectSyncedRef.current) { ticketSelectSyncedRef.current = true; return; }
+    onTicketSelect?.(selectedTicket?.id ?? null);
+  }, [selectedTicket?.id]);
   const [notes, setNotes] = useState<TicketNote[]>([]);
   const [newNote, setNewNote] = useState("");
+  const [attachments, setAttachments] = useState<TicketAttachment[]>([]);
+  const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
+  // Estado de red de la ONU asociada al ticket (SmartOLT vía onu_signals). null = no aplica/no hay fila.
+  const networkSignal = useOnuSignal(companyId, selectedTicket?.onu_external_id);
+  const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
 
   const [filterStatus, setFilterStatus] = useState<string>(initialFilter || "all");
   const [filterCategory, setFilterCategory] = useState<string>("all");
   const [filterPriority, setFilterPriority] = useState<string>("all");
+  const [filterDate, setFilterDate] = useState<string>("all");
   const [now, setNow] = useState(() => new Date());
 
   // Ticker: actualiza "now" cada minuto cuando estamos en la papelera
@@ -180,7 +235,9 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
     const bg = days >= 3 ? "bg-emerald-500/10 border-emerald-500/20" : days >= 1 ? "bg-amber-500/10 border-amber-500/20" : "bg-destructive/10 border-destructive/20";
     return { label, color, bg };
   };
-  const [searchQuery, setSearchQuery] = useState("");
+  // Se puede llegar acá desde la agenda con el RUT del cliente ya puesto, cuando la
+  // cita no guardó su ticket_id y hay que elegir el ticket a mano.
+  const [searchQuery, setSearchQuery] = useState(initialSearch || "");
   const [showFilters, setShowFilters] = useState(false);
 
   // Dynamic ticket labels
@@ -188,12 +245,18 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
     { key: "abierto", name: "Abierto", color: "#22c55e", is_initial: true },
     { key: "en_proceso", name: "En Proceso", color: "#3b82f6" },
     { key: "esperando_respuesta", name: "Esperando Respuesta", color: "#f59e0b" },
+    { key: "en_espera", name: "Retiro por confirmar", color: "#8b5cf6" },
     { key: "resuelto", name: "Resuelto", color: "#a855f7", is_final: true },
   ]);
 
   // Sorting
   const [sortField, setSortField] = useState<SortField>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  // Scroll infinito (virtualización del render): mostramos de a bloques y crecemos al bajar.
+  const PAGE = 50;
+  const [visibleCount, setVisibleCount] = useState(PAGE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false);
@@ -227,41 +290,102 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
         .eq("company_id", companyId)
         .order("sort_order", { ascending: true })
         .then(({ data }: any) => {
-          if (data && data.length > 0) setDynamicLabels(data.map((r: any) => ({ key: r.key, name: r.label, color: r.color, is_initial: r.is_initial, is_final: r.is_final })));
+          if (!data || data.length === 0) return;
+          const cargadas = data.map((r: any) => ({ key: r.key, name: r.label, color: r.color, is_initial: r.is_initial, is_final: r.is_final }));
+          // 'en_espera' lo escriben los clientes de técnicos al cerrar un retiro.
+          // Si la empresa no tiene esa etiqueta configurada, se agrega igual: sin
+          // ella el chip no existiría y los retiros por confirmar quedarían sin
+          // ninguna forma de verlos ni filtrarlos en el portal.
+          if (!cargadas.some((l: any) => l.key === "en_espera")) {
+            cargadas.push({ key: "en_espera", name: "Retiro por confirmar", color: "#8b5cf6" });
+          }
+          setDynamicLabels(cargadas);
         });
     }
     const channel = supabase
       .channel("tickets-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "tickets" }, () => loadTickets())
+      .on("postgres_changes", { event: "*", schema: "public", table: "tickets" }, (payload: any) => {
+        // Actualización incremental: parchear solo la fila que cambió en vez de recargar todo.
+        if (payload.eventType === "DELETE") {
+          const id = payload.old?.id;
+          if (id) setTickets(prev => prev.filter(t => t.id !== id));
+          return;
+        }
+        const nt = payload.new;
+        if (!nt || nt.company_id !== companyId) return;
+        setTickets(prev => {
+          const idx = prev.findIndex(t => t.id === nt.id);
+          if (idx === -1) {
+            // Nuevo ticket: agregar solo si es activo (la papelera se carga aparte).
+            return nt.deleted_at ? prev : [nt as TicketData, ...prev];
+          }
+          const copy = [...prev];
+          copy[idx] = { ...copy[idx], ...nt } as TicketData;
+          return copy;
+        });
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [companyId]);
 
   useEffect(() => {
-    if (selectedTicket) loadNotes(selectedTicket.id);
+    if (selectedTicket) { loadNotes(selectedTicket.id); loadAttachments(selectedTicket.id); }
+    else setAttachments([]);
   }, [selectedTicket?.id]);
+
+  // Cerrar el panel de señal al cambiar de ticket (el hook useOnuSignal ya recarga los datos).
+  useEffect(() => { setNetworkPanelOpen(false); }, [selectedTicket?.id]);
 
   const loadTickets = async () => {
     if (!companyId) return;
-    // Cargar tickets activos (no en papelera) y tickets de papelera por separado
-    const [activeRes, trashRes] = await Promise.all([
-      supabase.from("tickets").select("*")
-        .eq("company_id", companyId)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: false }),
+    // Solo tickets activos (no papelera). La papelera se carga aparte y bajo demanda.
+    const { data } = await supabase.from("tickets").select("*")
+      .eq("company_id", companyId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false });
+    setTickets(prev => {
+      // Conservar los de papelera ya cargados (si el usuario abrió la papelera antes).
+      const trashLoaded = prev.filter(t => t.deleted_at);
+      const trashIds = new Set(trashLoaded.map(t => t.id));
+      return [...((data || []) as unknown as TicketData[]).filter(t => !trashIds.has(t.id)), ...trashLoaded];
+    });
+    setLoading(false);
+  };
+
+  // Papelera perezosa: se carga la primera vez que el usuario entra a esa vista.
+  const trashLoadedRef = useRef(false);
+  useEffect(() => {
+    if (filterStatus === "trash" && !trashLoadedRef.current && companyId) {
+      trashLoadedRef.current = true;
       supabase.from("tickets").select("*")
         .eq("company_id", companyId)
         .not("deleted_at", "is", null)
-        .order("deleted_at", { ascending: false }),
-    ]);
-    const combined = [...(activeRes.data || []), ...(trashRes.data || [])];
-    setTickets(combined as unknown as TicketData[]);
-    setLoading(false);
-  };
+        .order("deleted_at", { ascending: false })
+        .then(({ data }: any) => {
+          if (data?.length) setTickets(prev => {
+            const ids = new Set(prev.map(t => t.id));
+            return [...prev, ...(data as TicketData[]).filter(t => !ids.has(t.id))];
+          });
+        });
+    }
+  }, [filterStatus, companyId]);
 
   const loadNotes = async (ticketId: string) => {
     const { data } = await supabase.from("ticket_notes").select("*").eq("ticket_id", ticketId).order("created_at", { ascending: true });
     if (data) setNotes(data as unknown as TicketNote[]);
+  };
+
+  // Evidencia que el técnico sube al cerrar el ticket (bucket público tickets_attachments).
+  const loadAttachments = async (ticketId: string) => {
+    const { data, error } = await (supabase as any).from("ticket_attachments")
+      .select("id, file_url, mime_type, created_at")
+      .eq("ticket_id", ticketId)
+      .order("created_at", { ascending: true });
+    // Un fallo acá se veía igual que "este ticket no tiene fotos", que es lo que
+    // más cuesta diagnosticar. Si RLS deniega, devuelve 0 filas sin error, así que
+    // esto no lo cubre todo — pero al menos un error de verdad deja de ser mudo.
+    if (error) console.error("[ticket_attachments] no se pudo leer la evidencia:", error);
+    setAttachments((data as TicketAttachment[]) || []);
   };
 
   const handleCreate = async () => {
@@ -390,6 +514,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
     setFilterStatus("all");
     setFilterCategory("all");
     setFilterPriority("all");
+    setFilterDate("all");
     setSearchQuery("");
     setSortField("created_at");
     setSortDir("desc");
@@ -397,7 +522,27 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
 
   /* ─── Filtered + Sorted ─────────────────────────────────── */
 
-  const activeStatuses: string[] = ["abierto", "en_progreso", "en_proceso", "esperando_cliente", "esperando_respuesta"];
+  /*
+   * Activo es todo lo que no está en una etiqueta final.
+   *
+   * Antes esto era una lista escrita a mano, y dejaba fuera a todas las etiquetas
+   * propias de cada empresa: pagos, tecnicos, agendado, ventas, lost. En Optve eso
+   * escondía del filtro "Activos" la mayor parte del trabajo pendiente. Además
+   * incluía 'en_progreso', que no es un estado de ticket sino de conversación:
+   * ningún ticket lo tuvo nunca, así que esa entrada no filtraba nada.
+   *
+   * Sale de `dynamicLabels`, que ya viene de `ticket_labels`. El día que marquen
+   * otra etiqueta como final —"LOST", por ejemplo— esto se acomoda solo.
+   */
+  const activeStatuses = useMemo(
+    () => dynamicLabels.filter(l => !l.is_final).map(l => l.key),
+    [dynamicLabels],
+  );
+
+  /** Desde cuándo mostrar, en días corridos hacia atrás. `null` = sin límite. */
+  const VENTANAS_FECHA: Record<string, number | null> = {
+    all: null, hoy: 1, "7": 7, "30": 30, "90": 90,
+  };
 
   const filtered = useMemo(() => {
     let result = tickets.filter(t => {
@@ -410,6 +555,19 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
 
     if (filterCategory !== "all") result = result.filter(t => t.category === filterCategory);
     if (filterPriority !== "all") result = result.filter(t => t.priority === filterPriority);
+
+    /*
+     * Por fecha de creación, que es cuándo entró el problema. Filtrar por última
+     * actividad escondería un ticket viejo que alguien tocó hoy, y son justo los
+     * que hay que poder encontrar.
+     */
+    const dias = VENTANAS_FECHA[filterDate];
+    if (dias != null) {
+      const corte = new Date();
+      corte.setHours(0, 0, 0, 0);
+      corte.setDate(corte.getDate() - (dias - 1));
+      result = result.filter(t => new Date(t.created_at).getTime() >= corte.getTime());
+    }
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -444,7 +602,36 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
     });
 
     return result;
-  }, [tickets, filterStatus, filterCategory, filterPriority, searchQuery, sortField, sortDir]);
+  }, [tickets, filterStatus, filterCategory, filterPriority, filterDate, searchQuery, sortField, sortDir, activeStatuses]);
+
+  // Reiniciar el bloque visible cuando cambian filtros/búsqueda/orden.
+  useEffect(() => { setVisibleCount(PAGE); }, [filterStatus, filterCategory, filterPriority, filterDate, searchQuery, sortField, sortDir]);
+
+  // Scroll infinito (handler determinístico sobre el viewport del ScrollArea):
+  // 1) auto-rellena mientras no haya barra de scroll (viewport alto, pocas filas);
+  // 2) al acercarse al final, carga el siguiente bloque. No usa IntersectionObserver
+  //    porque con contenido creciente + animaciones resultaba inestable.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    const vp = el?.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null;
+    if (!vp) return;
+    const total = filtered.length;
+    const grow = () => setVisibleCount(c => (c < total ? Math.min(c + PAGE, total) : c));
+    const maybeLoad = () => {
+      if (visibleCount >= total) return;
+      const hasScrollbar = vp.scrollHeight > vp.clientHeight + 1;
+      // Auto-rellenar solo hasta tener barra de scroll (tope de seguridad anti-cascadeo).
+      const needFill = !hasScrollbar && visibleCount < 160;
+      const nearBottom = hasScrollbar && vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 300;
+      if (needFill || nearBottom) grow();
+    };
+    vp.addEventListener("scroll", maybeLoad, { passive: true });
+    // Medir tras el layout para no auto-rellenar de más (scrollHeight/clientHeight sin asentar).
+    const raf = requestAnimationFrame(maybeLoad);
+    return () => { cancelAnimationFrame(raf); vp.removeEventListener("scroll", maybeLoad); };
+  }, [filtered.length, visibleCount]);
+
+  const visibleTickets = filtered.slice(0, visibleCount);
 
   /* ─── Stats ─────────────────────────────────────────────── */
 
@@ -457,7 +644,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
     trash: tickets.filter(t => !!t.deleted_at).length,
   }), [tickets]);
 
-  const hasActiveFilters = filterStatus !== "active" || filterCategory !== "all" || filterPriority !== "all" || searchQuery.trim() !== "";
+  const hasActiveFilters = filterStatus !== "active" || filterCategory !== "all" || filterPriority !== "all" || filterDate !== "all" || searchQuery.trim() !== "";
 
   /* ─── Render ────────────────────────────────────────────── */
 
@@ -483,39 +670,37 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
             </OnboardingTip>
           </div>
 
-          {/* Quick stats pills — dynamic labels */}
-          <div className="flex gap-1.5 flex-wrap">
-            <OnboardingTip tip="Haz clic en una etiqueta para filtrar rápidamente los tickets por estado.">
-              <span className="inline-flex">
-                {dynamicLabels.map(label => {
-                  const count = tickets.filter(t => t.status === label.key && !t.deleted_at).length;
-                  const isActive = filterStatus === label.key;
-                  return (
-                    <button
-                      key={label.key}
-                      onClick={() => setFilterStatus(label.key)}
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all mr-1.5 ${isActive ? "ring-1" : "opacity-80 hover:opacity-100"}`}
-                      style={{
-                        backgroundColor: label.color + "18",
-                        color: label.color,
-                        ringColor: label.color,
-                        boxShadow: isActive ? `0 0 0 1px ${label.color}` : undefined,
-                      } as React.CSSProperties}
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: label.color }} />
-                      {count} {label.name}
-                    </button>
-                  );
-                })}
-              </span>
-            </OnboardingTip>
+          {/* Quick stats pills — dynamic labels.
+              Móvil: una sola fila deslizable horizontalmente (evita el apilado feo con muchos estados).
+              Desktop: wrap normal. */}
+          <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible -mx-4 px-4 pb-1 md:mx-0 md:px-0 md:pb-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {dynamicLabels.map(label => {
+              const count = tickets.filter(t => t.status === label.key && !t.deleted_at).length;
+              const isActive = filterStatus === label.key;
+              return (
+                <button
+                  key={label.key}
+                  onClick={() => setFilterStatus(label.key)}
+                  className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all ${isActive ? "ring-1" : "opacity-80 hover:opacity-100"}`}
+                  style={{
+                    backgroundColor: label.color + "18",
+                    color: label.color,
+                    ringColor: label.color,
+                    boxShadow: isActive ? `0 0 0 1px ${label.color}` : undefined,
+                  } as React.CSSProperties}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: label.color }} />
+                  {count} {label.name}
+                </button>
+              );
+            })}
             {stats.trash > 0 && (
-              <button onClick={() => setFilterStatus("trash")} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all ${filterStatus === "trash" ? "ring-1 ring-muted-foreground" : ""} bg-muted text-muted-foreground hover:bg-muted/80`}>
+              <button onClick={() => setFilterStatus("trash")} className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all ${filterStatus === "trash" ? "ring-1 ring-muted-foreground" : ""} bg-muted text-muted-foreground hover:bg-muted/80`}>
                 <Trash2 className="w-2.5 h-2.5" /> {stats.trash} Papelera
               </button>
             )}
             {filterStatus !== "all" && (
-              <button onClick={() => setFilterStatus("all")} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-secondary text-muted-foreground hover:bg-secondary/80 transition-all">
+              <button onClick={() => setFilterStatus("all")} className="inline-flex shrink-0 whitespace-nowrap items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-secondary text-muted-foreground hover:bg-secondary/80 transition-all">
                 <Sparkles className="w-2.5 h-2.5" /> Ver todos
               </button>
             )}
@@ -523,14 +708,14 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
         </div>
 
         {/* ── Main Content ── */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* ── Ticket List ── */}
-          <div className={`${selectedTicket ? "hidden md:flex" : "flex"} flex-col w-full md:w-[420px] border-r border-border/30`}>
+          <div className={`${selectedTicket ? "hidden md:flex" : "flex"} flex-col min-h-0 w-full md:w-[420px] border-r border-border/30`}>
             {/* Search + Filters */}
             <div className="p-3 border-b border-border/20 space-y-2">
               <div className="flex gap-2">
-                <OnboardingTip tip="Busca tickets por título, cliente, descripción o persona asignada." side="bottom">
-                  <div className="relative flex-1">
+                <OnboardingTip tip="Busca tickets por título, cliente, descripción o persona asignada." side="bottom" className="flex-1 min-w-0">
+                  <div className="relative w-full">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                     <Input
                       value={searchQuery}
@@ -561,7 +746,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                     transition={{ duration: 0.2 }}
                     className="overflow-hidden"
                   >
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                       <div>
                         <label className="text-[10px] text-muted-foreground font-medium mb-1 block">Categoría</label>
                         <Select value={filterCategory} onValueChange={setFilterCategory}>
@@ -569,6 +754,19 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                           <SelectContent>
                             <SelectItem value="all">Todas</SelectItem>
                             {Object.entries(categoryLabels).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-muted-foreground font-medium mb-1 block">Creado</label>
+                        <Select value={filterDate} onValueChange={setFilterDate}>
+                          <SelectTrigger className="h-7 text-[11px]"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">Cualquier fecha</SelectItem>
+                            <SelectItem value="hoy">Hoy</SelectItem>
+                            <SelectItem value="7">Últimos 7 días</SelectItem>
+                            <SelectItem value="30">Últimos 30 días</SelectItem>
+                            <SelectItem value="90">Últimos 90 días</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -642,7 +840,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
               ) : (
                 <div className="p-1.5">
                   <AnimatePresence mode="popLayout">
-                    {filtered.map((t, idx) => {
+                    {visibleTickets.map((t, idx) => {
                       const dynamicLabel = dynamicLabels.find(l => l.key === t.status);
                       const StatusIcon = statusIcons[t.status as TicketStatus] || CircleDot;
                       const isSelected = selectedTicket?.id === t.id;
@@ -653,7 +851,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                           initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.95 }}
-                          transition={{ duration: 0.15, delay: idx * 0.02 }}
+                          transition={{ duration: 0.15, delay: Math.min(idx, 12) * 0.02 }}
                           onClick={() => setSelectedTicket(t)}
                           className={`w-full text-left px-3 py-2.5 rounded-lg mb-1 transition-all group ${isSelected
                             ? "bg-primary/8 border border-primary/20 shadow-sm"
@@ -697,16 +895,16 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                                 </span>
                               </div>
 
-                              <div className="flex items-center justify-between mt-1.5">
-                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70">
+                              <div className="flex items-center justify-between gap-2 mt-1.5">
+                                <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 min-w-0">
                                   {t.customer_rut && (
-                                    <span className="font-mono bg-secondary/50 px-1 rounded">{t.customer_rut}</span>
+                                    <span className="font-mono bg-secondary/50 px-1 rounded shrink-0">{t.customer_rut}</span>
                                   )}
                                   {t.customer_name && (
-                                    <span className="flex items-center gap-0.5"><User className="w-2.5 h-2.5" />{t.customer_name}</span>
+                                    <span className="flex items-center gap-0.5 min-w-0"><User className="w-2.5 h-2.5 shrink-0" /><span className="truncate">{t.customer_name}</span></span>
                                   )}
                                   {t.assigned_to && (
-                                    <span className="text-primary/70">→ {t.assigned_to}</span>
+                                    <span className="text-primary/70 shrink-0">→ {t.assigned_to}</span>
                                   )}
                                 </div>
                                 {t.deleted_at ? (() => {
@@ -729,13 +927,18 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                       );
                     })}
                   </AnimatePresence>
+                  {visibleCount < filtered.length && (
+                    <div ref={sentinelRef} className="py-3 flex items-center justify-center">
+                      <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" />
+                    </div>
+                  )}
                 </div>
               )}
             </ScrollArea>
           </div>
 
-          {/* ── Ticket Detail ── */}
-          <div className={`${selectedTicket ? "flex" : "hidden md:flex"} flex-col flex-1`}>
+          {/* ── Ticket Detail ── (min-w-0 permite que el contenido encoja y haga wrap en móvil) */}
+          <div className={`${selectedTicket ? "flex" : "hidden md:flex"} flex-col flex-1 min-h-0 min-w-0`}>
             {!selectedTicket ? (
               <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3 p-8">
                 <div className="w-16 h-16 rounded-2xl bg-primary/5 flex items-center justify-center">
@@ -748,15 +951,27 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
               </div>
             ) : (
               <>
-                {/* Detail Header */}
-                <div className="px-4 py-3 border-b border-border/30 bg-gradient-to-r from-card to-secondary/10 flex-shrink-0">
+                {/* Detail Header — si hay señal de red, todo el bloque es el disparador del desplegable
+                    (hover en desktop, tap en mobile). Los controles internos (botones/select) no lo activan. */}
+                <div
+                  className="px-4 py-3 border-b border-border/30 bg-gradient-to-r from-card to-secondary/10 flex-shrink-0"
+                  onMouseEnter={() => { if (networkSignal) setNetworkPanelOpen(true); }}
+                  onMouseLeave={() => setNetworkPanelOpen(false)}
+                  onClick={(e) => {
+                    if (!networkSignal || isInteractiveTarget(e)) return;
+                    setNetworkPanelOpen(o => !o);
+                  }}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <Button variant="ghost" size="sm" className="md:hidden h-7 w-7 p-0 shrink-0" onClick={() => setSelectedTicket(null)}>
                         ←
                       </Button>
                       <div className="min-w-0">
-                        <h3 className="text-sm font-semibold truncate font-['Space_Grotesk']">{selectedTicket.title}</h3>
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="text-sm font-semibold truncate font-['Space_Grotesk']">{selectedTicket.title}</h3>
+                          <NetworkSignalBadge signal={networkSignal} open={networkPanelOpen} />
+                        </div>
                         <p className="text-[11px] text-muted-foreground/80">
                           Creado {format(new Date(selectedTicket.created_at), "dd MMM yyyy · HH:mm", { locale: es })}
                           {selectedTicket.resolved_at && (
@@ -839,15 +1054,49 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                   </div>
 
                   {selectedTicket.description && (
-                    <p className="text-xs text-muted-foreground mt-2.5 leading-relaxed bg-secondary/30 rounded-lg px-3 py-2">
+                    <p className="text-xs text-muted-foreground mt-2.5 leading-relaxed bg-secondary/30 rounded-lg px-3 py-2 break-words">
                       {selectedTicket.description}
                     </p>
                   )}
+
+                  {/* Estado de red — se despliega al pasar el mouse (o tap) sobre el header */}
+                  <NetworkSignalPanel signal={networkSignal} open={networkPanelOpen} className="mt-2.5" />
                 </div>
 
                 {/* Notes Timeline */}
                 <ScrollArea className="flex-1 px-4 py-3">
                   <div className="space-y-2.5">
+                    {/* Evidencia fotográfica subida por el técnico al cerrar el ticket.
+                        Tira horizontal compacta para que se vea junto con las notas. */}
+                    {attachments.length > 0 && (
+                      <div className="rounded-xl border border-border/30 bg-secondary/20 px-2.5 py-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70 mb-1.5 flex items-center gap-1">
+                          <ImageIcon className="w-3 h-3" /> Evidencia del técnico ({attachments.length})
+                        </p>
+                        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+                          {attachments.map((a) => {
+                            const isImg = (a.mime_type || "").startsWith("image") || /\.(jpe?g|png|webp|gif|heic)$/i.test(a.file_url);
+                            const isPdf = (a.mime_type || "").includes("pdf") || /\.pdf(\?|$)/i.test(a.file_url);
+                            return (
+                              <button
+                                key={a.id}
+                                onClick={() => setLightbox({ url: a.file_url, type: isImg ? "image" : isPdf ? "pdf" : "other" })}
+                                title={format(new Date(a.created_at), "dd MMM HH:mm", { locale: es })}
+                                className="flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border border-border/40 hover:border-primary/50 transition"
+                              >
+                                {isImg ? (
+                                  <img src={a.file_url} alt="Evidencia del técnico" loading="lazy" className="w-full h-full object-cover" />
+                                ) : (
+                                  <span className="w-full h-full flex flex-col items-center justify-center gap-1 bg-muted/40 text-muted-foreground text-[9px]">
+                                    <FileText className="w-6 h-6" />{isPdf ? "PDF" : "Archivo"}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {notes.length === 0 ? (
                       <div className="text-center py-8">
                         <MessageSquare className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
@@ -868,7 +1117,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                             {format(new Date(n.created_at), "dd MMM HH:mm", { locale: es })}
                           </span>
                         </div>
-                        <p className="text-[13px] mt-1.5 leading-relaxed">{n.content}</p>
+                        <p className="text-[13px] mt-1.5 leading-relaxed break-words">{n.content}</p>
                       </motion.div>
                     ))}
                   </div>
@@ -876,8 +1125,8 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
 
                 {/* Note Input */}
                 <div className="px-4 py-3 border-t border-border/30 flex-shrink-0 bg-card/80">
-                  <OnboardingTip tip="Escribe una nota interna para documentar avances, comunicaciones o decisiones sobre este ticket." side="top">
-                    <div className="flex gap-2">
+                  <OnboardingTip tip="Escribe una nota interna para documentar avances, comunicaciones o decisiones sobre este ticket." side="top" className="w-full">
+                    <div className="flex gap-2 w-full">
                       <Input
                         value={newNote}
                         onChange={(e) => setNewNote(e.target.value)}
@@ -971,6 +1220,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
           </DialogContent>
         </Dialog>
       </div>
+      <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
     </TooltipProvider>
   );
 }

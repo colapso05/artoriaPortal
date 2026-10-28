@@ -27,11 +27,18 @@ RewriteRule ^ /index.html [L]
   # Controla información del referrer enviada a otros sitios
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
 
-  # Restringe acceso a APIs del navegador
-  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(self), payment=()"
+  # Restringe acceso a APIs del navegador.
+  # cámara y micrófono en (self): el chat de soporte /soporte deja al cliente
+  # mandar fotos y notas de voz; con () el navegador los bloquea en todo el sitio.
+  Header always set Permissions-Policy "camera=(self), microphone=(self), geolocation=(self), payment=()"
 
   # Content Security Policy — ajustado para Supabase, YCloud, MercadoPago y librerías usadas
-  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://sdk.mercadopago.com https://*.mlstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.mlstatic.com; font-src 'self' https://fonts.gstatic.com https://*.mlstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://api.ycloud.com https://*.supabase.co https://bot.artoria.cl https://*.mercadopago.com https://*.mercadolibre.com https://*.mlstatic.com https://api.mercadolibre.com; media-src 'self' blob: https:; frame-src https://*.mercadopago.com https://*.mercadolibre.com https://*.mlstatic.com; worker-src 'self' blob:; child-src 'self' blob: https://*.mlstatic.com https://*.mercadopago.com; frame-ancestors 'none';"
+  #
+  # api.onesignal.com va en script-src, no solo en connect-src: durante el init, el
+  # SDK web hace una llamada JSONP a api.onesignal.com/sync/<appId>/web?callback=…,
+  # que el navegador trata como un <script>. Sin este permiso el init nunca termina,
+  # el portal se queda esperando y jamás llega a pedir el permiso de notificaciones.
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://sdk.mercadopago.com https://*.mlstatic.com https://cdn.onesignal.com https://api.onesignal.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.mlstatic.com; font-src 'self' https://fonts.gstatic.com https://*.mlstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://supabase.artoria.cl wss://supabase.artoria.cl https://mindicador.cl https://nominatim.openstreetmap.org https://api.ycloud.com https://*.supabase.co https://bot.artoria.cl https://*.mercadopago.com https://*.mercadolibre.com https://*.mlstatic.com https://api.mercadolibre.com https://cdn.onesignal.com https://api.onesignal.com https://*.onesignal.com wss://*.onesignal.com; media-src 'self' blob: https:; frame-src 'self' https://supabase.artoria.cl https://*.supabase.co https://*.mercadopago.com https://*.mercadolibre.com https://*.mlstatic.com https://dropptelecom.cl https://www.dropptelecom.cl https://optve.cl https://www.optve.cl; worker-src 'self' blob:; child-src 'self' blob: https://supabase.artoria.cl https://*.supabase.co https://*.mlstatic.com https://*.mercadopago.com; frame-ancestors 'none';"
 
   # Elimina header que expone tecnología del servidor
   Header always unset X-Powered-By
@@ -56,6 +63,24 @@ RewriteRule ^ /index.html [L]
   ExpiresByType image/svg+xml "access plus 1 year"
   ExpiresByType image/x-icon "access plus 1 year"
   ExpiresByType font/woff2 "access plus 1 year"
+</IfModule>
+
+# ── Archivos que nunca deben cachearse ───────────────────────
+# version.json: para que el auto-update detecte nuevas versiones al instante.
+# sw-tecnicos.js: el service worker debe poder actualizarse (la regla general de
+#   application/javascript lo congelaría 1 año).
+# tecnicos.webmanifest: para que cambios de nombre/íconos de la PWA se reflejen.
+<FilesMatch "^(version\.json|sw-tecnicos\.js|tecnicos\.webmanifest)$">
+  <IfModule mod_headers.c>
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </IfModule>
+</FilesMatch>
+
+# El manifest debe servirse con su tipo MIME correcto
+<IfModule mod_mime.c>
+  AddType application/manifest+json .webmanifest
 </IfModule>
 
 # ── Compresión gzip ──────────────────────────────────────────

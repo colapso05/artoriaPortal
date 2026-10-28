@@ -116,6 +116,10 @@ export default function AdminBillingPanel() {
   const [copiedWebhook, setCopiedWebhook]     = useState(false);
   const [loadingCfg, setLoadingCfg]           = useState(false);
   const [savingCfg, setSavingCfg]             = useState(false);
+  // Costo unitario del mensaje oficial: se edita aparte del monto mensual.
+  const [costoMsj, setCostoMsj]               = useState("");
+  const [costoMsjGuardado, setCostoMsjGuardado] = useState<number | null>(null);
+  const [savingCosto, setSavingCosto]         = useState(false);
 
   const BILLING_WEBHOOK_URL = "https://bot.artoria.cl/webhook/billing-events";
 
@@ -134,9 +138,13 @@ export default function AdminBillingPanel() {
   }
 
   async function loadCompanies() {
+    // Las archivadas no se facturan. `status` puede venir NULL en filas viejas y
+    // PostgREST descarta los NULL tanto con `eq` como con `neq`, asi que el filtro
+    // tiene que nombrarlos: si no, una empresa sin status desaparece del selector.
     const { data } = await (supabase as any)
       .from("company_config")
       .select("id, company_name")
+      .or("status.eq.active,status.is.null")
       .order("company_name");
     setCompanies(data || []);
   }
@@ -148,8 +156,62 @@ export default function AdminBillingPanel() {
     setTimeout(() => setCopiedWebhook(false), 2000);
   }
 
+  /**
+   * Precio unitario del mensaje por API oficial. Vive en `company_config` y no en
+   * `billing_config`: no es lo que se le cobra al cliente, es lo que cuesta operar.
+   * Por eso se guarda aparte, con su propia RPC.
+   */
+  async function cargarCostoMensaje(companyId: string) {
+    setCostoMsj("");
+    setCostoMsjGuardado(null);
+    const { data, error } = await (supabase as any)
+      .from("company_config")
+      .select("costo_mensaje_oficial")
+      .eq("id", companyId)
+      .maybeSingle();
+    if (error || !data) return;
+    const v = Number(data.costo_mensaje_oficial);
+    if (!isNaN(v)) { setCostoMsj(String(v)); setCostoMsjGuardado(v); }
+  }
+
+  async function guardarCostoMensaje() {
+    if (!selectedCompanyId) return;
+    const valor = parseFloat(costoMsj);
+    if (isNaN(valor) || valor < 0 || valor > 100000) {
+      toast({ title: "Valor invalido", description: "Debe estar entre 0 y 100.000.", variant: "destructive" });
+      return;
+    }
+    setSavingCosto(true);
+    const { data, error } = await (supabase as any).rpc("empresa_set_costo_mensaje", {
+      p_company_id: selectedCompanyId,
+      p_valor: valor,
+    });
+    setSavingCosto(false);
+    if (error) {
+      toast({ title: "No se pudo guardar", description: error.message, variant: "destructive" });
+      return;
+    }
+    // La RPC responde con el valor anterior y un aviso: el historico del mes se
+    // recalcula con el precio nuevo, asi que el costo mostrado va a cambiar.
+    if (data && typeof data === "object" && data.ok === false) {
+      toast({ title: "No se pudo guardar", description: String(data.error ?? data.detail ?? ""), variant: "destructive" });
+      return;
+    }
+    const anterior = data && typeof data === "object" ? data.anterior ?? data.valor_anterior : undefined;
+    const aviso = data && typeof data === "object" ? data.aviso ?? data.mensaje ?? data.nota : undefined;
+    setCostoMsjGuardado(valor);
+    toast({
+      title: "Precio actualizado",
+      description: [
+        anterior !== undefined && anterior !== null ? `Antes: ${formatCLP(Number(anterior))}.` : null,
+        aviso ? String(aviso) : "El costo del mes se recalcula con el precio nuevo.",
+      ].filter(Boolean).join(" "),
+    });
+  }
+
   async function loadBillingConfig(companyId: string) {
     setLoadingCfg(true);
+    cargarCostoMensaje(companyId);
     const { data } = await (supabase as any)
       .from("billing_config")
       .select("billing_day, amount, currency, grace_period_days, billing_enabled")
@@ -541,6 +603,39 @@ export default function AdminBillingPanel() {
                             {new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", minimumFractionDigits: 0 }).format(billingCfg.amount)} / mes
                           </p>
                         )}
+                      </div>
+
+                      {/* Costo por mensaje — no es lo que se cobra, es lo que cuesta.
+                          Va con su propio boton porque se guarda por otra via y
+                          porque cambia el costo ya mostrado del mes en curso. */}
+                      <div className="space-y-1.5 pt-1 border-t border-border/20">
+                        <Label className="text-[11px] text-muted-foreground">Costo por mensaje — API oficial (CLP)</Label>
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <Input
+                              type="number"
+                              min={0} max={100000} step="0.1"
+                              value={costoMsj}
+                              onChange={e => setCostoMsj(e.target.value)}
+                              placeholder="20"
+                              className="h-9 text-sm rounded-xl pr-14"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground/50 font-medium">CLP</span>
+                          </div>
+                          <Button
+                            onClick={guardarCostoMensaje}
+                            disabled={savingCosto || costoMsj === "" || Number(costoMsj) === costoMsjGuardado}
+                            variant="outline"
+                            className="h-9 rounded-xl gap-2 flex-shrink-0"
+                          >
+                            {savingCosto && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            Guardar precio
+                          </Button>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground/40">
+                          Lo que cobra el proveedor por mensaje saliente. Con esto se calculan el costo
+                          y el ahorro que ve la empresa; al cambiarlo se recalcula el mes en curso.
+                        </p>
                       </div>
 
                       {/* Método de pago */}

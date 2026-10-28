@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import ConfigDeteccionAlerta from "@/components/dashboard/ConfigDeteccionAlerta";
+import ValoresEmpresa from "@/components/dashboard/ValoresEmpresa";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,20 +19,29 @@ import {
   Palette, HelpCircle, Save, Loader2, Minus, Plus, User, Lock, Tag,
   Trash2, Check, GripVertical, PlusCircle, Pencil, X, Bell, Phone, PanelLeft,
   Home, MessageCircle, Ticket, Zap, MapPin, Users, Clock, Wand2,
-  FileText, Upload, File, FileSpreadsheet, AlertCircle, Plug, Key, Eye, EyeOff,
+  FileText, Upload, File, FileSpreadsheet, AlertCircle, Plug, Key, Eye, EyeOff, UserCog, Wifi, Globe, ScrollText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import CompanyTeamManager from "@/components/dashboard/CompanyTeamManager";
+import PlanesPanel from "@/components/dashboard/PlanesPanel";
+import EvolutionCanalPanel from "@/components/dashboard/EvolutionCanalPanel";
 
 interface Props {
   companyId: string | null;
+  companyName?: string;
   userRole: string | null;
   userId: string;
   isSimulating?: boolean;
+  /** Sección con la que abrir (viene de ?sec= en la URL). Se ignora si no existe. */
+  initialSection?: string;
   tourActive?: boolean;
   onTourComplete?: () => void;
 }
 
-type Section = "personalizar" | "tickets" | "cuenta" | "alertas" | "documentos" | "integraciones";
+type Section = "personalizar" | "tickets" | "cuenta" | "alertas" | "documentos" | "integraciones" | "equipo" | "planes" | "valores";
+
+const SECCIONES: Section[] = ["personalizar", "tickets", "cuenta", "alertas", "documentos", "integraciones", "equipo", "planes", "valores"];
+const esSeccion = (v: unknown): v is Section => SECCIONES.includes(v as Section);
 
 interface CompanySettings {
   delay: number;
@@ -38,6 +49,10 @@ interface CompanySettings {
   mensaje_inicial: string;
   temp_prompt_section: string;
   temp_prompt_expires_at: string | null;
+  /** Costo empresa de una hora de operador. Convierte el tiempo ahorrado en pesos. */
+  costo_hora_operador: number;
+  /** Habilita la sección "Sitio web": sólo para empresas cuyo sitio público lee estas tablas. */
+  sitio_web_activo: boolean;
 }
 
 interface TicketLabel {
@@ -48,7 +63,13 @@ interface TicketLabel {
   sort_order: number;
   is_initial?: boolean;
   is_final?: boolean;
+  is_system?: boolean;
 }
+
+/** Etiquetas fijas: inicio, cierre, las marcadas is_system por el backend y Técnicos (se reconoce también por nombre por si falta la marca). */
+const etiquetaFija = (l: { key: string; name: string; is_initial?: boolean; is_final?: boolean; is_system?: boolean }) =>
+  !!(l.is_initial || l.is_final || l.is_system)
+  || [l.key, l.name].some(v => (v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim() === 'tecnicos');
 
 interface CompanyIntegration {
   id: string;
@@ -70,6 +91,17 @@ interface ServiceDef {
   needsUrl?: boolean;
   keyPlaceholder?: string;
   urlPlaceholder?: string;
+  /** Muestra un campo de subdominio en vez de URL completa; api_url = https://<sub>.<subdomainHost> */
+  needsSubdomain?: boolean;
+  subdomainHost?: string;        // p.ej. "smartolt.com"
+  subdomainPlaceholder?: string; // p.ej. "zuniga"
+  /** Guarda vía edge function save-company-integration (JWT del usuario, no service_role).
+   *  Permite que un administrador de empresa —no solo admin_isp— configure la integración. */
+  useEdgeSave?: boolean;
+  /** La API key nunca se lee de vuelta (get-company-integration es service-role only).
+   *  El formulario siempre arranca vacío y la lista muestra "Configurado ✅" en vez de la key. */
+  secret?: boolean;
+  metaType?: string;             // metadata.type que espera el backend
 }
 
 interface ServiceCategory {
@@ -121,6 +153,25 @@ const SERVICE_CATALOG: ServiceCategory[] = [
       },
     ],
   },
+  {
+    key: "network_mon",
+    label: "Monitoreo de red",
+    icon: "📡",
+    services: [
+      {
+        name: "onu_platform",
+        label: "SmartOLT",
+        description: "Señal de las ONUs para enriquecer los tickets de soporte técnico.",
+        keyPlaceholder: "Token de API de SmartOLT",
+        needsSubdomain: true,
+        subdomainHost: "smartolt.com",
+        subdomainPlaceholder: "zuniga",
+        useEdgeSave: true,
+        secret: true,
+        metaType: "smartolt",
+      },
+    ],
+  },
 ];
 
 // Mapa plano para display en la lista actual
@@ -133,6 +184,11 @@ const SYSTEM_SERVICES: Record<string, { label: string; description: string }> = 
   ycloud:      { label: "yCloud", description: "Proveedor de WhatsApp Business API" },
   mercadopago: { label: "MercadoPago", description: "Pasarela de pagos" },
 };
+
+/** Una fila de company_integrations solo cuenta como "configurada" si tiene api_key real
+ *  y no es un placeholder pendiente (metadata.pending_api_key) dejado por el backend. */
+const hasRealKey = (intg: { api_key: string | null; metadata: Record<string, any> | null }): boolean =>
+  !!intg.api_key && !intg.metadata?.pending_api_key;
 
 const maskKey = (key: string | null): string => {
   if (!key || key.length < 4) return "••••••••";
@@ -158,9 +214,11 @@ async function validateGeminiKey(apiKey: string): Promise<{ valid: boolean; mess
 const DEFAULT_SETTINGS: CompanySettings = {
   delay: 0,
   mensajes_separados: false,
+  costo_hora_operador: 4000,
   mensaje_inicial: "Hola soy tu asistente inteligente, ¿En que puedo ayudarte?",
   temp_prompt_section: "",
   temp_prompt_expires_at: null,
+  sitio_web_activo: false,
 };
 
 const PRESET_COLORS = [
@@ -193,9 +251,18 @@ function slugify(text: string): string {
     .slice(0, 40);
 }
 
-export default function SettingsPage({ companyId, userRole, userId, isSimulating = false, tourActive = false, onTourComplete }: Props) {
+export default function SettingsPage({ companyId, companyName, userRole, userId, isSimulating = false, initialSection, tourActive = false, onTourComplete }: Props) {
   const isAdmin = userRole === "administrador" || userRole === "admin";
-  const [section, setSection] = useState<Section>(isAdmin ? "personalizar" : "cuenta");
+  const [section, setSection] = useState<Section>(
+    esSeccion(initialSection) ? initialSection : (isAdmin ? "personalizar" : "cuenta")
+  );
+
+  // Si ya estábamos en Configuración cuando pidieron otra sección —por ejemplo el
+  // aviso del canal caído estando acá—, el componente no se remonta y el estado
+  // inicial no se vuelve a evaluar. Este efecto cubre ese caso.
+  useEffect(() => {
+    if (esSeccion(initialSection)) setSection(initialSection);
+  }, [initialSection]);
   const [tourStep, setTourStep] = useState(0); // 0 = inactivo
   const [settings, setSettings] = useState<CompanySettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
@@ -385,12 +452,21 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
         table: "company_config",
         filter: `id=eq.${companyId}`,
       }, (payload) => {
-        const updated = payload.new as any;
+        const updated = (payload.new ?? {}) as any;
+        /*
+         * Solo se pisa lo que el evento trae de verdad.
+         *
+         * Antes esto hacía `updated.temp_prompt_section ?? ""`: si la columna no
+         * venía en el payload, el `??` la daba por vacía y el textarea se limpiaba
+         * solo al guardar. En la base el texto seguía estando —por eso volvía al
+         * recargar—, pero en pantalla parecía que se había perdido.
+         */
         setSettings(s => ({
           ...s,
-          temp_prompt_section: updated.temp_prompt_section ?? "",
-          temp_prompt_expires_at: updated.temp_prompt_expires_at ?? null,
-        }));
+          ...("temp_prompt_section" in updated ? { temp_prompt_section: updated.temp_prompt_section ?? "" } : {}),
+          ...("temp_prompt_expires_at" in updated ? { temp_prompt_expires_at: updated.temp_prompt_expires_at ?? null } : {}),
+          ...("temp_prompt_starts_at" in updated ? { temp_prompt_starts_at: updated.temp_prompt_starts_at ?? null } : {}),
+        } as any));
       })
       .subscribe();
 
@@ -521,17 +597,24 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     setLoading(true);
     const { data } = await supabase
       .from("company_config")
-      .select("delay, mensajes_separados, mensaje_inicial, temp_prompt_section, temp_prompt_expires_at")
+      .select("delay, mensajes_separados, mensaje_inicial, temp_prompt_section, temp_prompt_expires_at, temp_prompt_starts_at, costo_hora_operador, sitio_web_activo")
       .eq("id", companyId!)
       .single();
     if (data) {
       setSettings({
         delay: data.delay ?? DEFAULT_SETTINGS.delay,
         mensajes_separados: data.mensajes_separados ?? DEFAULT_SETTINGS.mensajes_separados,
+        costo_hora_operador: data.costo_hora_operador ?? DEFAULT_SETTINGS.costo_hora_operador,
         mensaje_inicial: data.mensaje_inicial ?? DEFAULT_SETTINGS.mensaje_inicial,
         temp_prompt_section: (data as any).temp_prompt_section ?? "",
         temp_prompt_expires_at: (data as any).temp_prompt_expires_at ?? null,
-      });
+        /*
+         * Sin esto, despues de recargar `starts_at` quedaba siempre en undefined y
+         * un contexto programado para manana se mostraba como ya activo.
+         */
+        temp_prompt_starts_at: (data as any).temp_prompt_starts_at ?? null,
+        sitio_web_activo: (data as any).sitio_web_activo ?? false,
+      } as any);
     }
     setLoading(false);
   };
@@ -540,10 +623,10 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     setLabelsLoading(true);
     const { data } = await (supabase as any)
       .from("ticket_labels")
-      .select("id, key, label, color, sort_order, is_initial, is_final")
+      .select("id, key, label, color, sort_order, is_initial, is_final, is_system")
       .eq("company_id", companyId)
       .order("sort_order", { ascending: true });
-    if (data) setTicketLabels(data.map((r: any) => ({ ...r, name: r.label, is_initial: r.is_initial, is_final: r.is_final })) as TicketLabel[]);
+    if (data) setTicketLabels(data.map((r: any) => ({ ...r, name: r.label, is_initial: r.is_initial, is_final: r.is_final, is_system: r.is_system })) as TicketLabel[]);
     setLabelsLoading(false);
   };
 
@@ -556,6 +639,18 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
         delay: settings.delay,
         mensajes_separados: settings.mensajes_separados,
         mensaje_inicial: settings.mensaje_inicial,
+        costo_hora_operador: settings.costo_hora_operador,
+        /*
+         * El texto del contexto temporal se guarda acá, y a propósito sin tocar
+         * `temp_prompt_expires_at` ni `temp_prompt_starts_at`.
+         *
+         * Antes este botón no lo incluía: editar el texto de un contexto ya activo
+         * y guardar no hacía nada, y la única forma de que quedara era "Reactivar",
+         * que de paso pisaba el vencimiento con la duración del desplegable —tres
+         * días quedaban en uno. Ahora editar y guardar conserva el vencimiento, y
+         * "Reactivar" queda solo para lo que dice: volver a correr el reloj.
+         */
+        temp_prompt_section: settings.temp_prompt_section || null,
       } as any)
       .eq("id", companyId);
     setSaving(false);
@@ -617,8 +712,8 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   };
 
   const deleteLabel = async (label: TicketLabel) => {
-    if (label.is_initial || label.is_final) {
-      toast({ title: "No se puede eliminar", description: "Las etiquetas de inicio y cierre no pueden eliminarse, solo editarse.", variant: "destructive" });
+    if (etiquetaFija(label)) {
+      toast({ title: "No se puede eliminar", description: "Las etiquetas de inicio, cierre y Técnicos son fijas: solo se pueden editar.", variant: "destructive" });
       return;
     }
     const { error } = await (supabase as any)
@@ -745,8 +840,12 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   const [wizardService, setWizardService] = useState<ServiceDef | null>(null);
   const [wizardKey, setWizardKey] = useState("");
   const [wizardUrl, setWizardUrl] = useState("");
+  const [wizardSubdomain, setWizardSubdomain] = useState("");
   const [wizardValidation, setWizardValidation] = useState<{ status: "idle" | "loading" | "ok" | "error"; message: string }>({ status: "idle", message: "" });
   const [savingWizard, setSavingWizard] = useState(false);
+  // Servicios "secretos" (key no legible) confirmados como configurados: service_name → { api_url, subdomain }.
+  // Se llena tras un guardado exitoso vía edge function, y desde loadIntegrations cuando el admin_isp sí puede leer la tabla.
+  const [configuredSecrets, setConfiguredSecrets] = useState<Record<string, { api_url: string | null; subdomain?: string }>>({});
 
   const getServiceKey = async (): Promise<string | null> => {
     const { data, error } = await supabase.functions.invoke("get-service-key");
@@ -754,12 +853,83 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     return data.service_key as string;
   };
 
+  /** Payload que comparten test-company-integration y save-company-integration */
+  const buildIntegrationPayload = (svc: ServiceDef) => {
+    const sub = wizardSubdomain.trim().toLowerCase();
+    return {
+      company_id: companyId,
+      service_name: svc.name,
+      api_url: svc.needsSubdomain && svc.subdomainHost
+        ? `https://${sub}.${svc.subdomainHost}`
+        : (wizardUrl.trim() || null),
+      api_key: wizardKey.trim(),
+      metadata: { type: svc.metaType ?? svc.name, ...(svc.needsSubdomain ? { subdomain: sub } : {}) },
+    };
+  };
+
+  /** Prueba la conexión contra el servicio antes de guardar. Devuelve true si es válida. */
+  const runConnectionTest = async (svc: ServiceDef): Promise<boolean> => {
+    if (!companyId || !wizardKey.trim()) return false;
+    setWizardValidation({ status: "loading", message: "Probando conexión..." });
+    const { data, error } = await supabase.functions.invoke("test-company-integration", {
+      body: buildIntegrationPayload(svc),
+    });
+    if (error) {
+      setWizardValidation({ status: "error", message: error.message ?? "No se pudo probar la conexión" });
+      return false;
+    }
+    if (data?.valid) {
+      setWizardValidation({ status: "ok", message: data?.message ?? "Conexión exitosa ✓" });
+      return true;
+    }
+    setWizardValidation({ status: "error", message: data?.message ?? "No se pudo conectar con el servicio" });
+    return false;
+  };
+
+  /** Estado "Configurado" persistente para servicios cuya key no se puede leer de vuelta. */
+  const loadIntegrationStatus = async () => {
+    if (!companyId) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) return;
+    const secretServices = Object.values(ALL_SERVICE_DEFS).filter(s => s.secret);
+    const results = await Promise.all(
+      secretServices.map(async svc => {
+        try {
+          const res = await fetch(
+            `${SUPABASE_URL_BASE}/functions/v1/get-integration-status?company_id=${encodeURIComponent(companyId)}&service_name=${encodeURIComponent(svc.name)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                apikey: import.meta.env.VITE_SUPABASE_ANON_KEY ?? "",
+              },
+            }
+          );
+          if (!res.ok) return null;
+          const data = await res.json();
+          if (!data?.configured) return null;
+          return { name: svc.name, api_url: data.api_url ?? null, subdomain: data?.metadata?.subdomain as string | undefined };
+        } catch {
+          return null;
+        }
+      })
+    );
+    setConfiguredSecrets(prev => {
+      const next = { ...prev };
+      for (const r of results) if (r) next[r.name] = { api_url: r.api_url, subdomain: r.subdomain };
+      return next;
+    });
+  };
+
   const loadIntegrations = async () => {
     if (!companyId) return;
     setIntegrationsLoading(true);
     const serviceKey = await getServiceKey();
     if (!serviceKey) {
-      toast({ title: "Error de acceso a integraciones", variant: "destructive" });
+      // Un administrador de empresa (no admin_isp) no puede leer la tabla con service_role.
+      // No es un error: solo no podemos listar las keys existentes. El estado "Configurado"
+      // se refleja de forma optimista tras guardar vía edge function.
+      setIntegrations([]);
       setIntegrationsLoading(false);
       return;
     }
@@ -768,7 +938,19 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
       { headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey } }
     );
     const data = await res.json();
-    setIntegrations(Array.isArray(data) ? data : []);
+    const list: CompanyIntegration[] = Array.isArray(data) ? data : [];
+    setIntegrations(list);
+    // Reflejar en configuredSecrets los servicios "secretos" que ya tienen api_key real guardada
+    // (nunca placeholders con metadata.pending_api_key, aunque la fila ya exista).
+    setConfiguredSecrets(prev => {
+      const next = { ...prev };
+      for (const intg of list) {
+        if (ALL_SERVICE_DEFS[intg.service_name]?.secret && hasRealKey(intg)) {
+          next[intg.service_name] = { api_url: intg.api_url, subdomain: (intg.metadata as any)?.subdomain };
+        }
+      }
+      return next;
+    });
     setIntegrationsLoading(false);
   };
 
@@ -833,6 +1015,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     setWizardService(null);
     setWizardKey("");
     setWizardUrl("");
+    setWizardSubdomain("");
     setWizardValidation({ status: "idle", message: "" });
   };
 
@@ -874,6 +1057,46 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
 
   const saveWizardIntegration = async () => {
     if (!wizardService || !wizardKey.trim() || !companyId) return;
+    const svc = wizardService;
+
+    // ── Patrón nuevo: edge function con JWT del usuario (admin de empresa o admin_isp) ──
+    if (svc.useEdgeSave) {
+      const sub = wizardSubdomain.trim().toLowerCase();
+      if (svc.needsSubdomain && !sub) return;
+      const payload = buildIntegrationPayload(svc);
+
+      setSavingWizard(true);
+      // Probar la conexión antes de guardar (si el usuario no la probó ya)
+      if (wizardValidation.status !== "ok") {
+        const ok = await runConnectionTest(svc);
+        if (!ok) { setSavingWizard(false); return; }
+      }
+
+      const { error } = await supabase.functions.invoke("save-company-integration", { body: payload });
+      setSavingWizard(false);
+
+      if (error) {
+        const status = (error as any)?.context?.status;
+        toast({
+          title: status === 403 ? "Sin permiso para esta empresa" : "Error al guardar",
+          description: status === 403
+            ? "Solo un administrador de la empresa puede configurar integraciones."
+            : (error.message ?? "Intenta de nuevo"),
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({ title: `✅ ${svc.label} conectada` });
+      if (svc.secret) {
+        setConfiguredSecrets(prev => ({ ...prev, [svc.name]: { api_url: payload.api_url, subdomain: svc.needsSubdomain ? sub : undefined } }));
+      }
+      resetWizard();
+      await loadIntegrations();
+      return;
+    }
+
+    // ── Patrón existente: REST directo con service_role (solo admin_isp) ──
     setSavingWizard(true);
     const serviceKey = await getServiceKey();
     if (!serviceKey) { setSavingWizard(false); return; }
@@ -907,7 +1130,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
   };
 
   useEffect(() => {
-    if (section === "integraciones" && isAdmin && companyId) loadIntegrations();
+    if (section === "integraciones" && isAdmin && companyId) { loadIntegrations(); loadIntegrationStatus(); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, companyId, isAdmin]);
 
@@ -1096,8 +1319,13 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
     { id: "personalizar", label: "Personalizar", icon: Palette, adminOnly: true },
     { id: "tickets", label: "Etiquetas", icon: Tag, adminOnly: true },
     { id: "alertas", label: "Alertas", icon: Bell, adminOnly: true },
+    { id: "planes", label: "Planes y precios", icon: Wifi, adminOnly: true },
+    { id: "valores", label: "Valores y políticas", icon: ScrollText, adminOnly: true },
+    /* "Sitio web" se mudó al panel izquierdo: es la cara pública de la empresa,
+       no un ajuste. Ver la vista "sitio-web" en Dashboard. */
     { id: "documentos", label: "Grilla de Canales", icon: FileSpreadsheet, adminOnly: true },
     { id: "integraciones", label: "Integraciones", icon: Plug, adminOnly: true },
+    { id: "equipo", label: "Equipo", icon: UserCog, adminOnly: true },
     { id: "cuenta", label: "Mi Cuenta", icon: User, adminOnly: false },
   ];
 
@@ -1105,17 +1333,17 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
 
   return (
     <>
-    <div className="flex h-full min-h-[600px] gap-0">
-      {/* Sidebar */}
-      <aside className="w-52 flex-shrink-0 border-r border-border/20 bg-card/30 p-4 flex flex-col gap-1">
-        <p className="text-[10px] uppercase font-bold tracking-widest text-muted-foreground/50 mb-3 px-2">
+    <div className="flex flex-col md:flex-row h-full min-h-[600px] gap-0">
+      {/* Navegación — móvil: pestañas deslizables arriba; desktop: sidebar lateral */}
+      <aside className="md:w-52 flex-shrink-0 border-b md:border-b-0 md:border-r border-border/20 bg-card/30 p-3 md:p-4 flex flex-row md:flex-col gap-1 overflow-x-auto md:overflow-visible [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <p className="hidden md:block text-[10px] uppercase font-bold tracking-widest text-muted-foreground/50 mb-3 px-2">
           Configuración
         </p>
         {visibleNav.map(item => (
           <button
             key={item.id}
             onClick={() => setSection(item.id)}
-            className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 w-full text-left
+            className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 shrink-0 whitespace-nowrap md:w-full text-left
               ${section === item.id
                 ? "bg-primary/10 text-primary border border-primary/20"
                 : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground border border-transparent"
@@ -1128,7 +1356,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
       </aside>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-8">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-8">
 
         {/* ── PERSONALIZAR ── */}
         {section === "personalizar" && isAdmin && (
@@ -1215,6 +1443,29 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                     checked={settings.mensajes_separados}
                     onCheckedChange={v => setSettings(s => ({ ...s, mensajes_separados: v }))}
                   />
+                </div>
+
+                {/* Cuánto vale esa hora — convierte el tiempo ahorrado en pesos */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-sm font-semibold">Costo de una hora de operador</Label>
+                    <HelpTip text="Lo que le cuesta a la empresa una hora de un operador: sueldo bruto más cotizaciones, seguros y vacaciones. Con esto el tiempo ahorrado se muestra también en pesos." />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Input
+                      type="number" min={0} max={1000000} step={100}
+                      value={settings.costo_hora_operador || ""}
+                      onChange={e => setSettings(s => ({ ...s, costo_hora_operador: parseInt(e.target.value) || 0 }))}
+                      className="h-9 w-32 text-sm rounded-xl"
+                      placeholder="4000"
+                    />
+                    <span className="text-[12px] text-muted-foreground/60">CLP por hora</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground/55 leading-relaxed max-w-xl">
+                    El panel muestra este valor junto al monto ahorrado, para que quien lo lea
+                    sepa de dónde sale. <strong className="text-foreground/70">Es un supuesto,
+                    no una medición</strong> — conviene dejarlo bajo antes que alto.
+                  </p>
                 </div>
 
                 {/* Mensaje inicial */}
@@ -1560,6 +1811,9 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                               {label.is_final && (
                                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-600 dark:text-violet-400 uppercase tracking-wider">CIERRE</span>
                               )}
+                              {!label.is_initial && !label.is_final && etiquetaFija(label) && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-600 dark:text-sky-400 uppercase tracking-wider">FIJA</span>
+                              )}
                             </div>
                             <span className="text-[10px] text-muted-foreground font-mono">{label.key}</span>
                           </div>
@@ -1582,9 +1836,9 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                             </button>
                             <button
                               onClick={() => deleteLabel(label)}
-                              disabled={!!(label.is_initial || label.is_final)}
+                              disabled={etiquetaFija(label)}
                               className="w-7 h-7 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                              title={label.is_initial || label.is_final ? "No se puede eliminar la etiqueta de inicio o cierre" : undefined}
+                              title={etiquetaFija(label) ? "Etiqueta fija: no se puede eliminar" : undefined}
                             >
                               <Trash2 className="w-3 h-3" />
                             </button>
@@ -1698,7 +1952,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
             <div>
               <h2 className="text-xl font-bold tracking-tight">Sistema de Alertas</h2>
               <p className="text-sm text-muted-foreground mt-1">
-                Números de WhatsApp que recibirán avisos automáticos del sistema.
+                Define cuándo se activa la alerta por reclamos y a quién se avisa.
               </p>
             </div>
 
@@ -1901,9 +2155,29 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                 )}
               </AnimatePresence>
             </div>
+
+            {/* Cuántos reclamos seguidos, y en cuánto tiempo, disparan el aviso a esos números. */}
+            {companyId && <ConfigDeteccionAlerta companyId={companyId} tarjeta />}
           </motion.div>
         )}
 
+        {/* ── PLANES Y PRECIOS ── */}
+        {section === "planes" && companyId && (
+          <motion.div key="planes" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl">
+            <PlanesPanel companyId={companyId} />
+          </motion.div>
+        )}
+
+        {/* ── VALORES Y POLÍTICAS ──
+            Los precios y reglas que lee el agente. Solo administradores: lo que se
+            escribe acá cambia lo que el agente le dice a los clientes. */}
+        {section === "valores" && companyId && (
+          <motion.div key="valores" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-3xl">
+            <ValoresEmpresa companyId={companyId} puedeEditar={isAdmin} />
+          </motion.div>
+        )}
+
+        {/* Si alguien entra por URL a una sección que su empresa no tiene habilitada */}
         {/* ── GRILLA DE CANALES ── */}
         {section === "documentos" && (
           <motion.div key="documentos" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl space-y-6">
@@ -2057,6 +2331,11 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
               </p>
             </div>
 
+            {/* Va acá y no en una sección propia: para las empresas sin el canal
+                contratado el panel no renderiza nada, y una entrada de menú que casi
+                siempre lleva a una pantalla vacía es peor que no tenerla. */}
+            <EvolutionCanalPanel companyId={companyId} puedeCambiarDefault={isAdmin} />
+
             {integrationsLoading ? (
               <div className="space-y-3">
                 {[1, 2].map(i => <div key={i} className="h-20 rounded-xl bg-muted/20 animate-pulse" />)}
@@ -2070,6 +2349,8 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                     const isEditing = editingIntegration === intg.id;
                     const showKey = showKeyMap[intg.id];
                     const defTyped = ALL_SERVICE_DEFS[intg.service_name];
+                    const isSecret = !!defTyped?.secret;
+                    const secretConfigured = isSecret && hasRealKey(intg);
                     return (
                       <motion.div
                         key={intg.id}
@@ -2094,7 +2375,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                             </div>
                             <p className="text-[11px] text-muted-foreground/60">{def?.description ?? ""}</p>
                           </div>
-                          {!isEditing && !isSystem && (
+                          {!isEditing && !isSystem && !isSecret && (
                             <button
                               onClick={() => startEditIntegration(intg)}
                               className="w-7 h-7 rounded-lg bg-secondary/60 text-muted-foreground hover:bg-secondary hover:text-foreground flex items-center justify-center transition-colors"
@@ -2106,17 +2387,31 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
 
                         {!isEditing && (
                           <div className="px-4 pb-3 border-t border-border/10 pt-2.5 space-y-1.5">
-                            <div className="flex items-center gap-2">
-                              <Key className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
-                              <span className="font-mono text-xs text-muted-foreground/70 flex-1">
-                                {showKey ? (intg.api_key ?? "—") : maskKey(intg.api_key)}
-                              </span>
-                              {intg.api_key && (
-                                <button onClick={() => setShowKeyMap(m => ({ ...m, [intg.id]: !m[intg.id] }))} className="text-muted-foreground/40 hover:text-muted-foreground transition-colors">
-                                  {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                                </button>
-                              )}
-                            </div>
+                            {isSecret ? (
+                              secretConfigured ? (
+                                <div className="flex items-center gap-2">
+                                  <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                                  <span className="text-xs text-muted-foreground/80 flex-1">Configurado</span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <AlertCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+                                  <span className="text-xs text-amber-600 dark:text-amber-400 flex-1">Pendiente de API key</span>
+                                </div>
+                              )
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <Key className="w-3 h-3 text-muted-foreground/40 flex-shrink-0" />
+                                <span className="font-mono text-xs text-muted-foreground/70 flex-1">
+                                  {showKey ? (intg.api_key ?? "—") : maskKey(intg.api_key)}
+                                </span>
+                                {intg.api_key && (
+                                  <button onClick={() => setShowKeyMap(m => ({ ...m, [intg.id]: !m[intg.id] }))} className="text-muted-foreground/40 hover:text-muted-foreground transition-colors">
+                                    {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             {intg.api_url && (
                               <p className="text-[11px] text-muted-foreground/50 font-mono truncate pl-5">{intg.api_url}</p>
                             )}
@@ -2155,6 +2450,46 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                       </motion.div>
                     );
                   })}
+
+                  {/* Secretos configurados que no pudimos leer de la tabla (admin de empresa sin service_role) */}
+                  {Object.entries(configuredSecrets)
+                    .filter(([name]) => !integrations.some(i => i.service_name === name))
+                    .map(([name, info]) => {
+                      const def = ALL_SERVICE_DEFS[name];
+                      return (
+                        <motion.div
+                          key={`secret-${name}`}
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, x: -16 }}
+                          className="rounded-xl border border-border/20 bg-card/40 overflow-hidden"
+                        >
+                          <div className="flex items-center gap-3 px-4 py-3">
+                            <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                              <Plug className="w-4 h-4 text-primary" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-sm font-semibold">{def?.label ?? name}</p>
+                                {(def as any)?.categoryLabel && (
+                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-primary/10 text-primary uppercase tracking-wider">{(def as any).categoryLabel}</span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-muted-foreground/60">{def?.description ?? ""}</p>
+                            </div>
+                          </div>
+                          <div className="px-4 pb-3 border-t border-border/10 pt-2.5 space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                              <span className="text-xs text-muted-foreground/80 flex-1">Configurado</span>
+                            </div>
+                            {info.api_url && (
+                              <p className="text-[11px] text-muted-foreground/50 font-mono truncate pl-5">{info.api_url}</p>
+                            )}
+                          </div>
+                        </motion.div>
+                      );
+                    })}
                 </AnimatePresence>
 
                 {/* ── Wizard: agregar integración ── */}
@@ -2183,7 +2518,7 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                         <div className="flex items-center gap-2 text-sm font-semibold">
                           {wizardService ? (
                             <>
-                              <button onClick={() => { setWizardService(null); setWizardKey(""); setWizardUrl(""); setWizardValidation({ status: "idle", message: "" }); }} className="text-muted-foreground hover:text-foreground transition-colors">
+                              <button onClick={() => { setWizardService(null); setWizardKey(""); setWizardUrl(""); setWizardSubdomain(""); setWizardValidation({ status: "idle", message: "" }); }} className="text-muted-foreground hover:text-foreground transition-colors">
                                 ← {wizardCategory ? SERVICE_CATALOG.find(c => c.key === wizardCategory)?.label : "Categoría"}
                               </button>
                               <span className="text-muted-foreground/40">›</span>
@@ -2226,14 +2561,19 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                         {wizardCategory && !wizardService && (
                           <div className="space-y-2">
                             {SERVICE_CATALOG.find(c => c.key === wizardCategory)?.services.map(svc => {
-                              const alreadyAdded = integrations.some(i => i.service_name === svc.name);
+                              // Para servicios "secretos", solo configuredSecrets (ya filtrado por hasRealKey) cuenta como configurado.
+                              const isConfigured = svc.secret
+                                ? !!configuredSecrets[svc.name]
+                                : integrations.some(i => i.service_name === svc.name);
+                              // Los servicios "secretos" (key no legible) se pueden reabrir para reemplazar la key.
+                              const locked = isConfigured && !svc.secret;
                               return (
                                 <button
                                   key={svc.name}
-                                  onClick={() => { if (!alreadyAdded) setWizardService(svc); }}
-                                  disabled={alreadyAdded}
+                                  onClick={() => { if (!locked) setWizardService(svc); }}
+                                  disabled={locked}
                                   className={`w-full flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all ${
-                                    alreadyAdded
+                                    locked
                                       ? "border-border/20 bg-muted/20 opacity-50 cursor-not-allowed"
                                       : "border-border/30 bg-background/60 hover:border-primary/40 hover:bg-primary/5"
                                   }`}
@@ -2244,13 +2584,15 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                                       {svc.badge && (
                                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">{svc.badge}</span>
                                       )}
-                                      {alreadyAdded && (
-                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground uppercase tracking-wider">Ya configurado</span>
+                                      {isConfigured && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground uppercase tracking-wider">
+                                          {svc.secret ? "Configurado · reemplazar" : "Ya configurado"}
+                                        </span>
                                       )}
                                     </div>
                                     <p className="text-[12px] text-muted-foreground/70 mt-0.5">{svc.description}</p>
                                   </div>
-                                  {!alreadyAdded && <span className="text-muted-foreground/40 text-sm mt-0.5">→</span>}
+                                  {!locked && <span className="text-muted-foreground/40 text-sm mt-0.5">→</span>}
                                 </button>
                               );
                             })}
@@ -2284,19 +2626,46 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                               </div>
                             )}
 
-                            {/* Validación */}
-                            <div className="flex items-center gap-2">
+                            {wizardService.needsSubdomain && (
+                              <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">Subdominio de {wizardService.label}</Label>
+                                <div className="flex items-center rounded-md border border-border/30 bg-background/80 overflow-hidden focus-within:ring-1 focus-within:ring-primary/40">
+                                  <span className="pl-3 pr-0.5 text-xs text-muted-foreground/50 select-none">https://</span>
+                                  <input
+                                    value={wizardSubdomain}
+                                    onChange={e => { setWizardSubdomain(e.target.value.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase()); setWizardValidation({ status: "idle", message: "" }); }}
+                                    placeholder={wizardService.subdomainPlaceholder}
+                                    className="flex-1 min-w-0 h-9 px-0.5 text-sm font-mono bg-transparent outline-none"
+                                  />
+                                  <span className="pr-3 pl-0.5 text-xs text-muted-foreground/50 select-none">.{wizardService.subdomainHost}</span>
+                                </div>
+                                <p className="text-[11px] text-muted-foreground/50">
+                                  El nombre de tu panel, sin <span className="font-mono">https://</span> ni <span className="font-mono">.{wizardService.subdomainHost}</span>
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Prueba de conexión / validación de key */}
+                            <div className="flex items-center gap-2 flex-wrap">
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="h-8 text-xs gap-1.5 border-border/30"
-                                onClick={validateWizardKey}
-                                disabled={!wizardKey.trim() || wizardValidation.status === "loading" || (wizardService.needsUrl && !wizardUrl.trim())}
+                                onClick={() => {
+                                  if (wizardService.useEdgeSave) void runConnectionTest(wizardService);
+                                  else void validateWizardKey();
+                                }}
+                                disabled={
+                                  !wizardKey.trim() ||
+                                  wizardValidation.status === "loading" ||
+                                  (wizardService.needsUrl && !wizardUrl.trim()) ||
+                                  (wizardService.needsSubdomain && !wizardSubdomain.trim())
+                                }
                               >
                                 {wizardValidation.status === "loading"
                                   ? <Loader2 className="w-3 h-3 animate-spin" />
                                   : <Check className="w-3 h-3" />}
-                                Validar key
+                                {wizardService.useEdgeSave ? "Probar conexión" : "Validar key"}
                               </Button>
                               {wizardValidation.status !== "idle" && wizardValidation.status !== "loading" && (
                                 <span className={`text-[12px] font-medium ${wizardValidation.status === "ok" ? "text-emerald-500" : "text-destructive"}`}>
@@ -2305,13 +2674,20 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
                               )}
                             </div>
 
+                            {wizardService.secret && (
+                              <p className="text-[11px] text-muted-foreground/60 flex items-start gap-1.5">
+                                <Key className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                                Por seguridad, la key no se puede ver una vez guardada. Si necesitas cambiarla, ingrésala de nuevo aquí.
+                              </p>
+                            )}
+
                             <div className="flex gap-2 justify-end pt-1 border-t border-primary/10">
                               <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={resetWizard}>Cancelar</Button>
                               <Button
                                 size="sm"
                                 className="h-8 text-xs gap-1.5"
                                 onClick={saveWizardIntegration}
-                                disabled={savingWizard || !wizardKey.trim() || (wizardService.needsUrl && !wizardUrl.trim())}
+                                disabled={savingWizard || !wizardKey.trim() || (wizardService.needsUrl && !wizardUrl.trim()) || (wizardService.needsSubdomain && !wizardSubdomain.trim())}
                               >
                                 {savingWizard ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                                 Guardar integración
@@ -2329,6 +2705,16 @@ export default function SettingsPage({ companyId, userRole, userId, isSimulating
         )}
 
         {/* ── MI CUENTA ── */}
+        {section === "equipo" && isAdmin && companyId && (
+          <motion.div
+            key="equipo"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <CompanyTeamManager companyId={companyId} companyName={companyName || ""} />
+          </motion.div>
+        )}
+
         {section === "cuenta" && (
           <motion.div
             key="cuenta"

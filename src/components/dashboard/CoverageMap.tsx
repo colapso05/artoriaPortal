@@ -42,12 +42,16 @@ import {
   MousePointerClick,
   RotateCw,
   ShieldAlert,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "@geoman-io/leaflet-geoman-free";
 import "@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css";
+import BuscadorMapa from "@/components/dashboard/BuscadorMapa";
+import { ATRIBUCION_MAPA, ZOOM_NATIVO_MAX, tilesSegunTema, aplicarTemaAlMapa } from "@/lib/mapBasemap";
 
 interface CoverageZone {
   id: string;
@@ -185,7 +189,12 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
-export default function CoverageMap({ companyId }: { companyId?: string }) {
+/* El fondo del mapa vive en un solo lugar: `src/lib/mapBasemap.ts`. Ahí están la
+   URL, la atribución, el zoom nativo y el porqué del proveedor (OpenStreetMap),
+   junto con lo que exige su política de uso. Para cambiar de proveedor sin
+   recompilar, define `window.ARTORIA_MAP_TILES` antes de cargar el bundle. */
+
+export default function CoverageMap({ companyId, tabInicial }: { companyId?: string; tabInicial?: "map" | "alerts" }) {
   const { theme, resolvedTheme } = useTheme();
   const currentTheme = theme === "system" ? resolvedTheme : theme;
   const isDark = currentTheme === "dark";
@@ -206,10 +215,22 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
   const [tempDrawingLayer, setTempDrawingLayer] = useState<any>(null);
 
   const [showTutorial, setShowTutorial] = useState(() => {
+    // En móvil no se auto-abre (tapa la pantalla chica y ya se vio en el onboarding de escritorio);
+    // queda disponible con el botón "Ver tutorial". En desktop, solo la primera vez.
+    if (typeof window !== 'undefined' && window.innerWidth < 768) return false;
     return localStorage.getItem('coverage_tutorial_done') === null;
   });
-  const [activeTab, setActiveTab] = useState("map");
+  // `tabInicial` permite entrar directo al sistema de alertas desde el inicio.
+  const [activeTab, setActiveTab] = useState<string>(tabInicial ?? "map");
   const [showAlertMap, setShowAlertMap] = useState(false);
+  // Ampliar el mapa a pantalla completa (sobre todo útil en móvil para ver zonas cómodamente)
+  const [mapFullscreen, setMapFullscreen] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => leafletMapRef.current?.invalidateSize(false), 80);
+    if (mapFullscreen) document.body.style.overflow = "hidden";
+    else document.body.style.overflow = "";
+    return () => { clearTimeout(id); document.body.style.overflow = ""; };
+  }, [mapFullscreen]);
 
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState("#2563eb");
@@ -234,13 +255,10 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
   const selectedZone = zones.find((z) => z.id === selectedZoneId) || null;
 
   useEffect(() => {
-    if (tileLayerRef.current) {
-      tileLayerRef.current.setUrl(
-        isDark
-          ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-          : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
-      );
-    }
+    // OSM solo publica la versión clara: el tema oscuro se logra oscureciendo el
+    // panel de tiles. Los polígonos y los marcadores no se tocan.
+    tileLayerRef.current?.setUrl(tilesSegunTema(isDark));
+    aplicarTemaAlMapa(leafletMapRef.current, isDark);
   }, [isDark]);
 
   useEffect(() => {
@@ -298,6 +316,13 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
     }
   }, [activeTab]);
 
+  // Reajustar el mapa al redimensionar/rotar la pantalla (importante en móvil: cambio de orientación).
+  useEffect(() => {
+    const onResize = () => leafletMapRef.current?.invalidateSize(false);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const extractPolygonPoints = useCallback((layer: any) => {
     const latLngs = layer.getLatLngs();
     const ring = Array.isArray(latLngs[0]) ? latLngs[0] : latLngs;
@@ -317,18 +342,10 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
       });
       leafletMapRef.current = map;
 
-      const tileL = L.tileLayer(
-        isDark
-          ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
-          : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-        {
-          attribution: '© CARTO',
-          maxZoom: 19,
-          subdomains: 'abcd',
-        }
-      );
+      const tileL = L.tileLayer(tilesSegunTema(isDark), { attribution: ATRIBUCION_MAPA, maxZoom: 19, maxNativeZoom: ZOOM_NATIVO_MAX });
       tileL.addTo(map);
       tileLayerRef.current = tileL;
+      aplicarTemaAlMapa(map, isDark);
 
       L.control.zoom({ position: "bottomright" }).addTo(map);
 
@@ -465,6 +482,10 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
     let query = supabase.from("company_config").select("id, company_name, alert_active, alert_message, alert_zones");
     if (companyId) {
       query = query.eq("id", companyId);
+    } else {
+      // Vista de admin: lista todas. Las archivadas quedan fuera; los NULL se
+      // nombran porque PostgREST los descarta con `eq` y con `neq` por igual.
+      query = query.or("status.eq.active,status.is.null");
     }
     const { data } = await query;
     if (data) {
@@ -767,10 +788,10 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
       </div>
 
       <div style={{ display: activeTab === 'map' ? 'flex' : 'none' }} className="flex-1 mt-0 m-0 min-h-0">
-        <div className="flex w-full h-full overflow-hidden rounded-2xl border border-border/10 mix-blend-normal relative">
+        <div className="flex flex-col md:flex-row w-full h-full overflow-hidden rounded-2xl border border-border/10 mix-blend-normal relative">
 
-          {/* Sidebar */}
-          <div className="flex w-[340px] flex-shrink-0 flex-col border-r border-border/10 glass z-10 shadow-2xl">
+          {/* Sidebar — móvil: panel superior scrolleable; desktop: columna lateral */}
+          <div className="flex w-full md:w-[340px] flex-shrink-0 flex-col max-h-[42vh] md:max-h-none overflow-y-auto md:overflow-visible border-b md:border-b-0 md:border-r border-border/10 glass z-10 shadow-2xl">
             <div className="border-b border-border/10 p-5 sticky top-0 bg-background/50 backdrop-blur-xl">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="flex items-center gap-2 text-sm font-bold">
@@ -980,8 +1001,26 @@ export default function CoverageMap({ companyId }: { companyId?: string }) {
           </div>
 
           {/* Map area: isolate crea stacking context propio para que Leaflet no tape el header */}
-          <div className="relative flex-1 bg-muted/10 overflow-hidden isolate">
+          <div className={`bg-muted/10 overflow-hidden isolate ${mapFullscreen ? "fixed inset-0 z-[70]" : "relative flex-1 min-h-[320px] md:min-h-0"}`}>
             <div ref={mapRef} className="absolute inset-0 z-0" />
+
+            {/* Buscar una zona por nombre o una dirección para ver si tiene cobertura. */}
+            <BuscadorMapa
+              zonas={zones}
+              mapaRef={leafletMapRef}
+              leafletRef={leafletRef}
+              onElegirZona={(id) => { const z = zones.find(x => x.id === id); if (z) focusZone(z); }}
+            />
+
+            {/* Ampliar / cerrar mapa a pantalla completa */}
+            <button
+              onClick={() => setMapFullscreen(f => !f)}
+              className="absolute left-3 bottom-3 z-[80] h-10 w-10 rounded-full bg-card/90 border border-border/40 shadow-lg backdrop-blur flex items-center justify-center pointer-events-auto hover:bg-card transition-colors"
+              aria-label={mapFullscreen ? "Cerrar pantalla completa" : "Ampliar mapa"}
+              title={mapFullscreen ? "Cerrar pantalla completa" : "Ampliar mapa"}
+            >
+              {mapFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
 
             {/* Capa de interfaces sobre el mapa */}
             <div className="absolute inset-0 pointer-events-none z-10">

@@ -154,7 +154,13 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
 
   const fetchCompanies = async () => {
     setLoading(true);
-    const { data: configs } = await supabase.from("company_config").select("*").order("company_name");
+    // Mismo criterio que el resto del portal: las archivadas no aparecen. Los NULL
+    // se nombran a proposito, porque PostgREST los descarta con `eq` y con `neq`.
+    const { data: configs } = await supabase
+      .from("company_config")
+      .select("*")
+      .or("status.eq.active,status.is.null")
+      .order("company_name");
     const validConfigs = configs || [];
     setCompanies(validConfigs);
 
@@ -216,6 +222,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
           { company_id: configData.id, key: "esperando_respuesta", label: "Esperando Respuesta", color: "#f59e0b", sort_order: 3, is_initial: false, is_final: false },
           { company_id: configData.id, key: "resuelto",            label: "Resuelto",            color: "#a855f7", sort_order: 4, is_initial: false, is_final: false },
           { company_id: configData.id, key: "cerrado",             label: "Cerrado",             color: "#64748b", sort_order: 5, is_initial: false, is_final: true  },
+          { company_id: configData.id, key: "tecnicos",            label: "TÉCNICOS",            color: "#ef4444", sort_order: 7, is_initial: false, is_final: false, is_system: true },
         ]);
       }
 
@@ -266,6 +273,7 @@ export default function AdminUserManager({ onSimulate, onSimulateUser }: { onSim
       { company_id: companyId, key: "esperando_respuesta", label: "Esperando Respuesta", color: "#f59e0b", sort_order: 3, is_initial: false, is_final: false },
       { company_id: companyId, key: "resuelto",            label: "Resuelto",            color: "#a855f7", sort_order: 4, is_initial: false, is_final: false },
       { company_id: companyId, key: "cerrado",             label: "Cerrado",             color: "#64748b", sort_order: 5, is_initial: false, is_final: true  },
+      { company_id: companyId, key: "tecnicos",            label: "TÉCNICOS",            color: "#ef4444", sort_order: 7, is_initial: false, is_final: false, is_system: true },
     ]);
     if (error) {
       toast({ title: "Error al crear etiquetas", description: error.message, variant: "destructive" });

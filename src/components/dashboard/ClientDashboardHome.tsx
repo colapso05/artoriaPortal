@@ -7,13 +7,18 @@ import {
   BarChart3, PieChart as PieChartIcon, CreditCard,
   Plus, Inbox, CalendarDays, ClipboardList, Zap,
   ChevronLeft, ChevronRight, DollarSign, Loader2,
+  PackageCheck,
 } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { es } from "date-fns/locale";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
   BarChart, Bar,
 } from "recharts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import MetricasCanal from "@/components/dashboard/MetricasCanal";
+import ResumenNegocio from "@/components/dashboard/ResumenNegocio";
 
 interface ClientDashboardProps {
   companyId: string | null;
@@ -23,10 +28,12 @@ interface ClientDashboardProps {
   userRole?: string;
   operatorRoles?: string[];
   onConversationClick?: (conversationId: string) => void;
-  onNavigateToTickets?: (status: string) => void;
+  /** Abre el Centro de Tickets. Con ticketId, ademas selecciona ese ticket:
+   *  sin eso quedaba abierto el que se hubiera mirado la vez anterior. */
+  onNavigateToTickets?: (status: string, ticketId?: string) => void;
   creditsEnabled?: boolean;
   onNavigateToCredits?: () => void;
-  onNavigateToConversations?: () => void;
+  onNavigateToConversations?: (analysisId?: string, convData?: any) => void;
   onNavigateToSchedule?: () => void;
 }
 
@@ -119,7 +126,10 @@ export default function ClientDashboardHome({
   const [allTicketsData, setAllTicketsData] = useState<any[]>([]);
   const [allConversationsData, setAllConversationsData] = useState<any[]>([]);
   const [labels, setLabels] = useState<any[]>([]);
-  const [timeRange, setTimeRange] = useState<"day" | "week" | "month" | "3months" | "all">("week");
+  const [problemConvs, setProblemConvs] = useState<any[]>([]);
+  /** Tickets de retiro cerrados por el técnico, a la espera de que un operador confirme. */
+  const [retiros, setRetiros] = useState<Array<{ id: string; title: string | null; customer_name: string | null; updated_at: string }>>([]);
+  const [timeRange, setTimeRange] = useState<"day" | "week" | "month" | "3months" | "all">("day");
   const [loading, setLoading] = useState(true);
   const [credits, setCredits] = useState<CompanyCredits | null>(null);
   const [ycloudBalance, setYcloudBalance] = useState<{ amount: number; currency: string } | null>(null);
@@ -187,18 +197,76 @@ export default function ClientDashboardHome({
     return () => { supabase.removeChannel(channel); };
   }, [companyId, creditsEnabled]);
 
+  /*
+   * Retiros esperando confirmación de un operador.
+   *
+   * Cuando un técnico cierra una cita de tipo "Retiro", su ticket queda en
+   * `en_espera` en lugar de `resuelto`: es el único caso en que el cierre final
+   * lo tiene que dar un operador, después de confirmar que el equipo retirado
+   * efectivamente llegó. Como para el técnico el flujo se ve igual que
+   * cualquier otro trabajo, si nadie mira el portal el ticket se queda ahí.
+   */
+  useEffect(() => {
+    if (!companyId) return;
+    let t: ReturnType<typeof setTimeout>;
+    const cargarRetiros = async () => {
+      const { data } = await (supabase as any)
+        .from("tickets")
+        .select("id, title, customer_name, updated_at")
+        .eq("company_id", companyId)
+        .eq("status", "en_espera")
+        .is("deleted_at", null)
+        .order("updated_at", { ascending: false })
+        .limit(20);
+      setRetiros(data ?? []);
+    };
+    cargarRetiros();
+    const ch = supabase
+      .channel(`home_retiros_${companyId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tickets", filter: `company_id=eq.${companyId}` }, () => {
+        // Agrupado: al cerrar un trabajo llegan varios cambios seguidos
+        // (nota, adjunto, estado) y no vale la pena consultar en cada uno.
+        clearTimeout(t); t = setTimeout(cargarRetiros, 400);
+      })
+      .subscribe();
+    return () => { clearTimeout(t); supabase.removeChannel(ch); };
+  }, [companyId]);
+
+  // Realtime: refrescar "Problemas del Agente IA" cuando cambia `reviewed`
+  // (el backend lo marca al cerrar un ticket Revisión IA, o al revisar desde el panel).
+  useEffect(() => {
+    if (!companyId) return;
+    let t: ReturnType<typeof setTimeout>;
+    const reloadProblems = async () => {
+      const { data } = await (supabase as any).rpc("get_problem_conversations", { p_company_id: companyId, p_only_unreviewed: true });
+      const probs = Array.isArray(data) ? data : [];
+      setProblemConvs(probs.filter((c: any) => c.bot_score == null || c.bot_score < 8));
+    };
+    const ch = supabase
+      .channel(`home_conv_analysis_${companyId}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversation_analysis", filter: `company_id=eq.${companyId}` }, () => {
+        clearTimeout(t); t = setTimeout(reloadProblems, 400);
+      })
+      .subscribe();
+    return () => { clearTimeout(t); supabase.removeChannel(ch); };
+  }, [companyId]);
+
 
   const loadData = async () => {
     if (!companyId) return;
     try {
-      const [allTickets, allConvos, rawLabels] = await Promise.all([
+      const [allTickets, allConvos, rawLabels, problemRes] = await Promise.all([
         supabase.from("tickets").select("category, created_at, status").eq("company_id", companyId),
         supabase.from("conversations").select("created_at").eq("company_id", companyId),
         (supabase as any).from("ticket_labels").select("*").eq("company_id", companyId).order("id"),
+        (supabase as any).rpc("get_problem_conversations", { p_company_id: companyId, p_only_unreviewed: true }),
       ]);
       setAllConversationsData(allConvos.data || []);
       setLabels(rawLabels.data || []);
       setAllTicketsData(allTickets.data || []);
+      // Regla: score >= 8 se considera buen rendimiento, no es un problema a revisar
+      const probs = Array.isArray(problemRes.data) ? problemRes.data : [];
+      setProblemConvs(probs.filter((c: any) => c.bot_score == null || c.bot_score < 8));
     } catch (e) {
       console.error("Error loading client dashboard:", e);
     } finally {
@@ -449,8 +517,11 @@ export default function ClientDashboardHome({
   const cardHeaderClass = "px-4 py-2.5 border-b border-border/20 flex items-center gap-2.5 flex-shrink-0";
   const cardIconClass = "w-6 h-6 rounded-lg flex items-center justify-center";
 
+  // El desplazamiento lo hace <main>, no este contenedor: asi la barra queda pegada
+  // al canto de la ventana en vez de flotando dentro del relleno del panel.
+  // `min-h-full` para que la rejilla siga ocupando la pantalla cuando sobra sitio.
   return (
-    <div className="flex flex-col h-full overflow-hidden gap-3 pt-1 pb-3 px-0">
+    <div className="flex flex-col min-h-full gap-3 pt-1 pb-3 px-0">
 
       {/* ── Header ── */}
       <div className="flex items-start justify-between flex-shrink-0">
@@ -482,6 +553,11 @@ export default function ClientDashboardHome({
         </Select>
       </div>
 
+      {/* ── Lo que aporta el agente ──
+          Va antes que los chips de tickets a propósito: los tickets son la operación
+          del día, esto es lo que el dueño mira para saber qué está comprando. */}
+      <ResumenNegocio companyId={companyId} />
+
       {/* ── KPI Chips ── */}
       <div className="relative flex-shrink-0 w-full">
         <div ref={chipsScrollRef} className="overflow-x-auto no-scrollbar">
@@ -489,7 +565,7 @@ export default function ClientDashboardHome({
             {statChips.map(chip => (
               <KpiChip key={chip.label} icon={chip.icon} label={chip.label} value={chip.value} hexColor={chip.hexColor} onClick={() => onNavigateToTickets?.(chip.filterKey)} />
             ))}
-            <KpiChip icon={MessageCircle} label="Conversaciones" value={conversationsCount.toLocaleString("es-CL")} hexColor="#10b981" subLabel="Totales" onClick={onNavigateToConversations} />
+            <KpiChip icon={MessageCircle} label="Conversaciones" value={conversationsCount.toLocaleString("es-CL")} hexColor="#10b981" subLabel="Totales" onClick={() => onNavigateToConversations()} />
             {creditsEnabled && credits && (
               <KpiChip icon={CreditCard} label="Créditos WA" value={(credits.balance ?? 0).toLocaleString("es-CL")}
                 hexColor={(credits.balance ?? 0) <= Math.max(100, Math.floor((credits.total_purchased ?? 0) * 0.1)) ? "#f59e0b" : "#8b5cf6"}
@@ -522,11 +598,14 @@ export default function ClientDashboardHome({
         </div>
       </div>
 
-      {/* ── Cuerpo principal: columna izquierda + columna derecha ── */}
-      <div className="flex gap-3 flex-1 min-h-0">
+      {/* ── Cuerpo principal — móvil: altura natural; desktop: dos columnas a pantalla.
+             El piso evita que el contenido de mas abajo aplaste estas tarjetas, pero
+             se queda en 420 px: con 560 una pantalla de portatil ya arrancaba con
+             barra de desplazamiento sin haber agregado nada. ── */}
+      <div className="flex flex-col md:flex-row gap-3 md:flex-1 md:min-h-[420px]">
 
         {/* ── Columna izquierda: gráfico área + fila inferior ── */}
-        <div className="flex-[2.5] flex flex-col gap-3 min-h-0 min-w-0">
+        <div className="flex flex-col gap-3 min-w-0 md:flex-[2.5] md:min-h-0">
 
           {/* Área chart */}
           <div className={`flex-shrink-0 h-[160px] flex flex-col ${cardClass}`}>
@@ -562,45 +641,58 @@ export default function ClientDashboardHome({
             </div>
           </div>
 
-          {/* Fila inferior: bar chart + pie chart */}
-          <div className="flex gap-3 flex-1 min-h-0">
+          {/* Fila inferior — móvil: se apila con altura fija; desktop: bar chart + pie chart lado a lado */}
+          <div className="flex flex-col md:flex-row gap-3 md:flex-1 md:min-h-0">
 
-            {/* Bar chart — categorías */}
-            <div className={`flex-[1.5] flex flex-col min-h-0 ${cardClass}`}>
+            {/* Problemas del Agente IA */}
+            <div className={`flex flex-col h-[320px] md:h-auto md:flex-[1.5] md:min-h-0 ${cardClass}`}>
               <div className={cardHeaderClass}>
-                <div className={`${cardIconClass} bg-amber-500/10`}><Ticket className="w-3 h-3 text-amber-500" /></div>
-                <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Tickets por categoría</span>
+                <div className={`${cardIconClass} bg-red-500/10`}><AlertTriangle className="w-3 h-3 text-red-500" /></div>
+                <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Problemas del Agente IA</span>
+                {problemConvs.length > 0 && (
+                  <Badge className="ml-auto text-[9px] px-1.5 py-0 bg-red-500/15 text-red-500 border border-red-500/30">
+                    {problemConvs.length} sin revisar
+                  </Badge>
+                )}
               </div>
-              <div className="flex-1 p-3 min-h-0">
-                {ticketsByCategory.length === 0 ? (
-                  <div className="h-full flex items-center justify-center">
-                    <p className="text-xs text-muted-foreground/60">Sin datos de categoría</p>
+              <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-1.5">
+                {problemConvs.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center gap-2">
+                    <CheckCircle2 className="w-7 h-7 text-emerald-500/40" />
+                    <p className="text-xs text-muted-foreground/60">Sin problemas pendientes</p>
                   </div>
                 ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={ticketsByCategory} layout="vertical" margin={{ top: 4, right: 36, left: 4, bottom: 4 }} barSize={13}>
-                      <XAxis type="number" hide />
-                      <YAxis dataKey="name" type="category" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11, fontWeight: 600 }} width={100} axisLine={false} tickLine={false} />
-                      <Tooltip content={<CustomTooltip />} cursor={{ fill: "hsl(var(--muted)/0.3)", radius: 4 }} />
-                      <Bar dataKey="value" name="Tickets" radius={[0, 5, 5, 0]} label={{ position: "right", fontSize: 11, fontWeight: 700, fill: "hsl(var(--foreground)/0.6)" }}>
-                        {ticketsByCategory.map((_, i) => (
-                          <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} fillOpacity={0.85} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                  problemConvs.slice(0, 6).map((conv: any) => {
+                    const score = conv.bot_score;
+                    const scoreColor = score === null ? "#94a3b8" : score >= 8 ? "#10b981" : score >= 5 ? "#f59e0b" : "#ef4444";
+                    return (
+                      <div key={conv.analysis_id} className="flex items-start gap-2 p-2 rounded-xl border border-border/30 bg-background/40 hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => onNavigateToConversations?.(conv.analysis_id, conv)}>
+                        <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[11px] font-extrabold text-white flex-shrink-0" style={{ background: scoreColor }}>
+                          {score ?? "?"}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className="text-[11px] font-semibold truncate">{conv.profile_name || conv.wa_id}</span>
+                            {conv.hallucination_detected && <span className="text-[9px] bg-red-500/15 text-red-500 border border-red-500/20 px-1 rounded-full">Alucinó</span>}
+                            {conv.failed_to_respond && <span className="text-[9px] bg-amber-500/15 text-amber-500 border border-amber-500/20 px-1 rounded-full">Sin respuesta</span>}
+                          </div>
+                          <p className="text-[10px] text-muted-foreground/60 line-clamp-1">{conv.summary}</p>
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
               <button
-                onClick={() => onNavigateToTickets?.("")}
-                className="flex-shrink-0 flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline px-3 pb-2.5"
+                onClick={() => onNavigateToConversations()}
+                className="flex-shrink-0 flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline px-3 pb-2.5 pt-1"
               >
-                Ver todas las categorías <ArrowRight className="w-3 h-3" />
+                Ver análisis completo <ArrowRight className="w-3 h-3" />
               </button>
             </div>
 
             {/* Distribución — horizontal */}
-            <div className={`flex-1 flex flex-col min-h-0 ${cardClass}`}>
+            <div className={`flex flex-col h-[300px] md:h-auto md:flex-1 md:min-h-0 ${cardClass}`}>
               <div className={cardHeaderClass}>
                 <div className={`${cardIconClass} bg-violet-500/10`}><PieChartIcon className="w-3 h-3 text-violet-500" /></div>
                 <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Distribución de Tickets</span>
@@ -658,10 +750,10 @@ export default function ClientDashboardHome({
         </div>
 
         {/* ── Columna derecha: Resumen Rápido + Accesos Rápidos ── */}
-        <div className="flex flex-col gap-3 min-h-0 w-[220px] flex-shrink-0">
+        <div className="flex flex-col gap-3 w-full md:w-[190px] lg:w-[220px] flex-shrink-0 md:min-h-0">
 
-          {/* Resumen Rápido / Saldo YCloud */}
-          <div className={`flex-[3] flex flex-col min-h-0 ${cardClass}`}>
+          {/* Resumen Rápido / Saldo YCloud — móvil: altura fija (compacta para Saldo) */}
+          <div className={`flex flex-col ${isDropp ? 'h-[168px]' : 'h-[240px]'} md:h-auto md:flex-[3] md:min-h-0 ${cardClass}`}>
             <div className={cardHeaderClass}>
               <div className={`${cardIconClass} bg-primary/10`}>
                 {isDropp ? (
@@ -688,6 +780,7 @@ export default function ClientDashboardHome({
                     </div>
                     <p className="text-2xl font-black text-emerald-500 tabular-nums tracking-tight leading-none">
                       {new Intl.NumberFormat("en-US", { style: "currency", currency: ycloudBalance.currency }).format(ycloudBalance.amount)}
+                      <span className="ml-1 text-[11px] font-bold tracking-wide text-muted-foreground/60">{ycloudBalance.currency}</span>
                     </p>
                     <p className="text-[10px] text-muted-foreground/80 font-bold uppercase tracking-wider mt-1.5">Saldo YCloud</p>
                     <p className="text-[8px] text-muted-foreground/45 leading-tight mt-0.5">Refresco automático (10 min)</p>
@@ -746,8 +839,50 @@ export default function ClientDashboardHome({
             )}
           </div>
 
-          {/* Accesos Rápidos */}
-          <div className="flex-[2] flex flex-col min-h-0 rounded-2xl overflow-hidden"
+          {/* Retiros por confirmar — ocupa el lugar de los Accesos Rápidos solo
+              cuando hay alguno pendiente. Una tarjeta que está vacía casi
+              siempre enseña a ignorar ese rincón; así el espacio se usa
+              justo cuando hay algo que hacer. */}
+          {retiros.length > 0 ? (
+          <div className={`flex flex-col h-[168px] md:h-auto md:flex-[2] md:min-h-0 rounded-2xl overflow-hidden bg-card border border-violet-500/30`}
+               style={{ boxShadow: '0 4px 20px 0 rgba(139,92,246,0.18)' }}>
+            <div className="px-3 py-2 flex items-center gap-2 flex-shrink-0 border-b border-violet-500/20 bg-violet-500/10">
+              <div className="w-5 h-5 rounded-lg flex items-center justify-center flex-shrink-0 bg-violet-500/20">
+                <PackageCheck className="w-3 h-3 text-violet-500" />
+              </div>
+              <span className="text-[10px] font-bold uppercase tracking-wide text-violet-500">Retiros por confirmar</span>
+              <span className="ml-auto text-[10px] font-black tabular-nums text-violet-500 bg-violet-500/15 rounded-full px-1.5 py-0.5 leading-none">
+                {retiros.length}
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto min-h-0 divide-y divide-border/20">
+              {retiros.map(r => (
+                <button
+                  key={r.id}
+                  onClick={() => onNavigateToTickets?.("en_espera", r.id)}
+                  className="w-full text-left px-3 py-2 hover:bg-violet-500/5 transition-colors"
+                >
+                  <p className="text-[11px] font-semibold text-foreground truncate leading-tight">
+                    {r.customer_name || r.title || "Sin cliente"}
+                  </p>
+                  <p className="text-[9px] text-muted-foreground mt-0.5 leading-tight">
+                    Retirado {formatDistanceToNow(new Date(r.updated_at), { addSuffix: true, locale: es })}
+                  </p>
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={() => onNavigateToTickets?.("en_espera")}
+              className="flex-shrink-0 px-3 py-1.5 flex items-center justify-center gap-1 text-[10px] font-bold text-violet-500 hover:bg-violet-500/10 transition-colors border-t border-violet-500/20"
+            >
+              Confirmar recepción <ArrowRight className="w-3 h-3" />
+            </button>
+          </div>
+          ) : (
+          /* Accesos Rápidos */
+          <div className="flex flex-col h-[128px] md:h-auto md:flex-[2] md:min-h-0 rounded-2xl overflow-hidden"
                style={{ background: 'linear-gradient(135deg, hsl(265,80%,35%), hsl(243,70%,28%))', boxShadow: '0 4px 20px 0 rgba(109,40,217,0.35)' }}>
             <div className="px-3 py-2 flex items-center gap-2 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
               <div className="w-5 h-5 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}>
@@ -760,7 +895,10 @@ export default function ClientDashboardHome({
                 { icon: Plus,          label: "Nuevo Ticket", action: () => onNavigateToTickets?.("") },
                 { icon: Inbox,         label: "Mi Bandeja",   action: onNavigateToConversations },
                 { icon: CalendarDays,  label: "Agenda",       action: onNavigateToSchedule },
-                { icon: ClipboardList, label: "Reportes",     action: undefined },
+                // "Reportes" no tenía acción: el botón se veía habilitado y no
+                // hacía nada. Lleva al listado completo de tickets, que es el
+                // reporte que de verdad existe hoy.
+                { icon: ClipboardList, label: "Reportes",     action: () => onNavigateToTickets?.("all") },
               ].map(({ icon: Ic, label: lbl, action }) => (
                 <button
                   key={lbl}
@@ -778,8 +916,18 @@ export default function ClientDashboardHome({
               ))}
             </div>
           </div>
+          )}
 
         </div>
+      </div>
+
+      {/* ── Bajo la primera pantalla ──
+          Acá abajo va lo que se consulta de vez en cuando, no lo que se mira a diario.
+          Antes esto estaba metido en la columna izquierda y le robaba altura a
+          "Problemas del Agente IA" y "Distribución de Tickets" hasta dejarlas sin
+          espacio. Como fila propia no le quita sitio a nadie. */}
+      <div className="flex-shrink-0">
+        <MetricasCanal companyId={companyId} />
       </div>
     </div>
   );

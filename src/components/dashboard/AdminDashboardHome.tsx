@@ -1,5 +1,7 @@
+import * as Sentry from "@sentry/react";
 import React, { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import PanelPlataforma from "@/components/dashboard/PanelPlataforma";
 import {
   Building2, Ticket, MessageCircle, Play,
   DollarSign, CalendarClock, FileWarning, CreditCard, AlertTriangle,
@@ -10,8 +12,15 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 
+import CostoIAEmpresas from "@/components/dashboard/CostoIAEmpresas";
+
 interface AdminDashboardHomeProps {
   onSimulate?: (companyId: string, companyName: string) => void;
+  /** Va al análisis de una conversación que fallo, simulando su empresa. */
+  onVerAnalisis?: (destino: { companyId: string; analysisId: string; waId: string }) => void;
+  onVerReportes?: () => void;
+  /** Abre la pantalla completa de Consumo de IA, con el detalle por modelo. */
+  onVerConsumoIA?: () => void;
 }
 
 interface CompanyRow {
@@ -20,13 +29,19 @@ interface CompanyRow {
   alert_active: boolean;
   ycloud_phone: string | null;
   status?: string;
+  /** Cuenta de la casa (Artoria). La marca el backend, no el nombre. */
+  es_interna?: boolean | null;
 }
 
 interface GlobalStats {
-  activeCompanies: number;
+  /** Empresas cliente, sin contar las cuentas de la casa. */
+  clientCompanies: number;
+  internalCompanies: number;
   monthlyRevenue: number;
   nextBillingLabel: string;
-  pendingReports: number;
+  /** Reportes de IA sin abrir y ya en curso. Juntos son el trabajo acumulado. */
+  reportsSinAbrir: number;
+  reportsEnCurso: number;
   pendingCredits: number;
 }
 
@@ -36,8 +51,10 @@ interface RevenueEntry {
 }
 
 interface TicketCounts {
+  /** Todo lo que no llegó a una etiqueta final. */
+  sinResolver: number;
+  /** Los que siguen en la etiqueta inicial: nadie los movió todavía. */
   abiertos: number;
-  enProgreso: number;
   alertas: number;
 }
 
@@ -54,52 +71,93 @@ function RevenueTooltip({ active, payload }: any) {
   );
 }
 
-function KpiChip({ icon: Icon, label, value, color }: {
+function KpiChip({ icon: Icon, label, value, color, detalle }: {
   icon: React.ElementType; label: string; value: string | number; color: string;
+  /** Segunda linea: sirve para que un numero no esconda lo que deja fuera. */
+  detalle?: string;
 }) {
   return (
     <div className="rounded-xl border border-border/20 bg-card/40 px-4 py-2.5 flex items-center gap-3">
       <Icon className={`w-4 h-4 flex-shrink-0 ${color}`} />
-      <div>
+      <div className="min-w-0">
         <p className="text-[10px] text-muted-foreground/50 font-semibold uppercase tracking-widest leading-none mb-0.5">{label}</p>
         <p className={`text-xl font-black leading-none ${color}`}>{value}</p>
+        {detalle && <p className="text-[10px] text-muted-foreground/50 font-medium leading-none mt-1 truncate">{detalle}</p>}
       </div>
     </div>
   );
 }
 
-export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomeProps) {
+export default function AdminDashboardHome({ onSimulate, onVerAnalisis, onVerReportes, onVerConsumoIA }: AdminDashboardHomeProps) {
   const [companies, setCompanies] = useState<CompanyRow[]>([]);
   const [companyUnread, setCompanyUnread] = useState<Record<string, number>>({});
   const [companyTickets, setCompanyTickets] = useState<Record<string, number>>({});
   const [revenueChartData, setRevenueChartData] = useState<RevenueEntry[]>([]);
-  const [ticketCounts, setTicketCounts] = useState<TicketCounts>({ abiertos: 0, enProgreso: 0, alertas: 0 });
+  const [ticketCounts, setTicketCounts] = useState<TicketCounts>({ sinResolver: 0, abiertos: 0, alertas: 0 });
   const [stats, setStats] = useState<GlobalStats>({
-    activeCompanies: 0,
+    clientCompanies: 0,
+    internalCompanies: 0,
     monthlyRevenue: 0,
     nextBillingLabel: "—",
-    pendingReports: 0,
+    reportsSinAbrir: 0,
+    reportsEnCurso: 0,
     pendingCredits: 0,
   });
   const [loading, setLoading] = useState(true);
+  /**
+   * Las cuentas de la casa y las archivadas quedan fuera por defecto.
+   *
+   * El tablero de arriba ya decía "2 clientes + 2 internas" y estaba bien; la lista
+   * de abajo las mezclaba sin ninguna marca, así que el admin veía cuatro empresas
+   * donde tiene dos. No se borran ni se esconden a la fuerza: hay un interruptor,
+   * porque a veces hace falta entrar a una interna a mirar algo.
+   */
+  const [verOcultas, setVerOcultas] = useState(false);
 
   const loadStats = async () => {
     try {
+      /*
+       * Esperar la sesion antes de consultar. El efecto corre al montar, y si el
+       * cliente de Supabase todavia no rehidrato el token, la peticion sale como
+       * `anon`: las tablas con RLS estricta devuelven cero filas sin error, y la
+       * tarjeta muestra "0 reportes" como si no hubiera trabajo pendiente. Las
+       * tablas con politica permisiva si responden, asi que el tablero se ve
+       * completo y solo esta parte queda en blanco.
+       */
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.warn("[admin] sin sesion al cargar el tablero: las consultas con RLS estricta van a volver vacias");
+        Sentry.captureMessage("Tablero admin cargado sin sesion", { level: "warning" });
+      }
+
       const [
         companiesRes,
         conversationsRes,
         ticketsRes,
+        labelsRes,
         billingRes,
         reportsRes,
         creditsRes,
       ] = await Promise.all([
-        supabase.from("company_config").select("id, company_name, alert_active, ycloud_phone, status"),
+        supabase.from("company_config").select("id, company_name, alert_active, ycloud_phone, status, es_interna"),
         supabase.from("conversations").select("company_id, unread_count").gt("unread_count", 0),
-        supabase.from("tickets").select("company_id, status")
-          .in("status", ["abierto", "en_progreso"])
-          .is("deleted_at", null),
+        /*
+         * Sin resolver = no está en una etiqueta final, y final lo define cada
+         * empresa en `ticket_labels`.
+         *
+         * Antes pedía `status IN ('abierto','en_progreso')` y se le escapaba todo
+         * lo que estuviera en una etiqueta propia —pagos, tecnicos, agendado,
+         * ventas— que igual es trabajo sin cerrar. En Dropp mostraba 4 donde había
+         * 15, y en Optve 45 donde había 60. Se traen los tickets no finales y el
+         * filtro fino por empresa se hace abajo, porque una etiqueta puede ser
+         * final en una empresa y no en otra.
+         */
+        supabase.from("tickets").select("company_id, status").is("deleted_at", null),
+        (supabase as any).from("ticket_labels").select("company_id, key, is_final"),
         (supabase as any).from("billing_config").select("company_id, amount, billing_day, billing_enabled"),
-        (supabase as any).from("agent_feedback").select("id", { count: "exact", head: true }).eq("status", "pendiente"),
+        // Antes solo contaba "pendiente" y dejaba fuera los que ya estaban en
+        // revision, o sea casi la mitad del trabajo acumulado.
+        (supabase as any).from("agent_feedback").select("status").neq("status", "resuelto"),
         (supabase as any).from("credit_transactions").select("id", { count: "exact", head: true })
           .in("payment_status", ["pending", "transfer_sent", "questioned"]),
       ]);
@@ -124,21 +182,35 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
       }
       setCompanyUnread(unreadMap);
 
-      // --- Tickets por empresa y por estado ---
+      /* --- Tickets sin resolver, por empresa ---
+       *
+       * Cada empresa decide qué etiqueta cierra un ticket, así que el corte se
+       * arma por empresa y no con una lista escrita acá. Las que todavía no
+       * configuraron etiquetas caen al par de siempre.
+       */
+      const finalesPorEmpresa: Record<string, Set<string>> = {};
+      const inicialPorEmpresa: Record<string, string> = {};
+      for (const l of (labelsRes.data as any[]) || []) {
+        if (l.is_final) (finalesPorEmpresa[l.company_id] ??= new Set()).add(l.key);
+        if (l.is_initial && !inicialPorEmpresa[l.company_id]) inicialPorEmpresa[l.company_id] = l.key;
+      }
+      const POR_DEFECTO = new Set(["resuelto", "cerrado"]);
+
       const ticketsMap: Record<string, number> = {};
+      let sinResolver = 0;
       let abiertos = 0;
-      let enProgreso = 0;
       for (const t of ticketsRes.data || []) {
         const cid = (t as any).company_id as string;
         const st = (t as any).status as string;
+        if ((finalesPorEmpresa[cid] ?? POR_DEFECTO).has(st)) continue;
         ticketsMap[cid] = (ticketsMap[cid] || 0) + 1;
-        if (st === "abierto") abiertos++;
-        else if (st === "en_progreso") enProgreso++;
+        sinResolver++;
+        if (st === (inicialPorEmpresa[cid] ?? "abierto")) abiertos++;
       }
       setCompanyTickets(ticketsMap);
       setTicketCounts({
+        sinResolver,
         abiertos,
-        enProgreso,
         alertas: companiesList.filter(c => c.alert_active).length,
       });
 
@@ -174,11 +246,30 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
         .sort((a: RevenueEntry, b: RevenueEntry) => b.amount - a.amount);
       setRevenueChartData(chartData);
 
+      const activas = companiesList.filter((c: any) => c.status === "active");
+      // Bandera del backend. Antes se adivinaba por el nombre y eso se iba a
+      // romper el dia que un cliente se llamara parecido.
+      const esInterna = (c: CompanyRow) => c.es_interna === true;
+      /*
+       * `agent_feedback` se lee directo de la tabla, asi que pasa por RLS. Si la
+       * politica no deja ver los reportes de otras empresas, la consulta no falla:
+       * devuelve cero filas y la tarjeta muestra "0 reportes sin resolver", que es
+       * indistinguible de no tener trabajo pendiente. Se avisa para que ese caso
+       * deje de ser invisible.
+       */
+      if ((reportsRes as any).error) {
+        Sentry.captureException((reportsRes as any).error, { tags: { area: "reportes-ia" } });
+        console.error("[reportes] no se pudo leer agent_feedback:", (reportsRes as any).error);
+      }
+      const reportes = (reportsRes.data ?? []) as Array<{ status: string }>;
+
       setStats({
-        activeCompanies: companiesList.filter((c: any) => c.status === "active").length,
+        clientCompanies: activas.filter(c => !esInterna(c)).length,
+        internalCompanies: activas.filter(c => esInterna(c)).length,
         monthlyRevenue,
         nextBillingLabel,
-        pendingReports: reportsRes.count || 0,
+        reportsSinAbrir: reportes.filter(r => r.status === "pendiente").length,
+        reportsEnCurso: reportes.filter(r => r.status !== "pendiente").length,
         pendingCredits: creditsRes.count || 0,
       });
     } catch (e) {
@@ -189,6 +280,15 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
   };
 
   useEffect(() => { loadStats(); }, []);
+
+  /*
+   * `status` puede venir sin definir en filas viejas: se trata como activa, porque
+   * esconder una empresa por un campo vacío sería peor que mostrar una de más.
+   */
+  const esArchivada = (c: CompanyRow) => c.status != null && c.status !== "active";
+  const esOculta = (c: CompanyRow) => c.es_interna === true || esArchivada(c);
+  const empresasVisibles = verOcultas ? companies : companies.filter(c => !esOculta(c));
+  const ocultas = companies.length - companies.filter(c => !esOculta(c)).length;
 
   if (loading) {
     return (
@@ -210,33 +310,47 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden gap-3 pt-1">
+    <div className="flex flex-col min-h-full gap-3 pt-1 pb-3">
 
-      {/* KPI Strip */}
-      <div className="grid grid-cols-5 gap-2 flex-shrink-0">
-        <KpiChip icon={Building2}     label="Empresas activas"    value={stats.activeCompanies}                              color="text-blue-500" />
+      {/* KPI Strip — móvil: 2 por fila; desktop: los 5 en línea */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 flex-shrink-0">
+        <KpiChip icon={Building2}     label="Clientes"            value={stats.clientCompanies}                              color="text-blue-500"
+                 detalle={stats.internalCompanies > 0 ? `+ ${stats.internalCompanies} internas` : undefined} />
         <KpiChip icon={DollarSign}    label="Facturación mensual" value={`$${stats.monthlyRevenue.toLocaleString("es-CL")}`} color="text-emerald-500" />
         <KpiChip icon={CalendarClock} label="Próxima factura"     value={stats.nextBillingLabel}                             color="text-violet-500" />
-        <KpiChip icon={FileWarning}   label="Reportes pendientes" value={stats.pendingReports}                               color="text-amber-500" />
+        <KpiChip icon={FileWarning}   label="Reportes sin resolver" value={stats.reportsSinAbrir + stats.reportsEnCurso}      color="text-amber-500"
+                 detalle={`${stats.reportsSinAbrir} sin abrir · ${stats.reportsEnCurso} en curso`} />
         <KpiChip icon={CreditCard}    label="Créditos pendientes" value={stats.pendingCredits}                               color="text-primary" />
       </div>
 
-      {/* Body */}
-      <div className="flex gap-3 flex-1 min-h-0">
+      {/* Body — móvil: altura natural con scroll de página; desktop: dos columnas a pantalla */}
+      <div className="flex flex-col md:flex-row gap-3 md:flex-1 md:min-h-[380px]">
 
         {/* Izquierda: tabla de empresas */}
-        <div className="flex-[3] flex flex-col min-h-0 rounded-2xl border border-border/20 bg-card/40 backdrop-blur overflow-hidden">
+        <div className="flex flex-col h-[360px] md:h-auto md:flex-[3] md:min-h-0 rounded-2xl border border-border/20 bg-card/40 backdrop-blur overflow-hidden">
           <div className="px-4 py-3 border-b border-border/10 flex items-center justify-between flex-shrink-0">
             <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground/60">Empresas</span>
-            <span className="text-[10px] text-muted-foreground/40">{companies.length} registradas</span>
+            <div className="flex items-center gap-2.5">
+              <span className="text-[10px] text-muted-foreground/40">
+                {empresasVisibles.length} {empresasVisibles.length === 1 ? "empresa" : "empresas"}
+              </span>
+              {ocultas > 0 && (
+                <button
+                  onClick={() => setVerOcultas(v => !v)}
+                  className="text-[10px] font-semibold text-primary/80 hover:text-primary hover:underline"
+                >
+                  {verOcultas ? "ocultar internas" : `ver ${ocultas} ${ocultas === 1 ? "oculta" : "ocultas"}`}
+                </button>
+              )}
+            </div>
           </div>
           <div className="overflow-y-auto flex-1 p-2 space-y-1">
-            {companies.length === 0 && (
+            {empresasVisibles.length === 0 && (
               <div className="h-full flex items-center justify-center">
                 <p className="text-xs text-muted-foreground/40">Sin empresas</p>
               </div>
             )}
-            {companies.map(company => (
+            {empresasVisibles.map(company => (
               <div
                 key={company.id}
                 className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 border border-transparent hover:border-border/20 transition-all group cursor-pointer"
@@ -244,6 +358,12 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
               >
                 {/* Indicador salud */}
                 <div className={`w-2 h-2 rounded-full flex-shrink-0 ${company.alert_active ? "bg-red-500 animate-pulse" : "bg-emerald-500/50"}`} />
+                {/* Con el interruptor puesto hay que poder distinguirlas de un vistazo. */}
+                {esOculta(company) && (
+                  <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-px rounded bg-muted/60 text-muted-foreground/70 flex-shrink-0">
+                    {company.es_interna ? "interna" : "archivada"}
+                  </span>
+                )}
 
                 {/* Nombre */}
                 <span className="flex-1 text-sm font-semibold truncate">{company.company_name}</span>
@@ -275,63 +395,55 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
         </div>
 
         {/* Derecha: gráficos */}
-        <div className="flex-[2] flex flex-col gap-3 min-h-0">
+        <div className="flex flex-col gap-3 md:flex-[2] md:min-h-0">
 
           {/* Gráfico: ingresos por empresa */}
-          <div className="flex-[3] flex flex-col min-h-0 rounded-2xl border border-border/20 bg-card/40 backdrop-blur overflow-hidden">
+          <div className="flex flex-col h-[260px] md:h-auto md:flex-[3] md:min-h-0 rounded-2xl border border-border/20 bg-card/40 backdrop-blur overflow-hidden">
             <div className="px-4 py-3 border-b border-border/10 flex items-center justify-between flex-shrink-0">
               <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground/60">Ingresos por empresa</span>
               <span className="text-[10px] text-muted-foreground/40">mensual</span>
             </div>
-            <div className="flex-1 p-3 min-h-0">
+            {/*
+              * Filas con el monto escrito, no barras.
+              * Con $65.000 y $1.100 en el mismo grafico, la barra chica mide 1,7% de
+              * la grande y desaparece. La barra de fondo queda como referencia visual,
+              * pero lo que se lee es el numero.
+              */}
+            <div className="flex-1 p-3 min-h-0 overflow-y-auto">
               {revenueChartData.length === 0 ? (
                 <div className="h-full flex items-center justify-center">
                   <p className="text-xs text-muted-foreground/40">Sin datos de facturación</p>
                 </div>
               ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    layout="vertical"
-                    data={revenueChartData}
-                    margin={{ top: 2, right: 48, left: 4, bottom: 2 }}
-                    barSize={14}
-                  >
-                    <XAxis
-                      type="number"
-                      hide
-                      domain={[0, (dataMax: number) => Math.round(dataMax * 1.15)]}
-                    />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={88}
-                      tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))", fontWeight: 600 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <Tooltip
-                      content={<RevenueTooltip />}
-                      cursor={{ fill: "rgba(255,255,255,0.04)", radius: 6 }}
-                    />
-                    <Bar dataKey="amount" radius={[0, 6, 6, 0]} label={{
-                      position: "right",
-                      formatter: (v: number) => `$${(v / 1000).toFixed(0)}k`,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      fill: "hsl(var(--muted-foreground))",
-                    }}>
-                      {revenueChartData.map((_, i) => (
-                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} fillOpacity={0.85} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                <div className="space-y-2">
+                  {revenueChartData.map((fila, i) => {
+                    const total = revenueChartData.reduce((a, r) => a + (r.amount || 0), 0);
+                    const parte = total > 0 ? (fila.amount / total) * 100 : 0;
+                    const color = CHART_COLORS[i % CHART_COLORS.length];
+                    return (
+                      <div key={fila.name} className="rounded-xl border border-border/20 bg-background/40 px-3 py-2">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <span className="text-[12px] font-bold truncate">{fila.name}</span>
+                          <span className="text-[14px] font-black tabular-nums whitespace-nowrap" style={{ color }}>
+                            ${fila.amount.toLocaleString("es-CL")}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 rounded-full bg-muted/40 overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${Math.max(parte, 1.5)}%`, backgroundColor: color }} />
+                        </div>
+                        <p className="text-[10px] text-muted-foreground/50 mt-1 tabular-nums">
+                          {parte.toFixed(1)}% de la facturación
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>
 
           {/* Mini-panel: estado tickets + alertas */}
-          <div className="flex-[2] rounded-2xl border border-border/20 bg-card/40 backdrop-blur overflow-hidden flex flex-col">
+          <div className="h-[130px] md:h-auto md:flex-[2] md:min-h-0 rounded-2xl border border-border/20 bg-card/40 backdrop-blur overflow-hidden flex flex-col">
             <div className="px-4 py-3 border-b border-border/10 flex-shrink-0">
               <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground/60">Estado actual</span>
             </div>
@@ -341,8 +453,8 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
                 <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
                   <Ticket className="w-4.5 h-4.5 text-amber-500" />
                 </div>
-                <p className="text-2xl font-black text-amber-500 leading-none">{ticketCounts.abiertos}</p>
-                <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider font-semibold">Abiertos</p>
+                <p className="text-2xl font-black text-amber-500 leading-none">{ticketCounts.sinResolver}</p>
+                <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider font-semibold">Sin resolver</p>
               </div>
 
               <div className="w-px h-10 bg-border/20" />
@@ -351,8 +463,8 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
                 <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
                   <Ticket className="w-4.5 h-4.5 text-blue-500" />
                 </div>
-                <p className="text-2xl font-black text-blue-500 leading-none">{ticketCounts.enProgreso}</p>
-                <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider font-semibold">En progreso</p>
+                <p className="text-2xl font-black text-blue-500 leading-none">{ticketCounts.abiertos}</p>
+                <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider font-semibold">Sin tocar</p>
               </div>
 
               <div className="w-px h-10 bg-border/20" />
@@ -370,6 +482,23 @@ export default function AdminDashboardHome({ onSimulate }: AdminDashboardHomePro
 
         </div>
       </div>
+
+      {/* ── Lo que cuesta operar cada empresa ──
+          Va pegado a "Ingresos por empresa" porque las dos cifras se leen juntas:
+          lo que entra por una empresa y lo que cuesta atenderla. La pantalla de
+          Consumo de IA queda para el detalle por modelo y las tarifas. */}
+      <CostoIAEmpresas onVerDetalle={onVerConsumoIA} />
+
+      {/* ── Producto: como esta funcionando la IA y cuanto cuesta operarla ──
+          Va debajo de la administracion del negocio porque es lo que se revisa a
+          diario; lo de arriba se consulta cuando toca facturar. */}
+      <PanelPlataforma
+        /* Las mismas que la lista de al lado: si el admin oculta las internas, las
+           métricas de abajo tampoco deberían contarlas. */
+        empresas={empresasVisibles.map(c => ({ id: c.id, company_name: c.company_name }))}
+        onVerAnalisis={onVerAnalisis}
+        onVerReportes={onVerReportes}
+      />
     </div>
   );
 }

@@ -13,7 +13,6 @@ interface Report {
   id: string;
   created_at: string;
   error_type: string;
-  description: string;
   status: string;
   admin_response: string | null;
   resolved_at: string | null;
@@ -203,8 +202,9 @@ export default function AdminAgentReports({ currentUserId, onOpenConversation }:
                       </span>
                       <StatusBadge status={r.status} />
                     </div>
-                    {r.description && (
-                      <p className="text-[11px] text-muted-foreground line-clamp-2 leading-snug">{r.description}</p>
+                    {/* No hay columna `description`: el detalle es lo que el agente contesto mal. */}
+                    {r.wrong_response && (
+                      <p className="text-[11px] text-muted-foreground line-clamp-2 leading-snug">{r.wrong_response}</p>
                     )}
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[10px] text-muted-foreground/60">{formatDate(r.created_at)}</span>
@@ -318,16 +318,6 @@ export default function AdminAgentReports({ currentUserId, onOpenConversation }:
                     <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">Lo que debió hacer</p>
                     <div className="bg-blue-500/5 border border-blue-500/15 rounded-xl p-4 text-[12px] leading-relaxed text-foreground/80">
                       {selected.expected_response}
-                    </div>
-                  </div>
-                )}
-
-                {/* Description */}
-                {selected.description && (
-                  <div className="space-y-2">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">Descripción adicional</p>
-                    <div className="bg-secondary/20 rounded-xl p-4 text-[12px] leading-relaxed border border-border/20">
-                      {selected.description}
                     </div>
                   </div>
                 )}

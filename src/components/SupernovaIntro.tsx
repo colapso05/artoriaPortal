@@ -7,7 +7,7 @@ const CYAN = "#22d3ee";
 
 export function SupernovaIntro({ onComplete }: { onComplete: () => void }) {
   useEffect(() => {
-    const t = setTimeout(onComplete, 2200);
+    const t = setTimeout(onComplete, 1500);
     return () => clearTimeout(t);
   }, [onComplete]);
 

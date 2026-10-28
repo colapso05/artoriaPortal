@@ -32,8 +32,22 @@ export default function ChangePasswordScreen({ userId, onComplete }: ChangePassw
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } else {
-      await supabase.from("profiles").update({ must_change_password: false }).eq("user_id", userId);
-      toast({ title: "Contraseña actualizada" });
+      // Si esta marca no se limpia, la pantalla vuelve a salir en cada ingreso
+      // aunque la contraseña sí haya cambiado: por eso se avisa en vez de callar.
+      const { error: flagError } = await supabase
+        .from("profiles")
+        .update({ must_change_password: false })
+        .eq("user_id", userId);
+
+      if (flagError) {
+        console.error("[ChangePasswordScreen] No se pudo limpiar must_change_password:", flagError);
+        toast({
+          title: "Contraseña actualizada",
+          description: "Puede que se te vuelva a pedir al entrar. Avísanos si pasa.",
+        });
+      } else {
+        toast({ title: "Contraseña actualizada" });
+      }
       onComplete();
     }
     setLoading(false);

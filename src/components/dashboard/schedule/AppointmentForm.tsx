@@ -32,6 +32,11 @@ export interface AppointmentPrefill {
   address?: string;
   phone?: string;
   conversationId?: string;
+  /** Ticket que origina la cita. Es el vínculo exacto que después permite volver
+   *  desde la agenda al ticket sin adivinar cuál de la conversación es. */
+  ticketId?: string;
+  /** Nota del caso, para arrancar "Notas para el técnico" con lo ya escrito. */
+  notes?: string;
 }
 
 interface Props {
@@ -154,7 +159,10 @@ export default function AppointmentForm({
       setDate(defaultDate || format(new Date(), 'yyyy-MM-dd'));
       setTime(defaultTime || '08:00');
       setDuration(60);
-      setNotes('');
+      /* Arranca con la nota del caso en vez de vacío: el operador ya escribió ahí
+         de qué se trata, y copiarlo a mano era el paso que se saltaba. Queda
+         editable, así que puede recortarlo o agregarle lo que falte. */
+      setNotes(prefill?.notes || '');
       setStatus('pendiente');
     }
     setCustomDuration(false);
@@ -301,7 +309,11 @@ export default function AppointmentForm({
       if (error) { toast({ title: 'Error al guardar', description: error.message, variant: 'destructive' }); }
       else       { toast({ title: 'Cita actualizada ✓' }); onSaved(); onClose(); }
     } else {
-      const { error } = await (supabase as any).from('appointments').insert(payload);
+      // ticket_id solo se escribe al crear. Va fuera de payload a propósito: el
+      // update de arriba comparte ese objeto y, si lo incluyera, sobrescribiría
+      // con null el vínculo que la cita ya tuviera al editarla desde la agenda.
+      const { error } = await (supabase as any).from('appointments')
+        .insert({ ...payload, ticket_id: prefill?.ticketId || null });
       if (error) { toast({ title: 'Error al crear cita', description: error.message, variant: 'destructive' }); }
       else {
         toast({ title: forceEnEspera ? '⏳ Cita en espera creada' : '¡Cita agendada! 📅' });

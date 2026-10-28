@@ -3,14 +3,28 @@ import * as Sentry from "@sentry/react";
 import App from "./App.tsx";
 import "./index.css";
 
-// ── Monitoreo de errores JS — GlitchTip (self-hosted en errors.artoria.cl) ────
-// Compatible con @sentry/react. DSN es público por diseño (va en el bundle del cliente).
+// ── Monitoreo de errores JS — compatible con GlitchTip / Sentry ──────────────
+//
+// El servidor que recibia esto (errors.artoria.cl) se dio de baja: no hay contenedor
+// y el dominio no responde. Con el DSN quemado en el codigo, cada captureException
+// intentaba una conexion que fallaba y ensuciaba la consola justo encima del error
+// que uno queria leer.
+//
+// Ahora el DSN viene de VITE_SENTRY_DSN. Sin esa variable, Sentry queda inerte: no
+// abre conexiones y no imprime nada, pero los captureException repartidos por el
+// portal siguen compilando y no hay que tocarlos. Si algun dia vuelve a levantarse
+// GlitchTip, se define la variable, se abre el CSP para ese dominio, y revive sin
+// cambiar una linea de codigo.
+//
+// El DSN es publico por diseno: va en el bundle del cliente.
+const DSN_ERRORES = import.meta.env.VITE_SENTRY_DSN as string | undefined;
+
 Sentry.init({
-  dsn: "https://7a1c87792ef24d08add417af0489a880@errors.artoria.cl/1",
+  dsn: DSN_ERRORES || undefined,
   environment: import.meta.env.PROD ? "production" : "development",
 
-  // Solo activo en producción — en desarrollo local no genera ruido en el panel
-  enabled: import.meta.env.PROD,
+  // Sin servidor configurado no se activa ni en produccion.
+  enabled: import.meta.env.PROD && !!DSN_ERRORES,
 
   // Captura el 10% de sesiones para performance — suficiente para detectar cuellos de botella
   tracesSampleRate: 0.1,

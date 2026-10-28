@@ -1,5 +1,21 @@
-import { useState, useEffect, useRef, useCallback, useMemo, Suspense, lazy } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, Suspense, lazy } from "react";
 const ScheduleTab = lazy(() => import("./schedule/ScheduleTab"));
+
+const sinTildes = (v: string) =>
+  v.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+
+/**
+ * La etiqueta de ticket "Técnicos", si la empresa todavía la tiene.
+ *
+ * Dejó de ser un estado de ticket: un técnico escribiendo no es un caso que
+ * haya que resolver y cerrar. Pero las conversaciones que ya quedaron marcadas
+ * así siguen ahí, así que la etiqueta se reconoce para dos cosas: esconderla de
+ * donde ya no corresponde —los filtros normales y el selector de estado— y
+ * seguir incluyendo esos chats bajo el filtro nuevo.
+ */
+const esEtiquetaTecnicos = (l: { key: string; name: string }) =>
+  sinTildes(l.key) === "tecnicos" || sinTildes(l.name) === "tecnicos";
+import * as Sentry from "@sentry/react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { getShortcuts, type Shortcut } from "@/components/dashboard/ShortcutsManager";
@@ -16,14 +32,42 @@ import {
   Phone, FileText, CheckCheck, Check, Clock,
   Ticket, User, Info, AlertCircle, XCircle, MessageCircle, X, Loader2, Download, Hand, Forward, SlidersHorizontal, Menu,
   ChevronDown, Copy, MapPin, Flame, StickyNote, CalendarClock, Plus, MessageSquarePlus,
-  Calendar, CalendarCheck, RefreshCw,
+  Calendar, CalendarCheck, RefreshCw, Power, Wifi, MoreVertical, Pencil, Trash2,
 } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { format, isToday, isYesterday, parseISO } from "date-fns";
 import { es } from "date-fns/locale";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CreateTicketDialog } from "./CreateTicketDialog";
+import PanelTecnico from "./PanelTecnico";
+import { useTecnicos } from "@/hooks/useTecnicos";
+import { MediaLightbox, type LightboxMedia } from "@/components/ui/MediaLightbox";
+import { PdfPreview } from "@/components/ui/PdfPreview";
+import { OnuPanel } from "@/components/dashboard/OnuPanel";
+import { useOnuSignal } from "@/hooks/useOnuSignal";
 import { CustomerTicketsSearch } from "./CustomerTicketsSearch";
+import { ControlPropiedadCaso, ChipDueno } from "./ControlPropiedadCaso";
+import { casoTomar, casoLiberar, casoTransferir, casoAbandonado, type CasoResultado } from "@/lib/casos";
+import { useOperadores, mapaOperadores } from "@/hooks/useOperadores";
+import { DialogoVeredicto } from "@/components/dashboard/ConversationsAnalytics";
+import { useCanalSalida } from "@/hooks/useCanalSalida";
+import { enviarPorCanal, editarMensajeEvolution, borrarMensajeEvolution, type CuerpoEnvio, type Proveedor, type ResultadoEnvio } from "@/lib/canalSalida";
+
+/**
+ * Estados que dan por terminado un ticket. Todo lo demás (En Proceso, Agendado,
+ * Espera de Agenda, Revisión IA, …) significa que el ticket SIGUE ABIERTO y debe
+ * conservar todas sus funcionalidades.
+ *
+ * Se incluyen 'resuelto'/'cerrado' como piso fijo para que el criterio sea correcto
+ * incluso si `ticket_labels` todavía no terminó de cargar.
+ */
+const getFinalStatuses = (labels: Array<{ key: string; is_final?: boolean }>) =>
+  new Set<string>(['resuelto', 'cerrado', ...labels.filter(l => l.is_final).map(l => l.key)]);
 
 interface Conversation {
   id: string;
@@ -42,6 +86,8 @@ interface Conversation {
   status: 'abierto' | 'en_progreso' | 'cerrado'; // Virtual/Infered field
   match_content?: string; // For search results
   priority?: 'alta' | 'media' | 'baja' | null;
+  /** Última vez que el cliente escribió desde el chat web (artoria.cl/soporte). */
+  web_activo_en?: string | null;
 }
 
 interface Message {
@@ -58,6 +104,13 @@ interface Message {
   media_type?: string | null;
   context_message_id?: string | null;
   quoted_content?: string | null;
+  /** 'web' cuando el mensaje entró o salió por el chat de soporte en vez de WhatsApp. */
+  channel?: string | null;
+  /**
+   * Por dónde salió: 'ycloud' (API oficial de Meta) o 'evolution' (sesión de
+   * WhatsApp Web, sin costo). Todo lo histórico quedó como 'ycloud'.
+   */
+  provider?: string | null;
   created_at: string;
 }
 
@@ -110,7 +163,20 @@ function getSenderBadge(senderType?: string, senderName?: string | null) {
   }
 }
 
-function StatusIcon({ status }: { status: string | null }) {
+function StatusIcon({ status, provider }: { status: string | null; provider?: string | null }) {
+  /*
+   * El canal sin costo no devuelve acuses: sus mensajes se quedan en "sent" para
+   * siempre. Pintarles el reloj de pendiente o dejarlos con un solo check haria
+   * creer al operador que no llegaron, y lo normal es que si hayan llegado.
+   */
+  if (provider === "evolution" && status !== "failed") {
+    return (
+      <Check
+        className="w-[10px] h-[10px] text-muted-foreground/50"
+        aria-label="Enviado"
+      />
+    );
+  }
   if (!status) return <Clock className="w-[10px] h-[10px] text-muted-foreground/40" />;
   switch (status) {
     case "sent": return <Check className="w-[10px] h-[10px] text-muted-foreground/50" />;
@@ -195,7 +261,7 @@ function getMediaType(mediaUrl: string, messageType?: string): 'image' | 'audio'
   return 'document';
 }
 
-function MessageMedia({ message }: { message: Message }) {
+function MessageMedia({ message, onOpen }: { message: Message; onOpen: (m: LightboxMedia) => void }) {
   const url = message.media_url;
   if (!url) return null;
 
@@ -209,7 +275,7 @@ function MessageMedia({ message }: { message: Message }) {
         src={url}
         alt="WhatsApp Image"
         className="rounded-lg max-w-[280px] md:max-w-xs max-h-[320px] object-cover cursor-pointer hover:opacity-90 transition mb-1.5 shadow-sm"
-        onClick={() => window.open(url, "_blank")}
+        onClick={() => onOpen({ url, type: "image" })}
         onError={(e) => {
           const el = e.currentTarget;
           el.style.display = "none";
@@ -277,7 +343,7 @@ function MessageMedia({ message }: { message: Message }) {
             variant="secondary"
             size="icon"
             className="h-8 w-8 rounded-full bg-black/60 hover:bg-black/90 text-white border-0 backdrop-blur-sm"
-            onClick={() => window.open(url, "_blank")}
+            onClick={() => onOpen({ url, type: "video" })}
           >
             <Monitor className="w-3.5 h-3.5" />
           </Button>
@@ -286,19 +352,36 @@ function MessageMedia({ message }: { message: Message }) {
     );
   }
 
-  // Document/File Fallback
-  const fileName = message.content && message.content.includes("📎 Archivo adjunto:") 
-    ? message.content.split("📎 Archivo adjunto: ")[1]?.trim()
-    : (url.split('/').pop()?.split('?')[0] || "Contenido Multimedia");
+  // Document/File — tarjeta tipo WhatsApp que abre el visor dentro del portal.
+  // El nombre real llega en el contenido del mensaje; la URL solo trae un UUID.
+  const rawName = (message.content || "")
+    .replace(/^📎\s*Archivo adjunto:\s*/i, "")
+    .replace(/^📄\s*/, "")
+    .trim();
+  const fileName = rawName && !/^https?:/i.test(rawName)
+    ? rawName
+    : (decodeURIComponent(url.split('/').pop()?.split('?')[0] || "") || "Archivo adjunto");
+  const isPdf = /\.pdf(\?|$)/i.test(url) || /pdf/i.test(fileName);
+  const ext = (fileName.split('.').pop() || '').toUpperCase().slice(0, 4);
+
+  // PDF → tarjeta con vista previa de la primera página (estilo WhatsApp).
+  if (isPdf) {
+    return <PdfPreview url={url} fileName={fileName} onOpen={() => onOpen({ url, type: "pdf", name: fileName })} />;
+  }
 
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer"
-      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary/50 hover:bg-secondary transition text-xs mb-1.5 border border-border/30 max-w-[240px]">
-      <FileText className="w-5 h-5 shrink-0 text-primary" />
-      <span className="underline truncate leading-snug font-medium text-blue-500 dark:text-blue-400">
-        📎 Ver archivo ({fileName})
-      </span>
-    </a>
+    <button
+      onClick={() => onOpen({ url, type: "other", name: fileName })}
+      className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-secondary/50 hover:bg-secondary transition mb-1.5 border border-border/30 w-full max-w-[280px] text-left"
+    >
+      <div className="shrink-0 w-10 h-10 rounded-lg flex items-center justify-center bg-primary/10 text-primary">
+        <FileText className="w-5 h-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium truncate leading-tight">{fileName}</p>
+        <p className="text-[11px] text-muted-foreground/70 mt-0.5">{ext || "Archivo"} · toca para ver</p>
+      </div>
+    </button>
   );
 }
 
@@ -333,9 +416,12 @@ interface WhatsAppInboxProps {
   initialPhone?: string;
   initialMessage?: string;
   onConversationOpened?: () => void;
+  onConversationSelect?: (conversationId: string | null) => void;
   isSimulating?: boolean;
   simulatedUserName?: string;
   onNavigateToSchedule?: () => void;
+  /** Lleva a Configuracion, donde se vincula la sesion de WhatsApp sin costo. */
+  onNavigateToSettings?: () => void;
 }
 
 // ── Panel vacío: Agenda del día + Notas del turno ──────────────────────────
@@ -469,7 +555,80 @@ function InboxEmptyPanel({ companyId, onNavigateToSchedule }: { companyId?: stri
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, initialPhone, initialMessage, onConversationOpened, isSimulating, simulatedUserName, onNavigateToSchedule }: WhatsAppInboxProps) {
+
+/**
+ * Lo que se ve al pasar el mouse por un chat de la lista.
+ *
+ * La nota y el último mensaje conviven, no compiten: contestan cosas distintas.
+ * La nota es lo que hay que saber del caso —la escribió alguien y no cambia
+ * sola— y el mensaje es qué pasó recién. Elegir una escondía la otra, así que
+ * van las dos, con la nota primero porque es la que cambia a quién atender.
+ */
+export function VistaPreviaChat({ nota, mensaje, quien, rect }: {
+  nota: string | null | undefined;
+  mensaje: string | null | undefined;
+  /** Quién mandó el último mensaje, ya resuelto a texto. */
+  quien: string | null | undefined;
+  rect: DOMRect | null;
+}) {
+  if (!rect) return null;
+  const n = nota?.trim();
+  const m = mensaje?.trim();
+  if (!n && !m) return null;
+
+  /*
+   * Si la fila está en la mitad de abajo, el globo se ancla por el pie. Centrado
+   * siempre, una fila del final lo empujaba fuera de la pantalla.
+   */
+  const ancho = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const alto = typeof window !== "undefined" ? window.innerHeight : 800;
+  const centro = rect.top + rect.height / 2;
+  const abajo = centro > alto / 2;
+
+  return (
+    <div
+      className="pointer-events-none fixed z-[9999] w-[300px] rounded-xl shadow-2xl animate-in fade-in slide-in-from-left-2 duration-200 overflow-hidden border border-border bg-popover backdrop-blur-xl"
+      style={{
+        left: Math.min(rect.right + 12, ancho - 316),
+        [abajo ? "bottom" : "top"]: abajo ? Math.max(8, alto - centro - rect.height) : Math.max(8, centro - rect.height),
+      }}
+    >
+      {n && <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-400" />}
+      {n && (
+        <div className="pl-4 pr-3.5 pt-3 pb-2.5">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <StickyNote className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <span className="text-[11px] font-semibold text-amber-500 uppercase tracking-wider">Nota del caso</span>
+          </div>
+          <p className="text-[13px] font-semibold text-foreground leading-relaxed break-words line-clamp-4 uppercase">
+            {n}
+          </p>
+        </div>
+      )}
+      {n && m && <div className="h-px bg-border/60 mx-3.5" />}
+      {m && (
+        <div className={`${n ? "pl-4" : "pl-3.5"} pr-3.5 pt-2.5 pb-3`}>
+          {/*
+           * La hora no va: ya está en la fila, a la derecha del nombre, y acá
+           * repetida solo agrega ruido. Quién lo mandó sí importa — es la
+           * diferencia entre "hay alguien esperando" y "ya le contestamos".
+           */}
+          <div className="flex items-baseline gap-1.5 mb-1.5">
+            <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+              Último mensaje
+            </span>
+            {quien && <span className="text-[10px] text-muted-foreground/45">· {quien}</span>}
+          </div>
+          <p className="text-[12px] text-foreground/85 leading-relaxed break-words whitespace-pre-wrap line-clamp-[10]">
+            {m}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function WhatsAppInbox({ companyId, userId, userName, userRole, operatorRoles, initialConversationId, initialPhone, initialMessage, onConversationOpened, onConversationSelect, isSimulating, simulatedUserName, onNavigateToSchedule, onNavigateToSettings }: WhatsAppInboxProps) {
   // En vista simulada el admin escribe como el usuario simulado, así el historial queda correcto
   const effectiveSenderName = (isSimulating && simulatedUserName) ? simulatedUserName : userName;
 
@@ -494,11 +653,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   // Búsqueda: ref para cancelar resultados de fetches viejos (race condition)
   const searchGenerationRef = useRef(0);
   const [chatFilter, setChatFilter] = useState<string>('all');
+  // Scroll infinito de la lista de conversaciones (virtualización del render).
+  const CONV_PAGE = 40;
+  const [convVisibleCount, setConvVisibleCount] = useState(CONV_PAGE);
+  const convSentinelRef = useRef<HTMLDivElement | null>(null);
+  // Visor de imágenes/PDF dentro del portal (sin abrir pestañas).
+  const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   const [ticketStatusByConvId, setTicketStatusByConvId] = useState<Record<string, string>>({});
   const [ticketLabels, setTicketLabels] = useState<Array<{key: string; name: string; color: string; is_initial?: boolean; is_final?: boolean}>>([
     { key: 'abierto', name: 'Abierto', color: '#22c55e', is_initial: true },
     { key: 'en_proceso', name: 'En Proceso', color: '#3b82f6' },
     { key: 'esperando_respuesta', name: 'Esperando Respuesta', color: '#f59e0b' },
+    { key: 'en_espera', name: 'Retiro por confirmar', color: '#8b5cf6' },
     { key: 'resuelto', name: 'Resuelto', color: '#a855f7', is_final: true },
   ]);
   const [filterCounts, setFilterCounts] = useState<Array<{key: string; label: string; color: string; is_initial: boolean; is_final: boolean; total_convs: number; unread_convs: number}>>([]);
@@ -506,13 +672,86 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [isTicketModalOpen, setIsTicketModalOpen] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [transferRole, setTransferRole] = useState("soporte_tecnico");
+  // ── Propiedad del caso ──────────────────────────────────────────────────────
+  const [casoOcupado, setCasoOcupado] = useState(false);
+  /** Confirmación antes de quitarle el caso a alguien: conviene que sea deliberado. */
+  const [arrebatoPendiente, setArrebatoPendiente] = useState<{ convId: string; nombre: string } | null>(null);
+  const [transferPersonaOpen, setTransferPersonaOpen] = useState(false);
+  const [transferPersonaId, setTransferPersonaId] = useState("");
+  const [transferPersonaNota, setTransferPersonaNota] = useState("");
   const [activeTicket, setActiveTicket] = useState<any>(null);
+  // Estado de red de la ONU del ticket activo (SmartOLT vía onu_signals). null = no aplica/no hay fila.
+  const networkSignal = useOnuSignal(companyId, activeTicket?.onu_external_id);
+  const operadores = useOperadores(companyId);
+  const porOperador = useMemo(() => mapaOperadores(operadores), [operadores]);
+  const {
+    habilitado: evolutionHabilitado, usable: evolutionUsable, estadoSesion: evolutionEstadoSesion,
+    refrescarEstado: refrescarCanal,
+  } = useCanalSalida(companyId, selectedConv?.id);
+  /**
+   * Config de canales de la empresa, sólo lo que la UI necesita: nunca la
+   * `ycloud_api_key` (se consulta su existencia con un conteo, sin traer el valor).
+   */
+  const [cfgCanales, setCfgCanales] = useState<{
+    evolution_enabled: boolean;
+    evolution_instance: string | null;
+    ycloud_phone: string | null;
+    default_provider: string | null;
+    costo_mensaje_oficial: number | null;
+    tiene_ycloud_key: boolean;
+  } | null>(null);
+  /**
+   * Canal que eligió el operador, por conversación. Vive en memoria a propósito:
+   * dura lo que la sesión, no se fija en la base ni pisa la config de la empresa.
+   */
+  const [canalPorConversacion, setCanalPorConversacion] = useState<Record<string, Proveedor>>({});
+  /** Reenvío pendiente por el canal oficial, cuando la sesión sin costo se cayó. */
+  const [reenvioOficial, setReenvioOficial] = useState<CuerpoEnvio | null>(null);
+  /* Editar y borrar mensajes ya enviados: sólo aplican al canal sin costo. */
+  const [mensajeEditando, setMensajeEditando] = useState<Message | null>(null);
+  const [textoEdicion, setTextoEdicion] = useState("");
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
+  const [mensajeABorrar, setMensajeABorrar] = useState<Message | null>(null);
+  const [borrando, setBorrando] = useState(false);
+  const [networkPanelOpen, setNetworkPanelOpen] = useState(false);
+  // Un ticket solo deja de estar vigente al llegar a un estado final (Resuelto/Cerrado, o cualquier
+  // etiqueta marcada is_final). Mientras NO lo esté, conserva todas sus funcionalidades (señal ONU,
+  // reinicio, finalizar) sin importar el estado intermedio (En Proceso, Agendado, Espera de Agenda…).
+  const ticketIsFinal = !!activeTicket && getFinalStatuses(ticketLabels).has(activeTicket.status);
+  const activeNetworkSignal = ticketIsFinal ? null : networkSignal;
+  /*
+   * Color del punto en el botón de la ONU: adelanta el estado del equipo sin que el
+   * operador tenga que abrir nada. Se usa el estado del equipo y no la calidad de la
+   * señal porque es lo que decide si hay que mandar un técnico.
+   */
+  const onuPuntoEstado = (() => {
+    switch ((networkSignal?.onu_status ?? "").trim().toLowerCase()) {
+      case "online": return "bg-emerald-500";
+      case "power fail": return "bg-amber-500";
+      case "los": return "bg-destructive";
+      case "offline": return "bg-muted-foreground";
+      default: return "bg-muted-foreground/40";
+    }
+  })();
+  const [rebootConfirmOpen, setRebootConfirmOpen] = useState(false);
+  const [rebootingOnu, setRebootingOnu] = useState(false);
   const [nocodbEnabled, setNocodbEnabled] = useState(false);
   const [outboundEnabled, setOutboundEnabled] = useState(true);
   const [bandejaTemplateId, setBandejaTemplateId] = useState<string | null>(null);
   const [outboundTemplateId, setOutboundTemplateId] = useState<string | null>(null);
 
   const [isCloseModalOpen, setIsCloseModalOpen] = useState(false);
+  /*
+   * El veredicto que hay que responder antes de finalizar.
+   *
+   * Los tickets con la etiqueta Revisión IA no se pueden cerrar sin decir si el
+   * agente se equivocó: cerrándolos sin preguntar, la sesión quedaba marcada como
+   * revisada pero sin veredicto y sin nota, así que seguía contando como error
+   * para siempre y encima sin registro de quién la había mirado.
+   */
+  const [veredictoPendiente, setVeredictoPendiente] = useState<
+    { analysisId: string; nota: number | null; cierreStatus?: string } | null>(null);
+  const [guardandoVeredicto, setGuardandoVeredicto] = useState(false);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [closeSummaryData, setCloseSummaryData] = useState<any>(null);
   const [closeSummaryText, setCloseSummaryText] = useState("");
@@ -532,7 +771,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [infoClientModalOpen, setInfoClientModalOpen] = useState(false);
   const [infoClientRut, setInfoClientRut] = useState("");
   const [infoClientRutError, setInfoClientRutError] = useState("");
-  const [infoClientMotivo, setInfoClientMotivo] = useState("");
   const [infoClientLoading, setInfoClientLoading] = useState(false);
 
   /** Formatea el input de RUT en tiempo real: solo dígitos y K, añade guion antes del DV */
@@ -571,6 +809,19 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [ticketSearchOpen, setTicketSearchOpen] = useState(false);
   const [rightPanelTab, setRightPanelTab] = useState<'caso' | 'acciones' | 'agenda'>('caso');
 
+  /*
+   * Los técnicos salen de la agenda, no de la bandeja.
+   *
+   * Ahí se dan de alta con nombre y número, así que esa es la única lista que
+   * hay que mantener: el filtro, el nombre que se muestra en vez del teléfono y
+   * el panel lateral salen todos de lo mismo.
+   */
+  const { buscarTecnico, tecnicos } = useTecnicos(companyId);
+  const etiquetaTecnicos = useMemo(() => ticketLabels.find(esEtiquetaTecnicos), [ticketLabels]);
+  const tecnicoDelChat = selectedConv ? buscarTecnico(selectedConv.wa_id) : null;
+  const claveEtiquetaTecnicos = etiquetaTecnicos?.key ?? null;
+  const colorTecnicos = etiquetaTecnicos?.color ?? '#ec4899';
+
   // Notas de conversación (compartidas en BD, por conversation_id)
   const [convNotes, setConvNotes] = useState<Record<string, string>>({});
   const [noteInput, setNoteInput] = useState("");
@@ -585,6 +836,28 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   // Motivo del caso derivado — expandible
   const [motivoExpanded, setMotivoExpanded] = useState(false);
+
+  /*
+   * Edicion a mano de la ficha del cliente.
+   *
+   * Cuando la IA deriva no siempre recopila bien la direccion o el RUT, y el
+   * operador no tenia forma de arreglarlo desde aca: habia que volver a
+   * preguntarle al cliente para que el dato llegara correcto al tecnico. El
+   * borrador va aparte del ticket para que Cancelar no deje nada a medias.
+   */
+  const [editandoCliente, setEditandoCliente] = useState(false);
+  const [borradorCliente, setBorradorCliente] = useState<Record<string, string>>({});
+  const [guardandoCliente, setGuardandoCliente] = useState(false);
+
+  /*
+   * El último mensaje completo, por conversación.
+   *
+   * `conversations.last_message_preview` viene cortado a 100 caracteres desde que
+   * se graba, así que para la vista previa no sirve: mostraría el mismo recorte
+   * que ya se lee en la fila. Se busca el mensaje real recién al abrir el globo
+   * —una fila, con índice por conversación— y queda guardado para no repetirlo.
+   */
+  const [ultimosMensajes, setUltimosMensajes] = useState<Record<string, { texto: string; quien: string }>>({});
 
   // Tooltip flotante para notas en lista de chats
   const [tooltipConvId, setTooltipConvId] = useState<string | null>(null);
@@ -671,23 +944,48 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setInfoClientRutError("");
     setInfoClientLoading(true);
     try {
-      await fetch("https://bot.artoria.cl/webhook/InfoClientArtoria", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const { data, error } = await supabase.functions.invoke("refresh-ticket-client", {
+        body: {
           company_id: companyId ?? null,
-          ticket_id: activeTicket?.id ?? null,
           rut: rutTrimmed,
-          reason: infoClientMotivo.trim() || undefined,
-        }),
+          ticket_id: activeTicket?.id ?? null,
+        },
       });
-      toast({ title: "✅ Solicitud enviada", description: "La información del cliente será actualizada en breve." });
-      setInfoClientModalOpen(false);
-      setInfoClientRut("");
-      setInfoClientMotivo("");
-      setInfoClientRutError("");
-    } catch {
-      toast({ title: "Error al enviar", description: "No se pudo conectar al servidor.", variant: "destructive" });
+
+      if (error) {
+        // Leer el cuerpo de la respuesta de error (404 no encontrado, 400, 403…)
+        let msg = "";
+        let status: number | undefined;
+        try {
+          const ctx = (error as any).context;
+          status = ctx?.status;
+          const body = ctx && typeof ctx.json === "function" ? await ctx.json() : null;
+          msg = body?.error || "";
+        } catch { /* noop */ }
+        const title =
+          status === 404 ? "Cliente no encontrado" :
+          status === 403 ? "Sin permiso" :
+          "No se pudo actualizar";
+        toast({ title, description: msg || "Verifica el RUT o inténtalo de nuevo.", variant: "destructive" });
+        return;
+      }
+
+      if (data?.success) {
+        const u = data.updated ?? {};
+        toast({
+          title: "✅ Datos actualizados",
+          description: u.nombre ? `Información de ${u.nombre} actualizada.` : "La información del cliente se actualizó.",
+        });
+        // El ticket se refresca solo por Realtime; forzamos un refresco por si tarda.
+        setTicketRefreshCounter(c => c + 1);
+        setInfoClientModalOpen(false);
+        setInfoClientRut("");
+        setInfoClientRutError("");
+      } else {
+        toast({ title: "Cliente no encontrado", description: data?.error || "Verifica el RUT ingresado.", variant: "destructive" });
+      }
+    } catch (e: any) {
+      toast({ title: "Error de conexión", description: e?.message || "No se pudo conectar al servidor.", variant: "destructive" });
     } finally {
       setInfoClientLoading(false);
     }
@@ -739,6 +1037,73 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   useEffect(() => {
     setShowMobilePanel(false);
   }, [selectedConv?.id]);
+
+  /*
+   * Borradores por conversacion.
+   *
+   * El compositor es un textarea NO controlado (`defaultValue=""` + ref). Eso daba
+   * los dos sintomas opuestos que se reportaron, y los dos son el mismo origen:
+   *
+   *   - Cambiar de chat no limpiaba el campo, asi que un texto escrito para un
+   *     cliente quedaba cargado sobre la conversacion de otro. Un enter distraido
+   *     y sale a la persona equivocada.
+   *   - Salir de la Bandeja desmonta el componente y el texto se perdia entero.
+   *
+   * Se guarda en sessionStorage y no en un ref, justamente para sobrevivir a ese
+   * desmontaje. Es por pestana y no viaja a otro dispositivo, que es lo que uno
+   * espera de un borrador a medio escribir.
+   */
+  const convAnteriorRef = useRef<string | null>(null);
+  const claveBorrador = (id: string) => `borrador:${id}`;
+
+  useEffect(() => {
+    const ta = msgTextareaRef.current;
+    const anterior = convAnteriorRef.current;
+    const actual = selectedConv?.id ?? null;
+    if (anterior === actual) return;
+
+    // Guardar lo que quedo escrito en la conversacion que se deja.
+    if (anterior && ta) {
+      try {
+        const texto = ta.value;
+        if (texto.trim()) sessionStorage.setItem(claveBorrador(anterior), texto);
+        else sessionStorage.removeItem(claveBorrador(anterior));
+      } catch { /* modo privado o storage lleno: el borrador es una comodidad, no se insiste */ }
+    }
+
+    // Cargar el de la que se entra. Sin borrador, el campo arranca vacio: nunca
+    // hereda el texto del chat anterior, que es la mitad peligrosa del bug.
+    if (ta) {
+      let texto = "";
+      if (actual) {
+        try { texto = sessionStorage.getItem(claveBorrador(actual)) || ""; } catch { texto = ""; }
+      }
+      ta.value = texto;
+      ta.style.height = "48px";
+      if (texto) {
+        ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`;
+      }
+      setHasContent(texto.trim().length > 0);
+    }
+
+    convAnteriorRef.current = actual;
+  }, [selectedConv?.id]);
+
+  /*
+   * Al desmontar —salir de la Bandeja— se guarda lo que haya. Sin esto el borrador
+   * se pierde justo en el caso que mas molesta: ir a mirar un ticket y volver.
+   */
+  useEffect(() => {
+    return () => {
+      const ta = msgTextareaRef.current;
+      const id = convAnteriorRef.current;
+      if (!ta || !id) return;
+      try {
+        if (ta.value.trim()) sessionStorage.setItem(claveBorrador(id), ta.value);
+        else sessionStorage.removeItem(claveBorrador(id));
+      } catch { /* ver arriba */ }
+    };
+  }, []);
 
   // Debounced keyword search — relevancia progresiva:
   // cuantas más palabras escriba el usuario, más específicos son los resultados.
@@ -1065,6 +1430,22 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   }, [initialConversationId, conversations]);
 
+  /**
+   * Abre una conversación por id (viene de una notificación de la campana).
+   *
+   * Si no está en la lista cargada —un caso que te transfirieron mientras la
+   * bandeja estaba filtrada, por ejemplo— se busca la fila puntual en vez de
+   * dejar el aviso sin ir a ninguna parte.
+   */
+  // Notificar al padre el chat seleccionado, para reflejarlo en la URL (?conv=)
+  // y que el botón atrás del navegador restaure el chat. Se salta el primer render
+  // para no limpiar el ?conv= con el que se entra.
+  const convSelectSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!convSelectSyncedRef.current) { convSelectSyncedRef.current = true; return; }
+    onConversationSelect?.(selectedConv?.id ?? null);
+  }, [selectedConv?.id]);
+
   // Handle initialPhone — navegar al chat del técnico por número
   useEffect(() => {
     if (!initialPhone || conversations.length === 0) return;
@@ -1201,12 +1582,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     if (selectedConv) {
       (async () => {
         const fetchFallbacks = async () => {
-          const finalStatuses = new Set(['cerrado', ...ticketLabels.filter(l => l.is_final).map(l => l.key)]);
-          
+          const finalStatuses = getFinalStatuses(ticketLabels);
+
           // 1. Fallback primario: buscar por conversation_id
           const { data: byConv } = await supabase
             .from("tickets")
-            .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status")
+            .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status, onu_external_id, ia_review")
             .eq("conversation_id", selectedConv.id)
             .is("deleted_at", null)
             .order("created_at", { ascending: false })
@@ -1222,7 +1603,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           const cleanPhone = selectedConv.wa_id.replace(/^\+/, '');
           const { data: byPhone } = await supabase
             .from("tickets")
-            .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status")
+            .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status, onu_external_id, ia_review")
             .or(`customer_phone.eq.${cleanPhone},customer_phone.eq.+${cleanPhone}`)
             .is("conversation_id", null)
             .is("deleted_at", null)
@@ -1245,7 +1626,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           if (!error && data?.tiene_ticket) {
             const { data: ticketDetails } = await supabase
               .from("tickets")
-              .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status")
+              .select("id, customer_rut, customer_name, customer_email, customer_address, customer_type, customer_plan, customer_tv_count, description, category, assigned_to, status, onu_external_id, ia_review")
               .eq("id", data.ticket_id)
               .single();
 
@@ -1266,6 +1647,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   }, [selectedConv?.id, ticketRefreshCounter]);
 
+  // Cerrar el panel de señal de red al cambiar de conversación (useOnuSignal ya recarga los datos).
+  useEffect(() => { setNetworkPanelOpen(false); }, [selectedConv?.id]);
+
   // ── Resetear secciones colapsables al cambiar de conversación ────────────────
   useEffect(() => {
     setClientInfoOpen(true);
@@ -1274,6 +1658,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setQuickActionsOpen(false);
     setTicketSearchOpen(false);
     setMotivoExpanded(false);
+    setEditandoCliente(false);
     setRightPanelTab('caso');
   }, [selectedConv?.id]);
 
@@ -1291,6 +1676,45 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         setOutboundTemplateId(data?.outbound_template_id || null);
       });
   }, [companyId]);
+
+  /*
+   * ── Qué canales tiene configurados la empresa dueña de la conversación ────
+   *
+   * Se leen columnas sueltas y ninguna sensible. La `ycloud_api_key` se consulta
+   * con un conteo (`head`), que devuelve sólo el número de filas: así la UI sabe
+   * si hay key sin que el valor viaje al navegador.
+   *
+   * Si RLS no deja leer la fila, queda `null` y la UI cae al estado que ya conoce
+   * por `evolution_estado` (contratado / sesión arriba), sin inventar nada.
+   */
+  useEffect(() => {
+    const cid = selectedConv?.company_id || companyId;
+    if (!cid) { setCfgCanales(null); return; }
+    let cancelado = false;
+    (async () => {
+      const [{ data }, { count }] = await Promise.all([
+        (supabase as any).from('company_config')
+          .select('evolution_enabled, evolution_instance, ycloud_phone, default_provider, costo_mensaje_oficial')
+          .eq('id', cid)
+          .maybeSingle(),
+        (supabase as any).from('company_config')
+          .select('id', { count: 'exact', head: true })
+          .eq('id', cid)
+          .not('ycloud_api_key', 'is', null)
+          .neq('ycloud_api_key', ''),
+      ]);
+      if (cancelado) return;
+      setCfgCanales(data ? {
+        evolution_enabled: !!data.evolution_enabled,
+        evolution_instance: data.evolution_instance || null,
+        ycloud_phone: data.ycloud_phone || null,
+        default_provider: data.default_provider || null,
+        costo_mensaje_oficial: data.costo_mensaje_oficial == null ? null : Number(data.costo_mensaje_oficial),
+        tiene_ycloud_key: (count ?? 0) > 0,
+      } : null);
+    })();
+    return () => { cancelado = true; };
+  }, [selectedConv?.company_id, companyId]);
 
   // ── Auto-seleccionar plantilla de bandeja cuando está configurada ──────────
   useEffect(() => {
@@ -1540,24 +1964,36 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
     setLoadingTemplates(true);
     try {
-      // Usar service key para que funcione también con admin_isp simulando empresa
-      const { data: keyData } = await supabase.functions.invoke("get-service-key");
-      const serviceKey = keyData?.service_key || "";
-      const baseUrl = import.meta.env.VITE_SUPABASE_URL || "https://supabase.artoria.cl";
-      const resp = await fetch(`${baseUrl}/functions/v1/ycloud-get-templates-company`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${serviceKey}`,
-        },
-        body: JSON.stringify({ company_id: companyId }),
-      });
-      if (!resp.ok) {
-        const errBody = await resp.json().catch(() => ({}));
-        throw new Error(errBody?.error || `HTTP ${resp.status}`);
+      let allTpls: WhatsAppTemplate[] = [];
+
+      if (isSimulating) {
+        // admin_isp simulando empresa: usa service key (no es miembro de la empresa simulada)
+        const { data: keyData } = await supabase.functions.invoke("get-service-key");
+        const serviceKey = keyData?.service_key || "";
+        const baseUrl = import.meta.env.VITE_SUPABASE_URL || "https://supabase.artoria.cl";
+        const resp = await fetch(`${baseUrl}/functions/v1/ycloud-get-templates-company`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${serviceKey}`,
+          },
+          body: JSON.stringify({ company_id: companyId }),
+        });
+        if (!resp.ok) {
+          const errBody = await resp.json().catch(() => ({}));
+          throw new Error(errBody?.error || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        allTpls = data?.templates || [];
+      } else {
+        // Usuario de la empresa (administrador u operador): el backend valida pertenencia con el JWT
+        const { data, error } = await supabase.functions.invoke("ycloud-get-templates-company", {
+          body: { company_id: companyId },
+        });
+        if (error) throw error;
+        allTpls = data?.templates || [];
       }
-      const data = await resp.json();
-      const allTpls: WhatsAppTemplate[] = data?.templates || [];
+
       setTemplates(allTpls);
       const found = allTpls.find(t => t.name === bandejaTemplateId);
       if (!found) {
@@ -1574,7 +2010,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         doSendTemplate({}, vars);
       }
     } catch (err: any) {
-      toast({ title: "Error al activar IA", description: err.message, variant: "destructive" });
+      toast({ title: "Error al cargar plantillas", description: err.message, variant: "destructive" });
     } finally {
       setLoadingTemplates(false);
     }
@@ -1630,6 +2066,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         );
       }
 
+      // Las plantillas van SIEMPRE por el canal oficial, esté donde esté el toggle:
+      // Baileys no las soporta y `evolution-send` las rechaza con un 500.
       const { error } = await supabase.functions.invoke("ycloud-send", {
         body: {
           to: selectedConv.wa_id,
@@ -1800,6 +2238,14 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         is_initial: r.is_initial,
         is_final: r.is_final,
       }));
+      // Los clientes de técnicos dejan el ticket en 'en_espera' al cerrar un
+      // retiro, esperando que un operador confirme la recepción del equipo. Si
+      // la empresa no tiene esa etiqueta configurada la agregamos igual: los
+      // contadores del chip se calculan acá (ver badgeCounts), no en la RPC,
+      // así que el filtro funciona aunque falte la fila en ticket_labels.
+      if (!freshLabels.some((l: any) => l.key === 'en_espera')) {
+        freshLabels.push({ key: 'en_espera', name: 'Retiro por confirmar', color: '#8b5cf6' });
+      }
       setTicketLabels(freshLabels);
       freshLabels.filter((l: any) => l.is_final).forEach((l: any) => freshFinalStatuses.add(l.key));
     }
@@ -1863,6 +2309,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       toast({ title: "Envío Bloqueado", description: "Han pasado más de 24 horas desde el último mensaje del cliente.", variant: "destructive" });
       return;
     }
+    await tomarCasoAlResponder();
     setSending(true);
     // ── Update optimista ANTES del invoke ─────────────────────────────────────
     // Si se agrega DESPUÉS, el evento Realtime INSERT puede llegar primero
@@ -1890,6 +2337,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       msgTextareaRef.current.style.height = "48px";
     }
     setHasContent(false);
+    // El mensaje se fue: el borrador de ESTA conversacion ya no existe. Los de las
+    // demas quedan intactos.
+    if (selectedConv?.id) {
+      try { sessionStorage.removeItem(`borrador:${selectedConv.id}`); } catch { /* ignorar */ }
+    }
 
     try {
       const convSnap = selectedConv;
@@ -1936,34 +2388,38 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
       // Enviar mensaje también en background — input se libera al instante
       setSending(false);
-      supabase.functions.invoke("ycloud-send", {
-        body: {
-          to: convSnap.wa_id,
-          message: text,
-          conversationId: convSnap.id,
-          senderName: effectiveSenderName,
-        },
-      }).then(({ error }: any) => {
-        if (error) throw error;
-      }).catch((err: any) => {
-        setMessages(prev => prev.filter(m => m.id !== optimisticId));
-        if (msgTextareaRef.current) {
-          msgTextareaRef.current.value = text;
-          msgTextareaRef.current.style.height = "auto";
-        }
-        setHasContent(true);
-        toast({ title: "Error al enviar", description: err?.message || "Intenta de nuevo", variant: "destructive" });
-      });
+      const cuerpo: CuerpoEnvio = {
+        to: convSnap.wa_id,
+        message: text,
+        conversationId: convSnap.id,
+        senderName: effectiveSenderName,
+      };
+      const canalUsado = canalDeLaConversacion;
+      const { r, fallback } = await enviarConFallback(cuerpo, canalUsado);
+
+      if (!r.ok) {
+        // Se haya caído la sesión o no, lo que escribió el operador no se pierde.
+        revertirEnvio(optimisticId, text);
+        toast({
+          title: r.red
+            ? "Envío sin confirmar"
+            : fallback ? "Tampoco salió por la API oficial" : "Error al enviar",
+          description: mensajeDeEnvio(r, fallback ? 'ycloud' : canalUsado),
+          variant: "destructive",
+        });
+        return;
+      }
+      if (fallback) {
+        toast({
+          title: "Salió por la API oficial",
+          description: "La API no oficial está caída. El mensaje salió por la API oficial (con costo).",
+        });
+      }
       return; // el finally no debe volver a setSending(false)
     } catch (err: any) {
       // Revertir el mensaje optimista si el envío falló
-      setMessages(prev => prev.filter(m => m.id !== optimisticId));
-      if (msgTextareaRef.current) {
-        msgTextareaRef.current.value = text;
-        msgTextareaRef.current.style.height = "auto";
-      }
-      setHasContent(true);
-      toast({ title: "Error al enviar", description: (err as any).message, variant: "destructive" });
+      revertirEnvio(optimisticId, text);
+      toast({ title: "Error al enviar", description: err?.message || "Intenta de nuevo", variant: "destructive" });
     } finally {
       setSending(false);
     }
@@ -2023,6 +2479,74 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     } catch (err: any) {
       toast({ title: "Error al cambiar estado", description: err.message || "Revisa la consola web para más detalles", variant: "destructive" });
     }
+  };
+
+  /** Carga la ficha actual en el borrador y entra en modo edicion. */
+  const abrirEdicionCliente = () => {
+    const t = activeTicket as any;
+    setBorradorCliente({
+      customer_name:     t?.customer_name ?? '',
+      customer_rut:      t?.customer_rut ?? '',
+      // La direccion puede venir del ticket o de la ficha del cliente; se
+      // guarda igual en el ticket, que es lo que lee el tecnico.
+      customer_address:  t?.customer_address ?? clientAddress ?? '',
+      customer_plan:     t?.customer_plan ?? '',
+      customer_email:    t?.customer_email ?? '',
+      customer_tv_count: t?.customer_tv_count != null ? String(t.customer_tv_count) : '',
+      category:          t?.category ?? '',
+      description:       t?.description ?? '',
+    });
+    setEditandoCliente(true);
+  };
+
+  /**
+   * Guarda la ficha corregida a mano sobre el ticket abierto.
+   *
+   * Un campo que se deja vacio queda en null y no en cadena vacia: asi la ficha
+   * muestra el guion de "falta el dato" en vez de un hueco que se lee como que
+   * algo no cargo.
+   */
+  const guardarDatosCliente = async () => {
+    if (!activeTicket || !companyId) return;
+    setGuardandoCliente(true);
+    const limpio = (v?: string) => {
+      const texto = (v ?? '').trim();
+      return texto === '' ? null : texto;
+    };
+    const tvCrudo = (borradorCliente.customer_tv_count ?? '').trim();
+    const tv = tvCrudo === '' ? null : Number(tvCrudo);
+    if (tv != null && !Number.isFinite(tv)) {
+      setGuardandoCliente(false);
+      toast({ title: 'N de TV invalido', description: 'Tiene que ser un numero.', variant: 'destructive' });
+      return;
+    }
+    const campos: Record<string, any> = {
+      customer_name:     limpio(borradorCliente.customer_name),
+      customer_rut:      limpio(borradorCliente.customer_rut),
+      customer_address:  limpio(borradorCliente.customer_address),
+      customer_plan:     limpio(borradorCliente.customer_plan),
+      customer_email:    limpio(borradorCliente.customer_email),
+      customer_tv_count: tv,
+      category:          limpio(borradorCliente.category),
+      description:       limpio(borradorCliente.description),
+    };
+    // El filtro por empresa ademas del id: una id adivinada de otra empresa no
+    // alcanza para escribir en su ticket.
+    const { error } = await supabase
+      .from('tickets')
+      .update(campos as any)
+      .eq('id', activeTicket.id)
+      .eq('company_id', companyId);
+    setGuardandoCliente(false);
+    if (error) {
+      toast({ title: 'No se pudieron guardar los datos', description: error.message, variant: 'destructive' });
+      return;
+    }
+    setActiveTicket((prev: any) => prev ? { ...prev, ...campos } : prev);
+    // La direccion corregida manda sobre la que venia de la ficha del cliente.
+    if (campos.customer_address) setClientAddress(campos.customer_address);
+    setEditandoCliente(false);
+    toast({ title: 'Datos actualizados', description: 'El tecnico vera la ficha corregida.' });
   };
 
   const saveNote = async () => {
@@ -2087,39 +2611,433 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   };
 
-  const handleTakeCase = async () => {
-    if (!selectedConv) return;
-    const { error } = await supabase
-      .from("conversations")
-      .update({ taken_by: userId, taken_at: new Date().toISOString() } as any)
-      .eq("id", selectedConv.id);
-    if (!error) {
-      toast({ title: "Caso asignado", description: "Ahora eres el responsable de este ticket." });
-      setConversations(prev => prev.map(c => c.id === selectedConv.id ? { ...c, taken_by: userId || null } : c));
-      setSelectedConv(prev => prev ? { ...prev, taken_by: userId || null } : null);
-    } else {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+  /** Refleja en la lista y en el chat abierto el dueño que devolvió la RPC. */
+  const aplicarPropiedad = (convId: string, dueno: string | null, tomadoEn: string | null) => {
+    setConversations(prev => prev.map(c => c.id === convId ? { ...c, taken_by: dueno, taken_at: tomadoEn } : c));
+    setSelectedConv(prev => prev && prev.id === convId ? { ...prev, taken_by: dueno, taken_at: tomadoEn } : prev);
+  };
+
+  /**
+   * Toma el caso vía RPC. `forzar` se lo quita al dueño actual, que recibe aviso.
+   * Devuelve el resultado para que quien llame decida qué hacer con la colisión.
+   */
+  const tomarCaso = async (convId: string, forzar = false): Promise<CasoResultado> => {
+    setCasoOcupado(true);
+    const r = await casoTomar(convId, forzar);
+    setCasoOcupado(false);
+    if (r.ok) {
+      aplicarPropiedad(convId, r.tomado_por ?? userId ?? null, r.tomado_en ?? new Date().toISOString());
+    }
+    return r;
+  };
+
+  /**
+   * Toma el caso al responder, sin que nadie apriete nada.
+   *
+   * El origen real de la confusión es el operador que contesta sin tomar el caso:
+   * deducirlo del acto de responder saca la disciplina de la ecuación. Nunca
+   * bloquea el envío — si falla, el mensaje sale igual.
+   *
+   * Se salta durante la simulación: ahí `auth.uid()` sigue siendo el del
+   * administrador, así que el caso quedaría a su nombre sin que nadie lo note.
+   * Los botones manuales sí funcionan simulando, con su aviso a la vista.
+   */
+  const tomarCasoAlResponder = async () => {
+    if (!selectedConv || selectedConv.taken_by || isSimulating) return;
+    const convId = selectedConv.id;
+    const r = await casoTomar(convId);
+    if (r.ok) {
+      aplicarPropiedad(convId, r.tomado_por ?? userId ?? null, r.tomado_en ?? new Date().toISOString());
+      toast({ title: "Tomaste este caso", description: "Se asignó a tu nombre al responder." });
     }
   };
 
+  /**
+   * Reenvía por el canal oficial lo que no salió porque la sesión sin costo estaba
+   * caída. No se manda solo: cuesta plata y esa decisión es del operador.
+   */
+  const confirmarReenvioOficial = async () => {
+    const cuerpo = reenvioOficial;
+    if (!cuerpo) return;
+    setReenvioOficial(null);
+    const r = await enviarPorCanal("ycloud", cuerpo);
+    if (!r.ok) {
+      toast({ title: "Tampoco salió por el oficial", description: r.mensaje, variant: "destructive" });
+      return;
+    }
+    // El texto seguía en el campo por si cancelaba; ya se fue, se limpia.
+    if (cuerpo.message && msgTextareaRef.current?.value === cuerpo.message) {
+      msgTextareaRef.current.value = "";
+      msgTextareaRef.current.style.height = "48px";
+      setHasContent(false);
+    }
+    toast({ title: "Enviado por el canal oficial" });
+  };
+
+  /* ── Editar / borrar un mensaje ya enviado ──────────────────────────────────
+   *
+   * Sólo el canal sin costo permite tocar un mensaje entregado (la API oficial no
+   * expone editar ni borrar). El servidor es el que manda: valida empresa, sesión
+   * y la ventana real —15 minutos para editar, 48 h para borrar—, así que acá sólo
+   * se decide qué se puede ofrecer y cómo se lee la respuesta.
+   */
+
+  /** Texto plano sin adjunto: lo único que WhatsApp deja editar. */
+  const esTextoEditable = (m: Message) =>
+    !m.media_url && ['conversation', 'extendedTextMessage', 'text'].includes(m.message_type);
+
+  /**
+   * Las burbujas optimistas (`opt-…`) todavía no tienen fila en la base, así que el
+   * servidor no puede resolverlas por id: hasta que llega el INSERT por Realtime no
+   * hay nada que editar ni borrar.
+   */
+  const tieneAccionesDeMensaje = (m: Message) =>
+    m.direction === 'outbound'
+    && m.provider === 'evolution'
+    && m.status !== 'deleted'
+    && !m.id.startsWith('opt-');
+
+  const abrirEdicion = (m: Message) => {
+    setTextoEdicion(m.content ?? "");
+    setMensajeEditando(m);
+  };
+
+  const guardarEdicion = async () => {
+    const msg = mensajeEditando;
+    if (!msg || guardandoEdicion) return;
+    const nuevo = textoEdicion.trim();
+    if (!nuevo) {
+      toast({ title: "El mensaje no puede quedar vacío", variant: "destructive" });
+      return;
+    }
+    if (nuevo === (msg.content ?? "").trim()) {
+      setMensajeEditando(null);
+      return;
+    }
+
+    setGuardandoEdicion(true);
+    const r = await editarMensajeEvolution(msg.id, nuevo);
+    setGuardandoEdicion(false);
+
+    if (r.ok) {
+      const texto = r.content ?? nuevo;
+      const esUltimo = messages[messages.length - 1]?.id === msg.id;
+      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, content: texto } : m));
+      if (esUltimo) {
+        setConversations(prev => prev.map(c =>
+          c.id === msg.conversation_id ? { ...c, last_message_preview: texto } : c));
+      }
+      setMensajeEditando(null);
+      toast({ title: "Mensaje editado", description: "El cliente ve el texto corregido en WhatsApp." });
+      return;
+    }
+
+    if (r.fueraDeVentana) {
+      setMensajeEditando(null);
+      toast({
+        title: "Ya no se puede editar",
+        description: r.mensaje || "Pasaron más de 15 minutos desde el envío: WhatsApp no permite editar el mensaje.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (r.sesionCaida) {
+      // Mismo criterio que el envío: no es un error del mensaje, lo que se quería
+      // decir puede salir por el canal oficial. Se deja el texto en el campo para
+      // que el operador lo reenvíe desde ahí si acepta el costo.
+      refrescarCanal();
+      const conv = selectedConv;
+      if (conv?.wa_id) {
+        if (msgTextareaRef.current) {
+          msgTextareaRef.current.value = nuevo;
+          msgTextareaRef.current.style.height = "auto";
+        }
+        setHasContent(true);
+        setReenvioOficial({
+          to: conv.wa_id,
+          message: nuevo,
+          conversationId: msg.conversation_id,
+          senderName: effectiveSenderName,
+        });
+      }
+      setMensajeEditando(null);
+      toast({
+        title: "La sesión de WhatsApp no está conectada",
+        description: "El mensaje quedó como estaba. Reconectá el canal sin costo o envía el texto corregido por el oficial.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: "No se pudo editar el mensaje",
+      description: r.mensaje || "Intenta de nuevo.",
+      variant: "destructive",
+    });
+  };
+
+  const confirmarBorrado = async () => {
+    const msg = mensajeABorrar;
+    if (!msg || borrando) return;
+    setBorrando(true);
+    const r = await borrarMensajeEvolution(msg.id);
+    setBorrando(false);
+    setMensajeABorrar(null);
+
+    if (r.ok || r.yaBorrado) {
+      // La fila no desaparece: queda con status 'deleted' y el contenido se
+      // conserva para auditoría. El operador tiene que ver que ahí hubo algo.
+      const esUltimo = messages[messages.length - 1]?.id === msg.id;
+      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: 'deleted' } : m));
+      if (esUltimo) {
+        setConversations(prev => prev.map(c =>
+          c.id === msg.conversation_id ? { ...c, last_message_preview: '🚫 Mensaje eliminado' } : c));
+      }
+      toast({
+        title: "Mensaje eliminado",
+        description: r.yaBorrado ? "Ya estaba eliminado en WhatsApp." : "Se borró para el cliente. En el portal queda registrado.",
+      });
+      return;
+    }
+
+    if (r.sesionCaida) {
+      refrescarCanal();
+      toast({
+        title: "La sesión de WhatsApp no está conectada",
+        description: "No se pudo borrar el mensaje. Reconectá el canal sin costo e intenta de nuevo.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (r.fueraDeVentana) {
+      toast({
+        title: "Ya no se puede eliminar",
+        description: r.mensaje || "Pasaron más de 48 horas desde el envío: WhatsApp no permite borrar el mensaje.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: "No se pudo eliminar el mensaje",
+      description: r.mensaje || "Intenta de nuevo.",
+      variant: "destructive",
+    });
+  };
+
+  const handleTakeCase = async () => {
+    if (!selectedConv) return;
+    const convId = selectedConv.id;
+    const r = await tomarCaso(convId);
+
+    if (r.ok) {
+      toast({
+        title: r.ya_era_mio ? "Ya era tuyo" : "Caso tomado",
+        description: r.ya_era_mio ? "Este caso ya estaba a tu nombre." : "Ahora eres el responsable de esta conversación.",
+      });
+      return;
+    }
+    if (r.error === "ya_tomado") {
+      // Otro operador ganó la carrera. No se bloquea: se ofrece tomarlo igual.
+      setArrebatoPendiente({ convId, nombre: r.dueno_nombre ?? "otro operador" });
+      return;
+    }
+    toast({
+      title: r.error === "sin_permiso" ? "No puedes tomar este caso" : "No se pudo tomar el caso",
+      description: r.mensaje ?? "Intenta de nuevo en unos segundos.",
+      variant: "destructive",
+    });
+  };
+
+  const confirmarArrebato = async () => {
+    const pendiente = arrebatoPendiente;
+    if (!pendiente) return;
+    setArrebatoPendiente(null);
+    const r = await tomarCaso(pendiente.convId, true);
+    toast({
+      title: r.ok ? "Caso tomado" : "No se pudo tomar el caso",
+      description: r.ok
+        ? `Se le avisó a ${pendiente.nombre} que ahora lo llevas tú.`
+        : (r as any).mensaje ?? "Intenta de nuevo en unos segundos.",
+      variant: r.ok ? undefined : "destructive",
+    });
+  };
+
+  const handleLiberarCaso = async () => {
+    if (!selectedConv) return;
+    const convId = selectedConv.id;
+    setCasoOcupado(true);
+    const r = await casoLiberar(convId);
+    setCasoOcupado(false);
+    if (r.ok) {
+      aplicarPropiedad(convId, null, null);
+      toast({ title: "Caso liberado", description: "Queda disponible para cualquier operador." });
+    } else {
+      toast({ title: "No se pudo liberar", description: r.mensaje ?? "Intenta de nuevo.", variant: "destructive" });
+    }
+  };
+
+  /** Transferencia a una persona concreta (la RPC avisa al destinatario). */
+  const handleTransferirAPersona = async () => {
+    if (!selectedConv || !transferPersonaId) return;
+    const convId = selectedConv.id;
+    setCasoOcupado(true);
+    const r = await casoTransferir(convId, transferPersonaId, transferPersonaNota);
+    setCasoOcupado(false);
+    if (r.ok) {
+      const destino = porOperador[transferPersonaId]?.nombre ?? "el operador elegido";
+      aplicarPropiedad(convId, transferPersonaId, new Date().toISOString());
+      setTransferPersonaOpen(false);
+      setTransferPersonaId("");
+      setTransferPersonaNota("");
+      toast({ title: "Caso transferido", description: `Ahora lo lleva ${destino}.` });
+    } else {
+      toast({
+        title: r.error === "destino_invalido" ? "Ese operador no es de esta empresa" : "No se pudo transferir",
+        description: r.mensaje ?? "Elige otro destinatario e intenta de nuevo.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  /**
+   * Transferencia a un DEPARTAMENTO (distinta de la anterior, que es a una persona).
+   *
+   * El caso se libera con la RPC en vez de poner `taken_by: null` a mano: así queda
+   * en `casos_historial` y no se pisa una toma que ocurra en el mismo instante.
+   */
   const handleTransferChat = async () => {
     if (!selectedConv) return;
+    const convId = selectedConv.id;
+
+    if (selectedConv.taken_by) {
+      const liberado = await casoLiberar(convId);
+      if (!liberado.ok) {
+        toast({
+          title: "No se pudo transferir",
+          description: liberado.mensaje ?? "El caso sigue asignado a alguien.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     const { error } = await supabase
       .from("conversations")
-      .update({ assigned_role: transferRole, taken_by: null, taken_at: null } as any)
-      .eq("id", selectedConv.id);
+      .update({ assigned_role: transferRole } as any)
+      .eq("id", convId);
     if (!error) {
       toast({ title: "Caso transferido", description: `Enviado al departamento: ${transferRole}` });
       setIsTransferModalOpen(false);
-      setConversations(prev => prev.filter(c => c.id !== selectedConv.id));
+      setConversations(prev => prev.filter(c => c.id !== convId));
       setSelectedConv(null);
     } else {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
   };
 
+  const handleRebootOnu = async () => {
+    if (!activeTicket?.onu_external_id || !companyId) return;
+    setRebootingOnu(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("reboot-onu", {
+        body: {
+          company_id: companyId,
+          onu_external_id: activeTicket.onu_external_id,
+          ticket_id: activeTicket.id,
+        },
+      });
+      if (error || data?.error) {
+        toast({
+          title: "No se pudo reiniciar la ONU",
+          description: data?.error || error?.message || "Intenta de nuevo en unos segundos.",
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({ title: "✅ ONU reiniciada", description: data?.message || "El equipo del cliente se está reiniciando." });
+    } catch (e: any) {
+      toast({ title: "No se pudo reiniciar la ONU", description: e?.message || "Error de conexión.", variant: "destructive" });
+    } finally {
+      setRebootingOnu(false);
+      setRebootConfirmOpen(false);
+    }
+  };
+
+  /**
+   * La sesión analizada de esta conversación que hay que dictaminar.
+   *
+   * Es la más reciente con nota baja, que es la que la mandó a revisión. Si no
+   * hay ninguna, no se bloquea el cierre: no habría nada que dictaminar.
+   */
+  const buscarSesionARevisar = async (convId: string): Promise<{ id: string; nota: number | null } | null> => {
+    const { data } = await (supabase as any)
+      .from("conversation_analysis")
+      .select("id, session_start, nota_efectiva")
+      .eq("conversation_id", convId)
+      .lt("nota_efectiva", 6)
+      .order("session_start", { ascending: false })
+      .limit(1);
+    const fila = Array.isArray(data) ? data[0] : null;
+    // La nota viaja para que la pregunta pueda decir de cuánto se está hablando.
+    return fila?.id ? { id: fila.id, nota: fila.nota_efectiva ?? null } : null;
+  };
+
+  /**
+   * Guarda el veredicto y, si salió bien, sigue con el cierre.
+   *
+   * Si falla, el ticket queda abierto a propósito: cerrarlo igual dejaría la
+   * sesión sin dictaminar, que es justo lo que esta pantalla vino a evitar.
+   */
+  const guardarVeredictoYCerrar = async (
+    veredicto: "error_real" | "falso_positivo",
+    nota: number | null,
+    comentario: string,
+  ) => {
+    if (!veredictoPendiente) return;
+    setGuardandoVeredicto(true);
+    const { data: sesion } = await supabase.auth.getUser();
+    const { error } = await (supabase as any).rpc("revisar_analisis", {
+      p_analysis_id: veredictoPendiente.analysisId,
+      p_veredicto: veredicto,
+      ...(veredicto === "falso_positivo" ? { p_nota: nota } : {}),
+      ...(comentario.trim() ? { p_comentario: comentario.trim() } : {}),
+      ...(sesion?.user?.id ? { p_revisor: sesion.user.id } : {}),
+    });
+    setGuardandoVeredicto(false);
+    if (error) {
+      toast({ title: "No se pudo guardar la revisión", description: error.message, variant: "destructive" });
+      return;
+    }
+    const seguir = veredictoPendiente.cierreStatus;
+    setVeredictoPendiente(null);
+    toast({
+      title: veredicto === "error_real" ? "Marcada como error real" : `Corregida a nota ${nota}`,
+      description: "Ahora se finaliza el ticket.",
+    });
+    // El `null` del estado ya se aplicó, así que esta vuelta no vuelve a preguntar.
+    handleCloseChat(seguir);
+  };
+
   const handleCloseChat = async (statusOverride?: string) => {
     if (!selectedConv) return;
+
+    /*
+     * El disparador es finalizar, no cambiar de estado: un operador puede mover el
+     * ticket varias veces y la pregunta tiene que aparecer una sola vez, al final.
+     */
+    if (activeTicket?.ia_review && !veredictoPendiente) {
+      const sesionARevisar = await buscarSesionARevisar(selectedConv.id);
+      if (sesionARevisar) {
+        setVeredictoPendiente({
+          analysisId: sesionARevisar.id, nota: sesionARevisar.nota, cierreStatus: statusOverride,
+        });
+        return;
+      }
+    }
+
     setPendingCloseStatus(statusOverride || null);
 
     // Flujo para finalizar ticket + cerrar conversación
@@ -2209,14 +3127,30 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         if (closeErr) console.error('[handleConfirmClose] close-ticket error:', closeErr);
 
         // Limpiar nota del equipo al cerrar ticket (próxima derivación empieza en blanco)
+        /*
+         * La nota se borra, no se vacia.
+         *
+         * Antes esto hacia un upsert con content: '' y el error nunca se miraba.
+         * Si la fila no pasaba —por una columna que no acepta vacio, por RLS— el
+         * operador igual veia la caja limpia, porque el estado local se reseteaba
+         * dentro del .then() pasara lo que pasara. En la base la nota seguia ahi y
+         * reaparecia en el ticket siguiente del mismo cliente. Borrar la fila no
+         * depende de que columnas acepten vacio, y ahora el error se avisa.
+         */
         supabase.from('conversation_notes')
-          .upsert({
-            conversation_id: selectedConv.id,
-            company_id: companyId,
-            content: '',
-            updated_at: new Date().toISOString(),
-          }, { onConflict: 'conversation_id' })
-          .then(() => {
+          .delete()
+          .eq('conversation_id', selectedConv.id)
+          .eq('company_id', companyId)
+          .then(({ error: errNota }: any) => {
+            if (errNota) {
+              console.error('[cierre] No se pudo limpiar la nota del caso:', errNota);
+              toast({
+                title: 'La nota del caso quedo sin borrar',
+                description: 'Borrala a mano: si no, aparece en la proxima derivacion de este cliente.',
+                variant: 'destructive',
+              });
+              return;
+            }
             setNoteInput('');
             setConvNotes(prev => { const n = { ...prev }; delete n[selectedConv.id]; return n; });
           });
@@ -2301,6 +3235,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     const q = searchTerm.toLowerCase();
     const words = q ? q.split(/\s+/).filter(t => t.length >= 4) : [];
     const ticketStatus = chatFilter.startsWith('ticket:') ? chatFilter.replace('ticket:', '') : null;
+    const soloTecnicos = chatFilter === 'tecnicos';
 
     return withHits.filter(c => {
       const matchesName = !searchTerm
@@ -2312,15 +3247,76 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       if (!matchesName && !matchesContent) return false;
       if (searchTerm.trim() && matchesContent) return true;
       if (c.status === 'cerrado') return false;
+      if (soloTecnicos) {
+        /*
+         * Por número de la agenda, o por la etiqueta vieja.
+         *
+         * Lo segundo es para no perder de vista ningún chat que hoy aparece acá:
+         * si un técnico quedó marcado con la etiqueta pero su número todavía no
+         * está cargado en la agenda, igual sigue saliendo.
+         */
+        return !!buscarTecnico(c.wa_id)
+          || (!!claveEtiquetaTecnicos && ticketStatusByConvId[c.id] === claveEtiquetaTecnicos);
+      }
       if (ticketStatus) return ticketStatusByConvId[c.id] === ticketStatus;
       return true;
     }).sort((a, b) =>
       new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
     );
-  }, [conversations, searchTerm, searchResults, ticketStatusByConvId, chatFilter]);
+  }, [conversations, searchTerm, searchResults, ticketStatusByConvId, chatFilter, userId, buscarTecnico, claveEtiquetaTecnicos]);
 
-  const getInitials = (name: string | null, waId: string) =>
-    (name || waId).replace("+", "").slice(0, 2).toUpperCase();
+  /** Cuántos chats caen hoy bajo el filtro de técnicos, para el número del chip. */
+  const chatsTecnicos = useMemo(
+    () => conversations.filter(c =>
+      c.status !== 'cerrado'
+      && (!!buscarTecnico(c.wa_id)
+        || (!!claveEtiquetaTecnicos && ticketStatusByConvId[c.id] === claveEtiquetaTecnicos)),
+    ),
+    [conversations, buscarTecnico, claveEtiquetaTecnicos, ticketStatusByConvId],
+  );
+  const cuentaTecnicos = chatsTecnicos.length;
+  /** Chats de técnicos con mensajes sin leer: el globo rojo del chip, igual que el de las demás etiquetas. */
+  const unreadTecnicos = useMemo(() => chatsTecnicos.filter(c => c.unread_count > 0).length, [chatsTecnicos]);
+
+  const convVisible = filtered.slice(0, convVisibleCount);
+
+  // Reiniciar el bloque visible al cambiar filtro o búsqueda.
+  useEffect(() => { setConvVisibleCount(CONV_PAGE); }, [chatFilter, searchTerm]);
+
+  // Scroll infinito determinístico: auto-rellena hasta que haya barra de scroll y
+  // carga el siguiente bloque al acercarse al final. (Mismo enfoque que el centro de tickets.)
+  useEffect(() => {
+    const el = convSentinelRef.current;
+    const vp = el?.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null;
+    if (!vp) return;
+    const total = filtered.length;
+    const grow = () => setConvVisibleCount(c => (c < total ? Math.min(c + CONV_PAGE, total) : c));
+    const maybeLoad = () => {
+      if (convVisibleCount >= total) return;
+      const hasScrollbar = vp.scrollHeight > vp.clientHeight + 1;
+      // Auto-rellenar solo hasta tener barra de scroll (tope de seguridad por si el
+      // contenedor no recortara, para no cascadear a miles).
+      const needFill = !hasScrollbar && convVisibleCount < 160;
+      const nearBottom = hasScrollbar && vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 300;
+      if (needFill || nearBottom) grow();
+    };
+    vp.addEventListener("scroll", maybeLoad, { passive: true });
+    // Medir el relleno inicial tras el layout (si no, scrollHeight/clientHeight
+    // vienen sin asentar y se auto-rellena de más).
+    const raf = requestAnimationFrame(maybeLoad);
+    return () => { cancelAnimationFrame(raf); vp.removeEventListener("scroll", maybeLoad); };
+  }, [filtered.length, convVisibleCount]);
+
+  /*
+   * Las iniciales salen del telefono, no del nombre.
+   *
+   * La lista muestra el numero, asi que sacar las letras del nombre dejaria
+   * avatares que no corresponden a lo que se lee al lado. Y los dos primeros
+   * digitos tampoco sirven: en Chile todos empiezan en 56, quedarian todos
+   * iguales. Los dos ultimos si distinguen.
+   */
+  const getInitials = (_name: string | null, waId: string) =>
+    waId.replace(/\D/g, "").slice(-2) || "--";
 
   // Helpers para presencia en tiempo real
   const getAgentInitials = (name: string) => {
@@ -2350,16 +3346,158 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   // 24h window validation
   const lastInbound = useMemo(() => messages.filter(m => m.direction === 'inbound').pop(), [messages]);
-  const horasDesdeUltimoMensaje = lastInbound 
+  const horasDesdeUltimoMensaje = lastInbound
     ? (Date.now() - new Date(lastInbound.created_at).getTime()) / (1000 * 60 * 60)
     : Infinity;
-  const puedeEnviar = horasDesdeUltimoMensaje <= 24;
+  const dentroDeVentana = horasDesdeUltimoMensaje <= 24;
   const horasRestantes = Math.max(0, 24 - horasDesdeUltimoMensaje);
+
+  /*
+   * ── Por dónde sale la respuesta ───────────────────────────────────────────
+   *
+   * Dos canales, nombrados por lo que cuestan: la API oficial de Meta se factura
+   * por mensaje, la no oficial es una sesión de WhatsApp Web (Baileys) y no
+   * cuesta. El chat web salió de acá: se guardaba en la base y el cliente no lo
+   * veía salvo que tuviera el widget abierto, así que el operador creía haber
+   * contestado sin haber contestado.
+   *
+   * Disponibilidad según lo que la empresa tiene configurado, y la selección
+   * inicial es la que diga `company_config.default_provider`.
+   */
+  const noOficialConfigurada = cfgCanales
+    ? (cfgCanales.evolution_enabled && !!cfgCanales.evolution_instance)
+    // Sin fila legible: lo que ya sabe `evolution_estado`. Es más honesto que
+    // esconder el canal por un problema de permisos.
+    : evolutionHabilitado;
+  const oficialConfigurada = cfgCanales
+    ? (!!cfgCanales.ycloud_phone && cfgCanales.tiene_ycloud_key)
+    // El oficial es el canal histórico: si no se pudo leer la config, no se bloquea.
+    : true;
+  const canalPorDefecto: Proveedor = cfgCanales?.default_provider === 'evolution' ? 'evolution' : 'ycloud';
+
+  const estaDisponible = (p: Proveedor) => p === 'evolution' ? noOficialConfigurada : oficialConfigurada;
+
+  /**
+   * La sesión sin costo se cayó y ya lo sabemos (`null` = todavía no se consultó).
+   * Mientras no se sepa, no se mueve nada: saltar de canal al abrir el chat sería
+   * peor que esperar la respuesta.
+   */
+  const sesionNoOficialCaida = evolutionEstadoSesion !== null && !evolutionUsable;
+
+  /** Lo elegido para esta conversación, o el default de la empresa si no eligió nada. */
+  const canalDeLaConversacion: Proveedor = (() => {
+    const candidato = (selectedConv && canalPorConversacion[selectedConv.id]) || canalPorDefecto;
+    let canal = candidato;
+    if (!estaDisponible(canal)) {
+      const otro: Proveedor = candidato === 'evolution' ? 'ycloud' : 'evolution';
+      if (estaDisponible(otro)) canal = otro;
+    }
+    // Si la no oficial está caída, por ahí no va a salir nada: el selector se mueve
+    // solo a la oficial. El fallback del envío sigue existiendo para el caso en que
+    // se caiga entre esta consulta y el mensaje.
+    if (canal === 'evolution' && sesionNoOficialCaida && oficialConfigurada) canal = 'ycloud';
+    return canal;
+  })();
+
+  const elegirCanal = (p: Proveedor) => {
+    if (!selectedConv) return;
+    setCanalPorConversacion(prev => ({ ...prev, [selectedConv.id]: p }));
+  };
+
+  /**
+   * "Con costo (~$17,66 CLP por mensaje)" o, sin precio cargado, sólo "con costo".
+   * El valor de `costo_mensaje_oficial` está en pesos chilenos —17,66 CLP son los
+   * ~0,02 USD de una plantilla—, así que se dice CLP para que nadie lo lea en dólares.
+   */
+  const costoMensajeOficial = (() => {
+    const n = cfgCanales?.costo_mensaje_oficial;
+    if (!n || !Number.isFinite(n)) return null;
+    return `$${n.toLocaleString('es-CL', { maximumFractionDigits: 2 })} CLP`;
+  })();
+
+  /**
+   * La ventana de 24 h es una regla comercial de Meta sobre su API de negocio: no
+   * es del protocolo. La sesión sin costo escribe como una persona desde su
+   * teléfono y ahí no rige.
+   */
+  const sinVentana = canalDeLaConversacion === 'evolution';
+  const puedeEnviar = dentroDeVentana || sinVentana;
+  /** Fuera de ventana con la no oficial disponible y sin usar todavía. */
+  const ofrecerSinCosto = !dentroDeVentana && noOficialConfigurada && !sinVentana;
+
+  /** Traduce el rechazo del proveedor a algo que el operador pueda accionar. */
+  const mensajeDeEnvio = (r: ResultadoEnvio, canal: Proveedor): string => {
+    const crudo = r.mensaje || '';
+    if (canal === 'ycloud' && /ventana|24\s*h|window|re-?engagement|template|plantilla/i.test(crudo)) {
+      return "La API oficial no permite texto libre fuera de la ventana de 24 h: hay que enviar una plantilla.";
+    }
+    if (r.red) {
+      return canal === 'evolution'
+        ? "No se pudo confirmar el envío por la API no oficial. Revisá la conversación antes de reenviar."
+        : "No se pudo confirmar el envío por la API oficial. Revisá la conversación antes de reenviar.";
+    }
+    return crudo || (canal === 'evolution'
+      ? "La API no oficial no pudo enviar el mensaje."
+      : "La API oficial no pudo enviar el mensaje.");
+  };
+
+  /** Revierte la burbuja optimista y devuelve el texto al campo. */
+  const revertirEnvio = (optimisticId: string, texto: string) => {
+    setMessages(prev => prev.filter(m => m.id !== optimisticId));
+    if (texto && msgTextareaRef.current && !msgTextareaRef.current.value.trim()) {
+      msgTextareaRef.current.value = texto;
+      msgTextareaRef.current.style.height = "auto";
+      setHasContent(true);
+    }
+  };
+
+  /**
+   * Envía por el canal pedido y, si ese canal es la API no oficial y se cayó,
+   * reintenta UNA vez por la oficial.
+   *
+   * Nunca al revés: la oficial cuesta y esa decisión no se toma sola. Tampoco hay
+   * fallback si el operador ya había elegido la oficial, ni por errores de
+   * validación o permisos. Y no hay fallback cuando no hubo respuesta: un timeout
+   * no prueba que el mensaje no salió, y reenviarlo por el oficial le mandaría un
+   * segundo WhatsApp al cliente. Ahí se revierte y decide el operador.
+   */
+  const enviarConFallback = async (
+    cuerpo: CuerpoEnvio,
+    canal: Proveedor,
+  ): Promise<{ r: ResultadoEnvio; fallback: boolean }> => {
+    let r: ResultadoEnvio;
+    try {
+      r = await enviarPorCanal(canal, cuerpo);
+    } catch (e: any) {
+      r = { ok: false, red: true, mensaje: e?.message };
+    }
+    if (r.ok) return { r, fallback: false };
+
+    const cayoNoOficial = canal === 'evolution'
+      && (!!r.sesionCaida || (r.estado != null && r.estado !== 'open'));
+    if (!cayoNoOficial || !oficialConfigurada) return { r, fallback: false };
+
+    let r2: ResultadoEnvio;
+    try {
+      r2 = await enviarPorCanal('ycloud', cuerpo);
+    } catch (e: any) {
+      r2 = { ok: false, red: true, mensaje: e?.message };
+    }
+    // La sesión dejó de estar arriba: que el selector lo refleje ya.
+    refrescarCanal();
+    if (r2.ok) {
+      const convId = cuerpo.conversationId;
+      setCanalPorConversacion(prev => ({ ...prev, [convId]: 'ycloud' }));
+    }
+    return { r: r2, fallback: true };
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedConv) return;
-    
+
+    // La ventana de 24 h es una regla de WhatsApp: no aplica al chat web ni al
+    // canal sin costo, que no pasa por la API de negocio de Meta.
     if (!puedeEnviar) {
       toast({ title: "Envío Bloqueado", description: "Han pasado más de 24 horas desde el último mensaje del cliente.", variant: "destructive" });
       return;
@@ -2367,7 +3505,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
     setSending(true);
     try {
-      const fileExt = file.name.split('.').pop();
+      // En minúscula: un "FOTO.JPG" dejaba la ruta con extensión en mayúscula y
+      // algunos visores la tratan distinta a la misma foto en minúscula.
+      const fileExt = (file.name.split('.').pop() || '').toLowerCase();
       const uniqueName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExt}`;
       const filePath = `${selectedConv.id}/${uniqueName}`;
 
@@ -2375,7 +3515,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         .from('whatsapp_media')
         .upload(filePath, file, { contentType: file.type });
 
-      if (uploadError) throw new Error("Error al subir archivo: " + uploadError.message);
+      if (uploadError) {
+        /*
+         * Cuando el bucket rechaza el archivo, el envío nunca llega a hacerse: no
+         * hay error del lado del backend porque nunca se lo llamó. Se reporta a
+         * mano para que ese caso deje de ser invisible.
+         */
+        Sentry.captureException(uploadError, {
+          tags: { area: "adjunto" },
+          extra: { tipo: file.type, extension: fileExt, tamano: file.size },
+        });
+        throw new Error("Error al subir archivo: " + uploadError.message);
+      }
 
       const { data: { publicUrl } } = supabase.storage
         .from('whatsapp_media')
@@ -2390,18 +3541,42 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       else if (file.type.startsWith('video/')) ycloudType = 'video';
       else if (file.type.startsWith('audio/')) ycloudType = 'audio';
 
-      const { error: sendError } = await supabase.functions.invoke("ycloud-send", {
-        body: {
-          to: selectedConv.wa_id,
-          message: null,               // No text fallback — let YCloud handle it as pure media
-          conversationId: selectedConv.id,
-          mediaUrl: publicUrl,
-          mediaType: ycloudType,
-          senderName: effectiveSenderName,
-        },
-      });
-      if (sendError) throw sendError;
-      toast({ title: "Archivo Enviado", description: "El adjunto fue entregado al cliente." });
+      const cuerpoMedia: CuerpoEnvio = {
+        to: selectedConv.wa_id,
+        message: null,               // No text fallback — let YCloud handle it as pure media
+        conversationId: selectedConv.id,
+        mediaUrl: publicUrl,
+        mediaType: ycloudType,
+        // El nombre que eligió el operador, para que al cliente le llegue
+        // "comprobante.pdf" y no el identificador con el que se guardó.
+        fileName: file.name,
+        senderName: effectiveSenderName,
+      };
+      // Mismo criterio que el texto: si la no oficial está caída, el adjunto sale
+      // por la oficial. El archivo ya está subido, así que el reintento no lo sube
+      // de nuevo.
+      const canalMedia = canalDeLaConversacion;
+      const { r: envio, fallback } = await enviarConFallback(cuerpoMedia, canalMedia);
+      if (!envio.ok) {
+        // Un timeout no dice si el adjunto salió: no se reintenta solo.
+        if (envio.red) {
+          toast({
+            title: "Envío sin confirmar",
+            description: mensajeDeEnvio(envio, fallback ? 'ycloud' : canalMedia),
+            variant: "destructive",
+          });
+          return;
+        }
+        throw new Error(mensajeDeEnvio(envio, fallback ? 'ycloud' : canalMedia));
+      }
+      if (fallback) {
+        toast({
+          title: "Salió por la API oficial",
+          description: "La API no oficial está caída. El archivo salió por la API oficial (con costo).",
+        });
+      } else {
+        toast({ title: "Archivo Enviado", description: "El adjunto fue entregado al cliente." });
+      }
     } catch (err: any) {
       toast({ title: "Error al subir archivo", description: err.message, variant: "destructive" });
     } finally {
@@ -2411,6 +3586,29 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   };
 
   // ── Pre-compute badge counts once per render (O(n) instead of O(n×m)) ──
+  /** Trae el último mensaje entero de una conversación y lo deja cacheado. */
+  const cargarUltimoMensaje = useCallback(async (convId: string) => {
+    const { data } = await supabase
+      .from("messages")
+      .select("content, direction, sender_type")
+      .eq("conversation_id", convId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const m = Array.isArray(data) ? data[0] : null;
+    if (!m?.content) return;
+    /*
+     * Quién habló. `direction` entrante siempre es el cliente; saliente puede ser
+     * el agente de IA o una persona del equipo, y esa diferencia es justamente la
+     * que decide si hay que abrir el chat ahora.
+     */
+    const quien = m.direction === "inbound"
+      ? "lo escribió el cliente"
+      : m.sender_type === "agent"
+        ? "respondió el agente"
+        : "respondió el equipo";
+    setUltimosMensajes(prev => ({ ...prev, [convId]: { texto: m.content, quien } }));
+  }, []);
+
   const badgeCounts = useMemo(() => {
     const counts: Record<string, { count: number; unread: number }> = {};
     for (const label of ticketLabels) {
@@ -2427,10 +3625,71 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     return counts;
   }, [conversations, ticketStatusByConvId, ticketLabels]);
 
+  /*
+   * Etiquetas en el orden en que se están usando.
+   *
+   * Cada empresa puede tener muchas etiquetas y en fila ocupaban media bandeja.
+   * "Todos" y "Técnicos" quedan fijos al inicio; el resto se ordena por
+   * movimiento: primero las que tienen chats sin leer (más sin leer, más
+   * arriba), después por el último mensaje de sus chats. Así lo que se está
+   * moviendo queda siempre en las filas visibles. Las que no tienen chats
+   * mantienen el orden en que se configuraron.
+   */
+  const etiquetasVisibles = useMemo(() => {
+    const ultimo: Record<string, number> = {};
+    for (const c of conversations) {
+      const k = ticketStatusByConvId[c.id];
+      if (!k) continue;
+      const ts = c.last_message_at ? new Date(c.last_message_at).getTime() : 0;
+      if (ts > (ultimo[k] ?? 0)) ultimo[k] = ts;
+    }
+    return ticketLabels
+      .filter(l => !l.is_final && !esEtiquetaTecnicos(l))
+      .map((l, i) => ({ l, i }))
+      .sort((a, b) =>
+        ((badgeCounts[b.l.key]?.unread ?? 0) - (badgeCounts[a.l.key]?.unread ?? 0))
+        || ((ultimo[b.l.key] ?? 0) - (ultimo[a.l.key] ?? 0))
+        || (a.i - b.i))
+      .map(x => x.l);
+  }, [conversations, ticketStatusByConvId, ticketLabels, badgeCounts]);
+
+  // Filas de chips: sólo se ven las 3 primeras; el resto queda tras "Ver todas".
+  const FILAS_CHIPS = 2;
+  const [altoChips, setAltoChips] = useState<number | null>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
+  const [chipsExpandido, setChipsExpandido] = useState(false);
+  const [chipsOcultos, setChipsOcultos] = useState<string[]>([]);
+  useLayoutEffect(() => {
+    const el = chipsRef.current;
+    if (!el) return;
+    const medir = () => {
+      // Se mide con todos los chips puestos (el recorte del contenedor no altera el layout).
+      const todos = Array.from(el.querySelectorAll<HTMLElement>('[data-fila-chip]'));
+      if (todos.length === 0) { setChipsOcultos([]); setAltoChips(null); return; }
+      const filas = Array.from(new Set(todos.map(h => h.offsetTop))).sort((a, b) => a - b);
+      if (filas.length <= FILAS_CHIPS) { setChipsOcultos([]); setAltoChips(null); return; }
+      const corte = filas[FILAS_CHIPS];
+      const ultimaFila = todos.filter(h => h.offsetTop === filas[FILAS_CHIPS - 1]);
+      const bajo = Math.max(...ultimaFila.map(h => h.offsetTop + h.offsetHeight));
+      const ocultos = todos.filter(h => h.offsetTop >= corte && h.dataset.chipKey).map(h => h.dataset.chipKey!);
+      setAltoChips(bajo + 2);
+      setChipsOcultos(prev => prev.length === ocultos.length && prev.every((k, i) => k === ocultos[i]) ? prev : ocultos);
+    };
+    medir();
+    const ro = new ResizeObserver(medir);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [etiquetasVisibles, tecnicos.length, claveEtiquetaTecnicos, chipsExpandido, badgeCounts, cuentaTecnicos, unreadTecnicos]);
+  const unreadOcultos = useMemo(
+    () => chipsOcultos.reduce((n, k) => n + (badgeCounts[k]?.unread ?? 0), 0),
+    [chipsOcultos, badgeCounts],
+  );
+
   const allUnread = useMemo(
     () => conversations.filter(c => c.status !== 'cerrado' && c.unread_count > 0).length,
     [conversations]
   );
+
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-background relative z-10">
@@ -2445,15 +3704,17 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             {/* Desktop: toggle del sidebar principal */}
             <SidebarTrigger className="hidden md:flex text-muted-foreground/70 hover:text-foreground transition-colors -ml-1 flex-shrink-0" />
             <span className="text-sm font-semibold">Bandeja</span>
-            {outboundEnabled && (
-              <button
-                onClick={() => openNewConvModal()}
-                title="Iniciar nueva conversación"
-                className="ml-auto flex-shrink-0 w-7 h-7 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center transition-colors"
-              >
-                <MessageSquarePlus className="w-4 h-4" />
-              </button>
-            )}
+            <div className="ml-auto flex items-center gap-1 flex-shrink-0">
+              {outboundEnabled && (
+                <button
+                  onClick={() => openNewConvModal()}
+                  title="Iniciar nueva conversación"
+                  className="w-7 h-7 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary flex items-center justify-center transition-colors"
+                >
+                  <MessageSquarePlus className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
           <div className="space-y-1.5">
             <div className="relative">
@@ -2497,9 +3758,14 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             )}
           </div>
           {/* ── Filtros unificados: Todos + etiquetas de ticket + Míos + Cerrados ── */}
-          <div className="flex gap-1.5 flex-wrap">
+          <div
+            ref={chipsRef}
+            className="relative flex gap-1.5 flex-wrap pt-1.5 px-0.5 overflow-hidden"
+            style={!chipsExpandido && altoChips != null ? { maxHeight: altoChips } : undefined}
+          >
             {/* Todos */}
             <button
+              data-fila-chip
               onClick={() => setChatFilter('all')}
               className={`relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all ${chatFilter === 'all' ? 'bg-foreground text-background border-foreground shadow-sm' : 'text-muted-foreground bg-background/50 border-border/30 hover:text-foreground hover:border-border/60'}`}
             >
@@ -2509,14 +3775,41 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               )}
             </button>
 
-            {/* Etiqueta de ticket como filtro (oculta las etiquetas finales como "Resuelto") */}
-            {ticketLabels.filter(l => !l.is_final).map(label => {
+            {/*
+              * Técnicos va pegado a "Todos" y no entre las etiquetas, porque no es
+              * un estado por el que pase un caso: es quién está del otro lado del
+              * chat. Mismo color y mismas mayúsculas que tenía como etiqueta, para
+              * que nadie tenga que volver a buscarlo.
+              */}
+            {(tecnicos.length > 0 || claveEtiquetaTecnicos) && (
+              <button
+                data-fila-chip
+                onClick={() => setChatFilter(chatFilter === 'tecnicos' ? 'all' : 'tecnicos')}
+                className="relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all"
+                style={chatFilter === 'tecnicos'
+                  ? { backgroundColor: colorTecnicos, borderColor: colorTecnicos, color: '#fff' }
+                  : { backgroundColor: colorTecnicos + '18', borderColor: colorTecnicos + '50', color: colorTecnicos }
+                }
+              >
+                <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: chatFilter === 'tecnicos' ? '#fff' : colorTecnicos }} />
+                {(etiquetaTecnicos?.name ?? 'Técnicos').toUpperCase()}
+                {cuentaTecnicos > 0 && <span className="text-[9px] opacity-70 ml-0.5">{cuentaTecnicos}</span>}
+                {unreadTecnicos > 0 && (
+                  <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-red-500 text-[8px] font-black text-white flex items-center justify-center">{unreadTecnicos}</span>
+                )}
+              </button>
+            )}
+
+            {/* Etiqueta de ticket como filtro (oculta las finales como "Resuelto" y la de técnicos, que ya tiene la suya) */}
+            {etiquetasVisibles.map(label => {
               const filterKey = `ticket:${label.key}`;
               const active = chatFilter === filterKey;
               const { count = 0, unread = 0 } = badgeCounts[label.key] ?? {};
               return (
                 <button
                   key={label.key}
+                  data-fila-chip
+                  data-chip-key={label.key}
                   onClick={() => setChatFilter(active ? 'all' : filterKey)}
                   className={`relative flex-shrink-0 flex items-center gap-1 text-[10px] font-bold px-2.5 py-1.5 rounded-full border transition-all`}
                   style={active
@@ -2537,6 +3830,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             })}
 
           </div>
+          {(chipsOcultos.length > 0 || chipsExpandido) && (
+            <button
+              onClick={() => setChipsExpandido(v => !v)}
+              className="relative flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ChevronDown className={`w-3 h-3 transition-transform ${chipsExpandido ? 'rotate-180' : ''}`} />
+              {chipsExpandido ? 'Ver menos' : `Ver todas (+${chipsOcultos.length})`}
+              {!chipsExpandido && unreadOcultos > 0 && (
+                <span className="min-w-[14px] h-3.5 px-1 rounded-full bg-red-500 text-[8px] font-black text-white flex items-center justify-center">{unreadOcultos}</span>
+              )}
+            </button>
+          )}
         </div>
 
         <ScrollArea className="flex-1">
@@ -2544,19 +3849,29 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             <div className="p-6 text-center text-muted-foreground text-[13px]">Cargando chats...</div>
           ) : filtered.length === 0 ? (
             <div className="p-6 text-center text-muted-foreground text-[13px]">No se encontraron conversaciones</div>
-          ) : filtered.map((conv) => (
+          ) : convVisible.map((conv) => (
             <button
               key={conv.id}
               onClick={() => handleConvSelect(conv)}
+              /*
+               * La vista previa se abre en cualquier fila que tenga algo que mostrar.
+               *
+               * Antes pedía nota Y ticket, así que en la mayoría de los chats pasar
+               * el mouse no hacía nada y había que adivinar cuáles tenían nota. El
+               * último mensaje siempre existe, así que siempre hay algo que leer.
+               * Medio segundo: menos se dispara solo al cruzar la lista, más se
+               * siente trabado.
+               */
               onMouseEnter={(e) => {
-                const note = convNotes[conv.id];
-                const hasTkt = !!ticketStatusByConvId[conv.id];
-                if (!note?.trim() || !hasTkt) return;
+                const hayNota = !!convNotes[conv.id]?.trim();
+                const hayMensaje = !!conv.last_message_preview?.trim();
+                if (!hayNota && !hayMensaje) return;
                 const target = e.currentTarget as HTMLElement;
                 tooltipTimeoutRef.current = setTimeout(() => {
                   setTooltipRect(target.getBoundingClientRect());
                   setTooltipConvId(conv.id);
-                }, 1000);
+                  if (hayMensaje && !ultimosMensajes[conv.id]) cargarUltimoMensaje(conv.id);
+                }, 450);
               }}
               onMouseLeave={() => {
                 if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
@@ -2570,16 +3885,33 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               )}
               <div className="relative flex-shrink-0 flex items-center">
                 <Avatar className="h-10 w-10 border border-border/50">
-                  <AvatarFallback className="bg-gradient-to-br from-primary/20 to-primary/5 text-primary text-[11px] font-semibold">
-                    {getInitials(conv.profile_name, conv.wa_id)}
+                  <AvatarFallback
+                    className="bg-gradient-to-br from-primary/20 to-primary/5 text-primary text-[11px] font-semibold"
+                    style={buscarTecnico(conv.wa_id)
+                      ? { background: buscarTecnico(conv.wa_id)!.color + '26', color: buscarTecnico(conv.wa_id)!.color }
+                      : undefined}
+                  >
+                    {buscarTecnico(conv.wa_id)?.name.trim().slice(0, 2).toUpperCase()
+                      ?? getInitials(conv.profile_name, conv.wa_id)}
                   </AvatarFallback>
                 </Avatar>
 
               </div>
               <div className="flex-1 min-w-0 flex flex-col justify-center text-left overflow-hidden" style={{ contain: 'inline-size' }}>
                 <div className="flex items-center gap-2 min-w-0 mb-1">
-                  <span className={`font-semibold text-[13px] truncate ${selectedConv?.id === conv.id ? "text-primary" : "text-foreground"} tracking-wide`}>
-                    {conv.profile_name || conv.wa_id}
+                  {/*
+                    * El numero y no el nombre de WhatsApp.
+                    *
+                    * Ese nombre lo escribe el cliente en su propio telefono: puede
+                    * ser un apodo, un emoji o el nombre de otra persona. El numero
+                    * es con lo que se le busca en los demas sistemas, asi que es el
+                    * dato que el operador necesita leer de un vistazo.
+                    */}
+                  {/* Los técnicos son la excepción: a ellos sí se les muestra el
+                      nombre, porque es el que quedó registrado en la agenda y no uno
+                      que el contacto se puso a sí mismo en su teléfono. */}
+                  <span className={`font-semibold text-[13px] truncate ${buscarTecnico(conv.wa_id) ? '' : 'font-mono'} ${selectedConv?.id === conv.id ? "text-primary" : "text-foreground"} tracking-wide`}>
+                    {buscarTecnico(conv.wa_id)?.name ?? conv.wa_id}
                   </span>
                   {conv.unread_count > 0 && (
                     <span className="bg-green-500 text-white text-[10px] font-bold rounded-full min-w-[20px] h-5 flex items-center justify-center px-1.5 flex-shrink-0 shadow-sm leading-none">
@@ -2593,6 +3925,27 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 <div className="flex flex-col gap-0.5">
                   <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
                     <ConvStatusBadge conv={conv} ticketStatus={ticketStatusByConvId[conv.id]} labels={ticketLabels} />
+                    {/*
+                     * Que la nota se vea sin pasar el mouse. Es el dato que hace
+                     * abrir un chat antes que otro, y estaba escondido detrás de un
+                     * hover que además había que acertar.
+                     */}
+                    {!!convNotes[conv.id]?.trim() && (
+                      <span
+                        title="Tiene nota del caso"
+                        className="inline-flex items-center gap-0.5 text-[8px] font-black tracking-widest uppercase px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-500"
+                      >
+                        <StickyNote className="w-2 h-2" /> NOTA
+                      </span>
+                    )}
+                    {conv.taken_by && (
+                      <ChipDueno
+                        nombre={porOperador[conv.taken_by]?.nombre ?? "otro operador"}
+                        iniciales={porOperador[conv.taken_by]?.iniciales ?? "??"}
+                        esMio={conv.taken_by === userId}
+                        abandonado={casoAbandonado(conv.taken_at, conv.last_message_at)}
+                      />
+                    )}
                     {conv.priority === 'alta' && (
                       <span className="inline-flex items-center gap-0.5 text-[8px] font-black tracking-widest uppercase px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-500">
                         <Flame className="w-2 h-2" /> ALTA
@@ -2611,6 +3964,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               </div>
             </button>
           ))}
+          {convVisibleCount < filtered.length && (
+            <div ref={convSentinelRef} className="py-3 flex items-center justify-center">
+              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" />
+            </div>
+          )}
         </ScrollArea>
       </div>
 
@@ -2621,32 +3979,58 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           <InboxEmptyPanel companyId={companyId} onNavigateToSchedule={onNavigateToSchedule} />
         ) : (
           <div className="flex flex-col flex-1 h-full min-h-0 relative z-10 bg-background/50">
-            {/* Header */}
-            <div className="flex justify-between items-center px-6 h-16 border-b border-border/10 glass z-20 flex-shrink-0">
-              <div className="flex items-center gap-4">
+            {/* Header. La vista de la ONU se abre solo desde su botón: antes el bloque
+                entero respondía al hover, y con la vista a pantalla completa eso
+                escondería la conversación al pasar el ratón por encima sin querer. */}
+            <div className="border-b border-border/10 glass z-20 flex-shrink-0">
+            {/* `min-w-0` en la fila y en el bloque del cliente: sin eso el nombre no
+                puede encogerse, empuja los botones hacia afuera y aparece una barra de
+                desplazamiento horizontal que descuadra la página entera. */}
+            <div className="flex justify-between items-center gap-3 px-6 h-16 min-w-0">
+              <div className="flex items-center gap-4 min-w-0 flex-1">
                 <Button variant="ghost" size="icon" className="md:hidden h-8 w-8 -ml-2" onClick={() => setSelectedConv(null)}>
                   <ArrowLeft className="w-4 h-4" />
                 </Button>
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-10 w-10 border border-primary/20 shadow-lg glow-box">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar className="h-10 w-10 border border-primary/20 shadow-lg glow-box flex-shrink-0">
                     <AvatarFallback className="bg-primary/10 text-primary font-bold">
                       {getInitials(selectedConv.profile_name, selectedConv.wa_id)}
                     </AvatarFallback>
                   </Avatar>
-                  <div className="flex flex-col">
-                    <span className="font-bold text-[14px] tracking-wide text-foreground leading-snug">
-                      {selectedConv.profile_name || "Contacto Desconocido"}
-                    </span>
-                    <span className="text-[11px] text-muted-foreground font-mono font-medium leading-none mb-0.5 flex items-center gap-1">
-                      {selectedConv.wa_id}
+                  <div className="flex flex-col min-w-0">
+                    {/* Mismo criterio que en la lista: manda el número, salvo para
+                        los técnicos, que llevan el nombre de la agenda. Ya no hay
+                        línea chica con el teléfono para el resto: el título *es* el
+                        teléfono, con copiar y WhatsApp pegados al lado. */}
+                    <span className={`text-[14px] font-bold tracking-wide text-foreground leading-none mb-1 flex items-center gap-1.5 min-w-0 ${tecnicoDelChat ? '' : 'font-mono'}`}>
+                      <span className="truncate">{tecnicoDelChat?.name ?? selectedConv.wa_id}</span>
                       <button
                         onClick={() => { navigator.clipboard.writeText(selectedConv.wa_id); toast({ title: 'Teléfono copiado' }); }}
-                        className="h-4 w-4 flex items-center justify-center rounded hover:bg-primary/10 text-muted-foreground/40 hover:text-primary transition-colors"
+                        className="h-5 w-5 flex items-center justify-center rounded hover:bg-primary/10 text-muted-foreground/40 hover:text-primary transition-colors"
                         title="Copiar número"
                       >
-                        <Copy className="w-2.5 h-2.5" />
+                        <Copy className="w-3 h-3" />
                       </button>
+                      {/* Abrir el chat en WhatsApp Web. Antes solo aparecía con la
+                          ventana de 24 h vencida; va acá para tenerlo siempre a mano
+                          sin ocupar espacio en la conversación. */}
+                      <a
+                        href={`https://wa.me/${selectedConv.wa_id.replace(/^\+/, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Abrir en WhatsApp"
+                        className="h-5 w-5 flex items-center justify-center rounded text-[#25d366]/50 hover:text-[#25d366] hover:bg-[#25d366]/10 transition-colors"
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                        </svg>
+                      </a>
                     </span>
+                    {tecnicoDelChat && (
+                      <span className="text-[11px] text-muted-foreground/55 font-mono leading-none mb-1">
+                        {selectedConv.wa_id}
+                      </span>
+                    )}
                     <div className="scale-90 origin-left mt-0.5 flex items-center gap-2 whitespace-nowrap">
                       <ConvStatusBadge
                         conv={selectedConv}
@@ -2663,7 +4047,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 flex-shrink-0">
                 {/* Avatares de presencia — quién está viendo este chat */}
                 {selectedConv && userId && (
                   <div className="flex items-center -space-x-1.5">
@@ -2699,17 +4083,96 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                   </div>
                 )}
 
-                {activeTicket && !ticketLabels.find(l => l.is_final)?.key.includes(activeTicket.status) && (
+                {/* Interruptor de la vista de la ONU. El punto de color adelanta el
+                    estado sin abrir nada; el rótulo solo aparece si hay sitio. */}
+                {activeTicket?.onu_external_id && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setNetworkPanelOpen(o => !o)}
+                    title={networkPanelOpen ? "Volver a la conversación" : "Ver el equipo del cliente"}
+                    className={`h-8 gap-1.5 px-2.5 text-[10px] font-bold tracking-wider uppercase border transition-all ${
+                      networkPanelOpen
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-primary/40 text-primary hover:bg-primary/10"
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${onuPuntoEstado}`} />
+                    <Wifi className="w-3.5 h-3.5" />
+                    <span className="hidden xl:inline">{networkPanelOpen ? "Volver" : "ONU"}</span>
+                  </Button>
+                )}
+                {/* De quién es este caso: un solo botón que despliega sus acciones. */}
+                <ControlPropiedadCaso
+                  duenoId={selectedConv.taken_by}
+                  duenoNombre={selectedConv.taken_by ? porOperador[selectedConv.taken_by]?.nombre : null}
+                  tomadoEn={selectedConv.taken_at}
+                  userId={userId}
+                  abandonado={casoAbandonado(selectedConv.taken_at, selectedConv.last_message_at)}
+                  ocupado={casoOcupado}
+                  simulando={isSimulating}
+                  onTomar={handleTakeCase}
+                  onArrebatar={() => setArrebatoPendiente({
+                    convId: selectedConv.id,
+                    nombre: (selectedConv.taken_by ? porOperador[selectedConv.taken_by]?.nombre : null) ?? "otro operador",
+                  })}
+                  onLiberar={handleLiberarCaso}
+                  onTransferir={() => setTransferPersonaOpen(true)}
+                />
+                {activeTicket && !ticketIsFinal && (
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => handleCloseChat()}
-                    className="h-8 gap-2 text-[10px] font-bold tracking-widest uppercase border transition-all border-red-500/50 text-red-500 hover:bg-red-500/10"
+                    title="Finalizar el ticket"
+                    className="h-8 gap-1.5 px-2.5 text-[10px] font-bold tracking-wider uppercase border transition-all border-red-500/50 text-red-500 hover:bg-red-500/10"
                   >
                     <X className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">FINALIZAR</span>
+                    <span className="hidden xl:inline">Finalizar</span>
                   </Button>
                 )}
+
+                {/* Lo que no se usa en cada mensaje vive acá adentro. El encabezado tenía
+                    siete controles a la vez y en pantallas chicas se desbordaba.
+                    El canal de salida ya no se elige acá: tiene su propio selector
+                    sobre el campo de escritura, con el costo a la vista. */}
+                {((activeTicket?.onu_external_id && !ticketIsFinal && !networkPanelOpen)
+                  || (noOficialConfigurada && !evolutionUsable)) && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="Más opciones">
+                        <MoreVertical className="w-4 h-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-60 bg-card border-border/40">
+                      {activeTicket?.onu_external_id && !ticketIsFinal && !networkPanelOpen && (
+                        <button
+                          onClick={() => setRebootConfirmOpen(true)}
+                          className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-[12px] font-medium text-amber-500 hover:bg-amber-500/10 transition-colors"
+                        >
+                          <Power className="w-3.5 h-3.5" /> Reiniciar la ONU
+                        </button>
+                      )}
+
+                      {noOficialConfigurada && !evolutionUsable && (
+                        <>
+                          {activeTicket?.onu_external_id && !ticketIsFinal && !networkPanelOpen && (
+                            <div className="h-px bg-border/30 my-1" />
+                          )}
+                          <button
+                            onClick={onNavigateToSettings}
+                            className="w-full text-left px-2 py-1.5 text-[11px] text-amber-500 hover:underline"
+                          >
+                            {evolutionEstadoSesion === 'connecting'
+                              ? 'Terminá de escanear el código →'
+                              : 'Vincular WhatsApp sin costo →'}
+                          </button>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+
                 <Button
                   variant="ghost"
                   size="icon"
@@ -2721,7 +4184,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 </Button>
               </div>
             </div>
+            </div>
 
+            {/* La conversación se queda montada por debajo y la ficha de la ONU se
+                superpone, en vez de sustituirla. Si se desmontara, al volver React la
+                reconstruiría desde cero y el chat aparecería al principio de la
+                conversación en lugar de donde lo dejaste. */}
+            <div className="flex-1 min-h-0 flex flex-col relative">
             {/* Messages */}
             <div ref={messagesContainerRef} className="flex-1 min-h-0">
             <ScrollArea className="h-full px-4 md:px-8 pt-4 pb-0 scroll-smooth">
@@ -2735,6 +4204,10 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                     </div>
                     {group.msgs.map((msg, idx) => {
                       const isOut = msg.direction === "outbound";
+                      /* El mensaje borrado conserva su fila y su contenido: se pinta el
+                         aviso en vez del texto y no se ofrecen más acciones sobre él. */
+                      const estaBorrado = msg.status === 'deleted';
+                      const puedeAccionar = tieneAccionesDeMensaje(msg);
                       const effectiveSenderName = msg.sender_name || userName || "Especialista";
                       const badge = isOut ? getSenderBadge(msg.sender_type, effectiveSenderName) : null;
 
@@ -2757,7 +4230,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       return (
                         <div key={msg.id} className={`flex w-full ${isOut ? "justify-end" : "justify-start"} ${isChained ? "mt-0.5" : "mt-2"}`}>
                           <div className={`
-                            relative max-w-[85%] md:max-w-[70%] lg:max-w-[60%] w-fit min-w-0 overflow-hidden px-4 py-2 hover:brightness-110 transition-all shadow-lg
+                            group/msg relative max-w-[85%] md:max-w-[70%] lg:max-w-[60%] w-fit min-w-0 overflow-hidden px-4 py-2 hover:brightness-110 transition-all shadow-lg
                             ${isOut ? "rounded-[20px] rounded-br-[4px]" : "rounded-[20px] rounded-tl-[4px]"}
                             ${isChained && isOut ? "!rounded-br-[20px]" : ""}
                             ${isChained && !isOut ? "!rounded-tl-[20px]" : ""}
@@ -2788,10 +4261,27 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                               </div>
                             )}
 
-                            <MessageMedia message={msg} />
+                            {estaBorrado && (
+                              <p className={`text-[12.5px] italic ${
+                                /*
+                                 * Blanco sobre las burbujas oscuras (el degradado azul/violeta
+                                 * del especialista, y todas en modo oscuro). En las claras
+                                 * —las del agente y las de texto libre, que usan
+                                 * primary/5 y primary/10— el blanco desaparecería, así que
+                                 * ahí va el color de texto del tema, más firme que el gris.
+                                 */
+                                isOut && msg.sender_type === 'specialist'
+                                  ? 'text-white'
+                                  : 'text-foreground/80 dark:text-white/90'
+                              }`}>
+                                🚫 Mensaje eliminado
+                              </p>
+                            )}
+
+                            {!estaBorrado && <MessageMedia message={msg} onOpen={setLightbox} />}
 
                             {/* En caso de que no haya URL pero sepamos que es multimedia (inbound de YCloud procesando o error) */}
-                            {!msg.media_url && (msg.message_type === 'video' || msg.message_type === 'image' || msg.message_type === 'audio' || msg.message_type === 'short_video' || (msg.content && /🎥|📷|🎵|\[video\]|\[image\]/i.test(msg.content))) && (
+                            {!estaBorrado && !msg.media_url && (msg.message_type === 'video' || msg.message_type === 'image' || msg.message_type === 'audio' || msg.message_type === 'short_video' || (msg.content && /🎥|📷|🎵|\[video\]|\[image\]/i.test(msg.content))) && (
                               <div className="flex items-center gap-3 p-3 rounded-xl bg-primary/5 border border-primary/10 mb-2 max-w-[280px]">
                                 <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center animate-pulse shrink-0">
                                   <Clock className="w-4 h-4 text-primary" />
@@ -2804,12 +4294,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                             )}
 
                             {/* Sticker: mostrar etiqueta en lugar de burbuja vacía */}
-                            {msg.message_type === 'sticker' && (
+                            {!estaBorrado && msg.message_type === 'sticker' && (
                               <span className="text-[12px] text-muted-foreground italic">🎭 Sticker</span>
                             )}
 
-                            {/* Mostrar texto solo si no hay multimedia o si el texto no es el placeholder de sistema [Multimedia] */}
-                            {msg.message_type !== 'sticker' && msg.content && (() => {
+                            {/* Mostrar texto solo si no hay multimedia o si el texto no es el placeholder de sistema [Multimedia].
+                                Para documentos, el nombre ya se ve en la tarjeta → no repetirlo como texto. */}
+                            {!estaBorrado && msg.message_type !== 'sticker' && msg.content && !(msg.media_url && getMediaType(msg.media_url, msg.message_type) === 'document') && (() => {
                               // 0. Detectar fallback de plantilla — mostrar como chip sin pasar por formatWhatsAppText
                               const tplMatch = msg.content.match(/^📋\s*Plantilla:\s*(.+)$/);
                               if (tplMatch) {
@@ -2845,8 +4336,34 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
                             <div className={`flex items-center justify-end gap-1 mt-0.5 ${isOut ? "opacity-70" : "text-slate-500 dark:text-muted-foreground/60"
                               }`}>
+                              {/* Editar y borrar: aparecen al pasar el mouse sobre la burbuja.
+                                  En pantallas chicas no hay hover, así que quedan a la vista. */}
+                              {puedeAccionar && (
+                                <div className="flex items-center gap-0.5 mr-0.5 transition-opacity lg:opacity-0 lg:group-hover/msg:opacity-100">
+                                  {esTextoEditable(msg) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => abrirEdicion(msg)}
+                                      title="Editar mensaje"
+                                      aria-label="Editar mensaje"
+                                      className="p-0.5 rounded text-current opacity-60 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 transition"
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setMensajeABorrar(msg)}
+                                    title="Eliminar mensaje"
+                                    aria-label="Eliminar mensaje"
+                                    className="p-0.5 rounded text-current opacity-60 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 transition"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              )}
                               <span className="text-[9.5px] font-medium tracking-wide">{formatMessageTime(msg.created_at)}</span>
-                              {isOut && <StatusIcon status={msg.status} />}
+                              {isOut && <StatusIcon status={msg.status} provider={msg.provider} />}
                             </div>
                           </div>
                         </div>
@@ -2861,9 +4378,86 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             {/* Input Wrapper */}
             <div className="p-2 md:px-6 py-2 border-t border-border/5 bg-background/50 backdrop-blur-xl z-20 sticky bottom-0">
               
+              {/* Canal de salida, nombrado por lo que cuesta. El que la empresa tiene
+                  por defecto arranca seleccionado; si el operador elige el otro, esa
+                  elección manda para esta conversación mientras dure la sesión. */}
+              {selectedConv && (noOficialConfigurada || oficialConfigurada) && (
+                <div className="max-w-4xl mx-auto mb-2 flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                    Responder por
+                  </span>
+                  <div className="inline-flex rounded-lg border border-border/40 overflow-hidden">
+                    {(['evolution', 'ycloud'] as const).map(p => {
+                      const disponible = estaDisponible(p);
+                      const activo = canalDeLaConversacion === p;
+                      const esDefecto = canalPorDefecto === p;
+                      const etiqueta = p === 'evolution' ? 'API no oficial' : 'API oficial';
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          disabled={!disponible}
+                          onClick={() => elegirCanal(p)}
+                          title={disponible
+                            ? p === 'evolution'
+                              ? 'Sesión de WhatsApp Web (Baileys): no cuesta por mensaje.'
+                              : `API oficial de Meta: cada mensaje se factura${costoMensajeOficial ? ` (~${costoMensajeOficial})` : ''}.`
+                            : `${etiqueta}: esta empresa no la tiene configurada.`}
+                          className={`h-7 px-2.5 text-[10px] font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                            activo
+                              ? p === 'evolution'
+                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                                : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                              : 'text-muted-foreground hover:bg-muted/40'
+                          }`}
+                        >
+                          {etiqueta}
+                          <span className="ml-1 font-normal opacity-80">
+                            {p === 'evolution' ? '— sin costo' : '— con costo'}
+                          </span>
+                          {esDefecto && (
+                            <span className="ml-1.5 text-[8px] font-black uppercase tracking-widest opacity-70">
+                              por defecto
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">
+                    {canalDeLaConversacion === 'evolution'
+                      ? 'Sin costo por mensaje.'
+                      : `Con costo${costoMensajeOficial ? ` (~${costoMensajeOficial} por mensaje)` : ''}.`}
+                  </span>
+                  {sesionNoOficialCaida && noOficialConfigurada && oficialConfigurada && (
+                    <span className="text-[10px] text-amber-500 font-medium">
+                      La API no oficial está caída: se usa la oficial (con costo).
+                    </span>
+                  )}
+                </div>
+              )}
+              {selectedConv && !noOficialConfigurada && (
+                <p className="max-w-4xl mx-auto mb-1 text-[10px] text-muted-foreground">
+                  API no oficial: esta empresa no la tiene configurada.
+                </p>
+              )}
+              {selectedConv && !oficialConfigurada && (
+                <p className="max-w-4xl mx-auto mb-1 text-[10px] text-muted-foreground">
+                  API oficial: esta empresa no la tiene configurada.
+                </p>
+              )}
+
               {/* 24-Hour window validation banner */}
               {selectedConv && (
-                puedeEnviar ? (
+                /* Ya se esta respondiendo por el canal sin costo: la ventana no
+                   aplica, asi que no hay nada que avisar mas alla de por que se
+                   puede escribir con el reloj vencido. */
+                !dentroDeVentana && sinVentana ? (
+                  <div className="max-w-4xl mx-auto text-center text-[10.5px] text-muted-foreground/60 mb-2">
+                    Pasaron más de 24 h. Estás respondiendo por el canal sin costo, que no
+                    tiene esa restricción.
+                  </div>
+                ) : dentroDeVentana ? (
                   horasRestantes <= 1.5 ? ( // 1.5 because floating round looks nice on screen
                     <div className="max-w-4xl mx-auto bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-500 rounded-xl p-2 text-center text-[11px] mb-2 font-medium">
                       ⏳ Quedan {Math.round(horasRestantes * 60)} minutos para responder libremente.
@@ -2876,9 +4470,23 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 ) : (
                   <div className="max-w-4xl mx-auto bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 rounded-xl p-3 mb-2 leading-snug font-medium space-y-2">
                     <p className="text-[11px] text-center">
-                      ⚠️ Han pasado más de 24 horas. Solo puedes contactar al cliente con una <strong>plantilla aprobada</strong> o directamente por WhatsApp.
+                      {ofrecerSinCosto
+                        ? <>⚠️ Han pasado más de 24 horas: la API oficial ya no deja escribir libre. Puedes responder por el <strong>canal sin costo</strong>, que no tiene esa restricción.</>
+                        : <>⚠️ Han pasado más de 24 horas. Solo puedes contactar al cliente con una <strong>plantilla aprobada</strong> o directamente por WhatsApp.</>}
                     </p>
                     <div className="flex items-center justify-center gap-2 flex-wrap">
+                      {/* Se ofrece antes que la plantilla: es gratis, es texto libre y
+                          es el caso donde mas se nota tener el segundo canal. */}
+                      {ofrecerSinCosto && (
+                        <Button
+                          size="sm"
+                          className="h-8 text-[11px] gap-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-500 border border-emerald-500/30"
+                          onClick={() => elegirCanal('evolution')}
+                        >
+                          <MessageCircle className="w-3 h-3" />
+                          Responder sin costo
+                        </Button>
+                      )}
                       {outboundEnabled && (bandejaTemplateId ? (
                         /* Plantilla configurada por el admin — un solo botón */
                         <Button
@@ -2967,6 +4575,16 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 </div>
               )}
 
+              {/* Por donde va a salir lo que se escriba. Se pinta solo el canal sin
+                  costo: el oficial es lo de siempre y no necesita cartel, y el
+                  operador tiene que saberlo antes de escribir, no despues. */}
+              {sinVentana && (
+                <div className="max-w-4xl mx-auto w-full flex items-center gap-1.5 mb-1 px-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/70 flex-shrink-0" />
+                  <span className="text-[10px] font-medium text-emerald-500">Sale por la API no oficial, sin costo</span>
+                </div>
+              )}
+
               <div className="flex items-end gap-3 max-w-4xl mx-auto relative group">
                 <div className={`relative flex-1 bg-white/5 border border-white/10 ${puedeEnviar ? 'group-focus-within:border-primary/50 group-focus-within:bg-white/10' : 'opacity-40'} rounded-2xl flex items-end shadow-xl transition-all min-h-[48px] px-2`}>
                   <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
@@ -3008,7 +4626,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                         setSlashOpen(false);
                       }
                     }}
-                    placeholder={!puedeEnviar ? "Respuesta bloqueada (Fuera de la ventana de 24h)" : selectedConv.is_agent_active ? "Inyectar comando (Pausa IA Automáticamente)..." : "Escribe un mensaje o / para atajos..."}
+                    placeholder={!puedeEnviar ? "Fuera de la ventana de 24 h de la API oficial" : selectedConv.is_agent_active ? "Inyectar comando (Pausa IA Automáticamente)..." : "Escribe un mensaje o / para atajos..."}
                     disabled={!puedeEnviar}
                     className="w-full bg-transparent border-0 focus:ring-0 focus:outline-none resize-none py-3.5 px-2 text-[13.5px] tracking-wide placeholder:text-muted-foreground/40 max-h-[240px] min-h-[48px] appearance-none"
                     rows={1}
@@ -3051,6 +4669,20 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 </Button>
               </div>
             </div>
+
+            {networkPanelOpen && activeTicket?.onu_external_id && (
+              <div className="absolute inset-0 z-30 bg-background flex flex-col">
+                <OnuPanel
+                  signal={networkSignal}
+                  onuExternalId={activeTicket.onu_external_id}
+                  puedeReiniciar={!ticketIsFinal}
+                  onReiniciar={() => setRebootConfirmOpen(true)}
+                  reiniciando={rebootingOnu}
+                  onVolver={() => setNetworkPanelOpen(false)}
+                />
+              </div>
+            )}
+            </div>
           </div>
         )}
       </div>
@@ -3074,8 +4706,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             </Button>
           </div>
 
-          {/* ── Tabs (solo con ticket activo) ── */}
-          {activeTicket && (
+          {/* ── Tabs (solo con ticket activo, y nunca para un técnico) ── */}
+          {activeTicket && !tecnicoDelChat && (
             <div className="flex border-b border-border/30 shrink-0 bg-muted/30">
               <button
                 onClick={() => setRightPanelTab('caso')}
@@ -3100,7 +4732,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
           <div className="p-4 space-y-4 overflow-y-auto flex-1">
 
-            {activeTicket ? (
+            {/*
+              * El técnico tiene su propio panel.
+              *
+              * Antes veía la misma ficha de cliente que un caso de soporte: RUT,
+              * plan contratado, motivo de la derivación. Nada de eso aplica a
+              * alguien que trabaja acá, y encima el ticket lo empujaba a un flujo
+              * de resolver y cerrar que no corresponde. Lo que sirve mientras se le
+              * escribe es dónde está y qué le queda por hacer.
+              */}
+            {tecnicoDelChat && companyId ? (
+              <PanelTecnico tecnico={tecnicoDelChat} companyId={companyId} />
+            ) : activeTicket ? (
               <>
                 {/* ══ TAB 1: CLIENTE ══ */}
                 {rightPanelTab === 'caso' && (() => {
@@ -3120,6 +4763,31 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       </div>
                     </div>
                   );
+                  const CATEGORIAS: Record<string, string> = {
+                    soporte_tecnico: "Soporte Técnico",
+                    ventas: "Ventas",
+                    pagos: "Pagos",
+                    consulta_comercial: "Consulta Comercial",
+                  };
+                  /*
+                   * Una fila editable.
+                   *
+                   * Es una función y no un componente a propósito: declarado acá
+                   * dentro, un <Campo/> sería un tipo nuevo en cada render y React
+                   * desmontaría el input en cada tecla, perdiendo el foco. Llamarla
+                   * devuelve los elementos directo al árbol del padre y eso no pasa.
+                   */
+                  const campoEdit = (label: string, campo: string, placeholder?: string) => (
+                    <div key={campo} className="flex justify-between items-center gap-2 py-1.5 border-b border-border/20">
+                      <span className="text-[12px] text-muted-foreground font-medium shrink-0">{label}</span>
+                      <input
+                        value={borradorCliente[campo] ?? ''}
+                        onChange={(e) => setBorradorCliente(prev => ({ ...prev, [campo]: e.target.value }))}
+                        placeholder={placeholder}
+                        className="flex-1 min-w-0 text-[13px] font-semibold text-right bg-background/60 border border-border/40 rounded-lg px-2 py-1 placeholder:font-normal placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/60 transition-colors"
+                      />
+                    </div>
+                  );
                   return (
                     <div className="space-y-4">
                       {/* ── Información del cliente ── */}
@@ -3134,53 +4802,146 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                               {isNuevo ? 'Nuevo' : 'Cliente'}
                             </span>
                           )}
+                          {/* Corregir a mano lo que la IA recopiló mal. Sale acá y no
+                              en Acciones porque se decide mirando la ficha. */}
+                          <button
+                            onClick={() => editandoCliente ? setEditandoCliente(false) : abrirEdicionCliente()}
+                            title={editandoCliente ? 'Cancelar edición' : 'Editar datos del cliente'}
+                            className={`h-6 w-6 flex items-center justify-center rounded-lg transition-colors ${editandoCliente ? 'bg-primary/10 text-primary' : 'text-muted-foreground/45 hover:text-primary hover:bg-primary/10'}`}
+                          >
+                            {editandoCliente ? <X className="w-3.5 h-3.5" /> : <Pencil className="w-3 h-3" />}
+                          </button>
                         </div>
                         <div className="rounded-2xl bg-muted/40 border border-border/30 px-3 py-1">
-                          <InfoRow label="Nombre" value={t.customer_name} onCopy={() => { navigator.clipboard.writeText(t.customer_name); toast({ title: 'Nombre copiado' }); }} />
-                          {isNuevo ? (
+                          {editandoCliente ? (
                             <>
-                              <InfoRow label="Correo" value={t.customer_email} onCopy={() => { navigator.clipboard.writeText(t.customer_email); toast({ title: 'Correo copiado' }); }} />
-                              <InfoRow label="Plan a contratar" value={t.customer_plan} />
-                              <InfoRow label="Dirección" value={addr} onCopy={addr ? () => { navigator.clipboard.writeText(addr); toast({ title: 'Dirección copiada' }); } : undefined} />
-                              <InfoRow label="RUT" value={t.customer_rut} onCopy={t.customer_rut ? () => { navigator.clipboard.writeText(t.customer_rut); toast({ title: 'RUT copiado' }); } : undefined} />
-                              <InfoRow label="N° de TV" value={t.customer_tv_count != null ? String(t.customer_tv_count) : null} />
+                              {campoEdit('Nombre', 'customer_name')}
+                              {isNuevo ? (
+                                <>
+                                  {campoEdit('Correo', 'customer_email')}
+                                  {campoEdit('Plan a contratar', 'customer_plan')}
+                                  {campoEdit('Dirección', 'customer_address', 'Calle, número, comuna')}
+                                  {campoEdit('RUT', 'customer_rut', '12.345.678-9')}
+                                  {campoEdit('N° de TV', 'customer_tv_count')}
+                                </>
+                              ) : (
+                                <>
+                                  {campoEdit('RUT', 'customer_rut', '12.345.678-9')}
+                                  {campoEdit('Dirección', 'customer_address', 'Calle, número, comuna')}
+                                  {campoEdit('Plan', 'customer_plan')}
+                                </>
+                              )}
+                              {/* Categoría */}
+                              <div className="flex justify-between items-center gap-2 py-1.5 border-b border-border/20">
+                                <span className="text-[12px] text-muted-foreground font-medium shrink-0">Categoría</span>
+                                <select
+                                  value={borradorCliente.category ?? ''}
+                                  onChange={(e) => setBorradorCliente(prev => ({ ...prev, category: e.target.value }))}
+                                  className="text-[12px] font-semibold bg-background/60 border border-border/40 rounded-lg px-2 py-1 focus:outline-none focus:border-primary/60 transition-colors"
+                                >
+                                  <option value="">General</option>
+                                  {Object.entries(CATEGORIAS).map(([clave, nombre]) => (
+                                    <option key={clave} value={clave}>{nombre}</option>
+                                  ))}
+                                  {/* Si el ticket trae una categoría que no está en la
+                                      lista, se agrega: abrir el editor no puede ser la
+                                      forma de perder un dato sin darse cuenta. */}
+                                  {borradorCliente.category && !CATEGORIAS[borradorCliente.category] && (
+                                    <option value={borradorCliente.category}>{borradorCliente.category}</option>
+                                  )}
+                                </select>
+                              </div>
+                              {/* Motivo */}
+                              <div className="py-2 space-y-1.5">
+                                <span className="text-[12px] text-muted-foreground font-medium block">Motivo</span>
+                                <textarea
+                                  rows={5}
+                                  value={borradorCliente.description ?? ''}
+                                  onChange={(e) => setBorradorCliente(prev => ({ ...prev, description: e.target.value }))}
+                                  className="w-full text-[13px] text-foreground leading-relaxed bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 resize-y focus:outline-none focus:border-primary/60 transition-colors"
+                                />
+                              </div>
+                              <div className="flex gap-2 pb-2.5">
+                                <Button
+                                  size="sm"
+                                  onClick={guardarDatosCliente}
+                                  disabled={guardandoCliente}
+                                  className="flex-1 h-8 text-[11px] font-bold"
+                                >
+                                  {guardandoCliente ? 'Guardando...' : 'Guardar'}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setEditandoCliente(false)}
+                                  disabled={guardandoCliente}
+                                  className="h-8 text-[11px] font-semibold"
+                                >
+                                  Cancelar
+                                </Button>
+                              </div>
                             </>
                           ) : (
                             <>
-                              <InfoRow label="RUT" value={t.customer_rut} onCopy={t.customer_rut ? () => { navigator.clipboard.writeText(t.customer_rut); toast({ title: 'RUT copiado' }); } : undefined} />
-                              <InfoRow label="Dirección" value={addr} onCopy={addr ? () => { navigator.clipboard.writeText(addr); toast({ title: 'Dirección copiada' }); } : undefined} />
-                              <InfoRow label="Plan" value={t.customer_plan} />
+                            <InfoRow label="Nombre" value={t.customer_name} onCopy={() => { navigator.clipboard.writeText(t.customer_name); toast({ title: 'Nombre copiado' }); }} />
+                            {isNuevo ? (
+                              <>
+                                <InfoRow label="Correo" value={t.customer_email} onCopy={() => { navigator.clipboard.writeText(t.customer_email); toast({ title: 'Correo copiado' }); }} />
+                                <InfoRow label="Plan a contratar" value={t.customer_plan} />
+                                <InfoRow label="Dirección" value={addr} onCopy={addr ? () => { navigator.clipboard.writeText(addr); toast({ title: 'Dirección copiada' }); } : undefined} />
+                                <InfoRow label="RUT" value={t.customer_rut} onCopy={t.customer_rut ? () => { navigator.clipboard.writeText(t.customer_rut); toast({ title: 'RUT copiado' }); } : undefined} />
+                                <InfoRow label="N° de TV" value={t.customer_tv_count != null ? String(t.customer_tv_count) : null} />
+                              </>
+                            ) : (
+                              <>
+                                <InfoRow label="RUT" value={t.customer_rut} onCopy={t.customer_rut ? () => { navigator.clipboard.writeText(t.customer_rut); toast({ title: 'RUT copiado' }); } : undefined} />
+                                <InfoRow label="Dirección" value={addr} onCopy={addr ? () => { navigator.clipboard.writeText(addr); toast({ title: 'Dirección copiada' }); } : undefined} />
+                                <InfoRow label="Plan" value={t.customer_plan} />
+                              </>
+                            )}
+                            {/* Categoría */}
+                            <div className="flex justify-between items-center py-2.5 border-b border-border/20">
+                              <span className="text-[12px] text-muted-foreground font-medium">Categoría</span>
+                              <Badge variant="outline" className="text-[11px] font-semibold">
+                                {CATEGORIAS[t.category as string] || t.category || 'General'}
+                              </Badge>
+                            </div>
+                            {/* IA */}
+                            <div className="flex items-center justify-between py-2.5 border-b border-border/20">
+                              <span className="text-[12px] text-muted-foreground font-medium flex items-center gap-2">
+                                <Bot className="w-3.5 h-3.5" /> IA
+                              </span>
+                              {/*
+                                * Con ticket abierto la IA esta apagada, sin consultar
+                                * la columna.
+                                *
+                                * Esta ficha solo se dibuja cuando hay ticket activo, y
+                                * crear el ticket es justamente lo que apaga al agente,
+                                * asi que aca no existe el caso contrario. La columna
+                                * `is_agent_active` no sirve de fuente: cuando deriva
+                                * n8n, el ticket se crea pero la columna recien se
+                                * actualiza si el cliente vuelve a escribir, y mientras
+                                * tanto esto decia "Activada" sobre un caso ya tomado.
+                                */}
+                              <span className="text-[10px] font-bold tracking-widest flex items-center gap-1.5 text-muted-foreground/50">
+                                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
+                                Apagada
+                              </span>
+                            </div>
+                            {/* Motivo */}
+                            <div className="py-2.5 space-y-1.5">
+                              <span className="text-[12px] text-muted-foreground font-medium block">Motivo</span>
+                              <p className={`text-[13px] text-foreground leading-relaxed break-words ${motivoExpanded ? '' : 'line-clamp-3'}`}>
+                                {t.description || '—'}
+                              </p>
+                              {t.description && t.description.length > 80 && (
+                                <button onClick={() => setMotivoExpanded(v => !v)} className="text-[9px] text-primary/60 hover:text-primary transition-colors font-medium">
+                                  {motivoExpanded ? '▲ Ver menos' : '▼ Ver más'}
+                                </button>
+                              )}
+                            </div>
                             </>
                           )}
-                          {/* Categoría */}
-                          <div className="flex justify-between items-center py-2.5 border-b border-border/20">
-                            <span className="text-[12px] text-muted-foreground font-medium">Categoría</span>
-                            <Badge variant="outline" className="text-[11px] font-semibold">
-                              {{ soporte_tecnico: "Soporte Técnico", ventas: "Ventas", pagos: "Pagos", consulta_comercial: "Consulta Comercial" }[t.category as string] || t.category || 'General'}
-                            </Badge>
-                          </div>
-                          {/* IA */}
-                          <div className="flex items-center justify-between py-2.5 border-b border-border/20">
-                            <span className="text-[12px] text-muted-foreground font-medium flex items-center gap-2">
-                              <Bot className="w-3.5 h-3.5" /> IA
-                            </span>
-                            <span className={`text-[10px] font-bold tracking-widest flex items-center gap-1.5 ${selectedConv.is_agent_active ? 'text-emerald-400' : 'text-muted-foreground/50'}`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${selectedConv.is_agent_active ? 'bg-emerald-400 animate-pulse shadow-[0_0_6px_#34d399]' : 'bg-muted-foreground/30'}`} />
-                              {selectedConv.is_agent_active ? 'Activada' : 'Apagada'}
-                            </span>
-                          </div>
-                          {/* Motivo */}
-                          <div className="py-2.5 space-y-1.5">
-                            <span className="text-[12px] text-muted-foreground font-medium block">Motivo</span>
-                            <p className={`text-[13px] text-foreground leading-relaxed break-words ${motivoExpanded ? '' : 'line-clamp-3'}`}>
-                              {t.description || '—'}
-                            </p>
-                            {t.description && t.description.length > 80 && (
-                              <button onClick={() => setMotivoExpanded(v => !v)} className="text-[9px] text-primary/60 hover:text-primary transition-colors font-medium">
-                                {motivoExpanded ? '▲ Ver menos' : '▼ Ver más'}
-                              </button>
-                            )}
-                          </div>
                         </div>
                       </div>
 
@@ -3230,7 +4991,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                             <SelectValue placeholder="Cambiar estado..." />
                           </SelectTrigger>
                           <SelectContent>
-                            {ticketLabels.map(label => (
+                            {/* Sin "Técnicos": dejó de ser un estado por el que pase un caso. */}
+                            {ticketLabels.filter(l => !esEtiquetaTecnicos(l)).map(label => (
                               <SelectItem key={label.key} value={label.key}>
                                 <span className="font-bold flex items-center gap-1.5">
                                   <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: label.color }} />
@@ -3284,6 +5046,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       clientRut={activeTicket?.customer_rut || undefined}
                       clientAddress={(activeTicket as any)?.customer_address || undefined}
                       conversationId={selectedConv?.id}
+                      ticketId={activeTicket?.id}
+                      /* La nota del caso baja a "Notas para el tecnico": es lo que
+                         el operador ya escribio sobre este caso, y tenerlo que
+                         copiar a mano era la parte que nadie hacia. */
+                      caseNote={noteInput || (selectedConv ? convNotes[selectedConv.id] : '') || ''}
                       onOpenFullSchedule={onNavigateToSchedule}
                     />
                   </Suspense>
@@ -3381,29 +5148,20 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       )}
 
       {/* ── Tooltip flotante de nota (position:fixed, escapa overflow:hidden del sidebar) ── */}
-      {tooltipConvId && tooltipRect && convNotes[tooltipConvId] && (
-        <div
-          className="pointer-events-none fixed z-[9999] w-[260px] rounded-xl shadow-2xl animate-in fade-in slide-in-from-left-2 duration-200 overflow-hidden border border-border bg-popover backdrop-blur-xl"
-          style={{
-            left: Math.min(tooltipRect.right + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 276),
-            top: tooltipRect.top + tooltipRect.height / 2,
-            transform: 'translateY(-50%)',
-          }}
-        >
-          {/* Franja lateral amber */}
-          <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-400 rounded-l-xl" />
-          {/* Contenido */}
-          <div className="pl-4 pr-3.5 py-3">
-            <div className="flex items-center gap-1.5 mb-2">
-              <StickyNote className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-              <span className="text-[11px] font-semibold text-amber-500 uppercase tracking-wider">Nota del caso</span>
-            </div>
-            <p className="text-[13px] font-semibold text-foreground leading-relaxed break-words line-clamp-8 uppercase">
-              {convNotes[tooltipConvId]}
-            </p>
-          </div>
-        </div>
-      )}
+      {/*
+       * Mientras la fila real no llega se muestra el recorte de 100 caracteres, que
+       * es lo que ya había: el globo nunca aparece vacío y después se completa.
+       */}
+      <VistaPreviaChat
+        nota={tooltipConvId ? convNotes[tooltipConvId] : null}
+        mensaje={tooltipConvId
+          ? ultimosMensajes[tooltipConvId]?.texto
+            ?? conversations.find(c => c.id === tooltipConvId)?.last_message_preview
+            ?? null
+          : null}
+        quien={tooltipConvId ? ultimosMensajes[tooltipConvId]?.quien ?? null : null}
+        rect={tooltipConvId ? tooltipRect : null}
+      />
 
       {selectedConv && (
         <CreateTicketDialog
@@ -3414,6 +5172,166 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           }}
           conversation={selectedConv}
         />
+      )}
+
+      {/* Editar un mensaje ya enviado. Sólo texto y sólo canal sin costo: la API
+          oficial no permite tocar un mensaje entregado. */}
+      <Dialog open={!!mensajeEditando} onOpenChange={(op) => { if (!op && !guardandoEdicion) setMensajeEditando(null); }}>
+        <DialogContent className="border-border/30 bg-card" aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>Editar mensaje</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 pt-2">
+            <Textarea
+              value={textoEdicion}
+              onChange={e => setTextoEdicion(e.target.value)}
+              className="resize-none min-h-[110px]"
+              disabled={guardandoEdicion}
+              autoFocus
+            />
+            <p className="text-[11px] text-muted-foreground">
+              WhatsApp deja editar hasta 15 minutos después del envío. El cliente ve el texto corregido.
+            </p>
+          </div>
+          <DialogFooter className="mt-2 gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setMensajeEditando(null)} disabled={guardandoEdicion}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={guardarEdicion}
+              disabled={
+                guardandoEdicion
+                || !textoEdicion.trim()
+                || textoEdicion.trim() === (mensajeEditando?.content ?? "").trim()
+              }
+            >
+              {guardandoEdicion ? <Loader2 className="w-4 h-4 animate-spin" /> : "Guardar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Borrar un mensaje: se confirma porque es irreversible del lado del cliente. */}
+      <AlertDialog open={!!mensajeABorrar} onOpenChange={(op) => { if (!op && !borrando) setMensajeABorrar(null); }}>
+        <AlertDialogContent className="border-border/30 bg-card">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar este mensaje?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se borrará para el cliente en WhatsApp y no se puede deshacer. En el portal
+              la burbuja queda marcada como eliminada, para que se sepa que ahí hubo un mensaje.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {mensajeABorrar?.content && (
+            <p className="text-[13px] bg-muted/50 border border-border/30 rounded-lg px-3 py-2 max-h-28 overflow-y-auto break-words">
+              {mensajeABorrar.content}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={borrando}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmarBorrado}
+              disabled={borrando}
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+            >
+              {borrando ? <Loader2 className="w-4 h-4 animate-spin" /> : "Eliminar"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* La sesión sin costo se cayó. No es un error del mensaje —el mismo texto sale
+          bien por el oficial—, así que en vez de un error rojo se ofrece el reenvío. */}
+      <AlertDialog open={!!reenvioOficial} onOpenChange={(op) => { if (!op) setReenvioOficial(null); }}>
+        <AlertDialogContent className="border-border/30 bg-card">
+          <AlertDialogHeader>
+            <AlertDialogTitle>El canal sin costo está desconectado</AlertDialogTitle>
+            <AlertDialogDescription>
+              La sesión de WhatsApp Web se cayó y hay que volver a escanear el QR.
+              {reenvioOficial?.message
+                ? " Tu mensaje quedó guardado en el campo de escritura."
+                : " El archivo ya está subido y no hay que volver a adjuntarlo."}
+              {" "}¿Lo envías por el canal oficial? Ese sí tiene costo, alrededor de $20.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {reenvioOficial?.message && (
+            <p className="text-[13px] bg-muted/50 border border-border/30 rounded-lg px-3 py-2 max-h-28 overflow-y-auto break-words">
+              {reenvioOficial.message}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Ahora no</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmarReenvioOficial}>
+              Enviar por el oficial
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Quitarle el caso a alguien: se confirma para que sea deliberado. */}
+      <AlertDialog open={!!arrebatoPendiente} onOpenChange={(op) => { if (!op) setArrebatoPendiente(null); }}>
+        <AlertDialogContent className="border-border/30 bg-card">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Tomar el caso de {arrebatoPendiente?.nombre}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Pasarás a ser el responsable de esta conversación. Se le avisará a{" "}
+              {arrebatoPendiente?.nombre} que se lo quitaste — nadie pierde un caso en silencio.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmarArrebato} className="bg-amber-500 hover:bg-amber-600 text-white">
+              Tomarlo igual
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Transferir a una persona (distinto de transferir a un departamento). */}
+      {selectedConv && (
+        <Dialog open={transferPersonaOpen} onOpenChange={setTransferPersonaOpen}>
+          <DialogContent className="border-border/30 bg-card" aria-describedby={undefined}>
+            <DialogHeader>
+              <DialogTitle>Transferir el caso a un compañero</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-2">
+              <div className="space-y-2">
+                <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">Destinatario</Label>
+                <Select value={transferPersonaId} onValueChange={setTransferPersonaId}>
+                  <SelectTrigger><SelectValue placeholder="Elige un operador" /></SelectTrigger>
+                  <SelectContent>
+                    {operadores.filter(o => o.user_id !== userId).map(o => (
+                      <SelectItem key={o.user_id} value={o.user_id}>
+                        {o.nombre}{o.rol ? ` · ${o.rol}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {operadores.length <= 1 && (
+                  <p className="text-[11px] text-muted-foreground/60">
+                    No hay otros operadores cargados en esta empresa.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                  Nota (opcional) — la ve el destinatario
+                </Label>
+                <Textarea
+                  value={transferPersonaNota}
+                  onChange={(e) => setTransferPersonaNota(e.target.value)}
+                  placeholder="Cliente pidió hablar con ventas"
+                  className="min-h-[72px] resize-none"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setTransferPersonaOpen(false)}>Cancelar</Button>
+              <Button onClick={handleTransferirAPersona} disabled={!transferPersonaId || casoOcupado}>
+                {casoOcupado ? <Loader2 className="w-4 h-4 animate-spin" /> : "Transferir"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       {selectedConv && (
@@ -3442,6 +5360,21 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           </DialogContent>
         </Dialog>
       )}
+
+      {/*
+        * La misma pregunta que en Rendimiento de IA, no una copia.
+        *
+        * Si fueran dos, cualquier cambio de criterio habría que hacerlo dos veces
+        * y tarde o temprano una de las dos quedaría distinta.
+        */}
+      <DialogoVeredicto
+        conv={veredictoPendiente
+          ? ({ id: veredictoPendiente.analysisId, bot_score: veredictoPendiente.nota } as any)
+          : null}
+        guardando={guardandoVeredicto}
+        onCerrar={() => setVeredictoPendiente(null)}
+        onGuardar={guardarVeredictoYCerrar}
+      />
 
       {selectedConv && (
         <Dialog open={isCloseModalOpen} onOpenChange={isGeneratingSummary ? undefined : setIsCloseModalOpen}>
@@ -3537,7 +5470,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         open={infoClientModalOpen}
         onOpenChange={open => {
           setInfoClientModalOpen(open);
-          if (!open) { setInfoClientRut(""); setInfoClientMotivo(""); setInfoClientRutError(""); }
+          if (!open) { setInfoClientRut(""); setInfoClientRutError(""); }
         }}
       >
         <DialogContent className="border-border/30 bg-card sm:max-w-md" aria-describedby={undefined}>
@@ -3587,18 +5520,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               )}
               <p className="text-[11px] text-foreground/50">Formato: 12345678-9 · Sin puntos, con guion</p>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="info-motivo" className="text-sm font-semibold">
-                Motivo <span className="text-foreground/50 text-[12px] font-normal">(opcional)</span>
-              </Label>
-              <Textarea
-                id="info-motivo"
-                placeholder="Describe el motivo de la actualización..."
-                value={infoClientMotivo}
-                onChange={e => setInfoClientMotivo(e.target.value)}
-                className="resize-none h-[80px] text-[13px]"
-              />
-            </div>
           </div>
           <DialogFooter className="mt-4 gap-2 sm:gap-0">
             <Button
@@ -3614,8 +5535,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               className="bg-cyan-500 hover:bg-cyan-600 text-white gap-2"
             >
               {infoClientLoading
-                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando...</>
-                : <><RefreshCw className="w-3.5 h-3.5" /> Enviar solicitud</>
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Actualizando...</>
+                : <><RefreshCw className="w-3.5 h-3.5" /> Actualizar datos</>
               }
             </Button>
           </DialogFooter>
@@ -3976,6 +5897,30 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         }
       `}</style>
 
+      <MediaLightbox media={lightbox} onClose={() => setLightbox(null)} />
+
+      {/* Confirmación de reinicio de ONU — acción con impacto real (corta la conexión del cliente ~30-60s) */}
+      <AlertDialog open={rebootConfirmOpen} onOpenChange={(open) => { if (!rebootingOnu) setRebootConfirmOpen(open); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Reiniciar la ONU de este cliente?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Perderá conexión por ~30-60 segundos mientras el equipo se reinicia.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={rebootingOnu}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); handleRebootOnu(); }}
+              disabled={rebootingOnu}
+              className="gap-2 bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              {rebootingOnu ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Power className="w-3.5 h-3.5" />}
+              {rebootingOnu ? "Reiniciando..." : "Sí, reiniciar"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

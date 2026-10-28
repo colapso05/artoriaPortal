@@ -31,13 +31,17 @@ interface Props {
   clientRut?: string;
   clientAddress?: string;
   conversationId?: string;
+  /** Ticket abierto en la bandeja: queda guardado en la cita como vínculo exacto. */
+  ticketId?: string;
+  /** Nota del caso de la bandeja: baja a las notas para el técnico. */
+  caseNote?: string;
   onOpenFullSchedule?: () => void;
 }
 
 export default function ScheduleTab({
   companyId, userId,
   clientPhone, clientName, clientRut, clientAddress,
-  conversationId, onOpenFullSchedule,
+  conversationId, ticketId, caseNote, onOpenFullSchedule,
 }: Props) {
   const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [clientAppts, setClientAppts] = useState<Appointment[]>([]);
@@ -151,6 +155,8 @@ export default function ScheduleTab({
     address:        clientAddress,
     phone:          clientPhone,
     conversationId,
+    ticketId,
+    notes: caseNote,
   };
 
   if (loading) {

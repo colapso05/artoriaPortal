@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import {
   Plus, Minus, Settings2, Calendar, Clock, MapPin,
   User, Wrench, Loader2, Pencil, Trash2, Send, MessageCircle, Search,
   CheckCircle2, Truck, XCircle, Circle, X, UserCheck, HelpCircle, Phone, Inbox,
-  MessageSquare, TicketX,
+  MessageSquare, TicketX, Ticket,
 } from "lucide-react";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -35,6 +35,15 @@ interface Props {
   userId: string;
   isAdmin?: boolean;
   onOpenInboxConversation?: (phone: string, message?: string) => void;
+  /**
+   * Lleva al Centro de Tickets. Con `ticketId` abre ese ticket exacto; con `buscar`
+   * solo deja la búsqueda puesta para que el operador elija — es lo que queda para
+   * las citas antiguas, que no guardaron el vínculo y donde deducirlo llevaría al
+   * ticket equivocado.
+   */
+  onOpenTicket?: (destino: { ticketId?: string; buscar?: string }) => void;
+  initialAppointmentId?: string;
+  onAppointmentSelect?: (appointmentId: string | null) => void;
 }
 
 interface WATplComponent { type: string; text?: string; }
@@ -48,7 +57,7 @@ const STATUS_ICONS: Record<string, React.ElementType> = {
   cancelado:  XCircle,
 };
 
-export default function ScheduleManager({ companyId, userId, isAdmin = false, onOpenInboxConversation }: Props) {
+export default function ScheduleManager({ companyId, userId, isAdmin = false, onOpenInboxConversation, onOpenTicket, initialAppointmentId, onAppointmentSelect }: Props) {
   const { toast } = useToast();
   const [mainView, setMainView] = useState<'agenda' | 'tecnicos'>('agenda');
   const [technicians,  setTechnicians]  = useState<Technician[]>([]);
@@ -70,6 +79,27 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
   const [defTech,  setDefTech]   = useState<string | undefined>();
   const [detail,   setDetail]    = useState<Appointment | null>(null);
   const [cancelConfirm, setCancelConfirm] = useState<Appointment | null>(null);
+
+  // Restaurar la cita seleccionada desde la URL (?appt=) — p.ej. al volver con el
+  // botón atrás del navegador desde "Ver chat del cliente", o al recargar la página.
+  const apptInitAppliedRef = useRef(false);
+  useEffect(() => {
+    if (apptInitAppliedRef.current || !initialAppointmentId || appointments.length === 0) return;
+    const target = appointments.find(a => a.id === initialAppointmentId);
+    if (target) {
+      apptInitAppliedRef.current = true;
+      setDetail(target);
+    }
+  }, [initialAppointmentId, appointments]);
+
+  // Notificar al padre la cita seleccionada, para reflejarla en la URL (?appt=).
+  // Se salta el primer render para no limpiar el ?appt= con el que se entra antes
+  // de que el efecto de arriba tenga chance de restaurarlo.
+  const apptSelectSyncedRef = useRef(false);
+  useEffect(() => {
+    if (!apptSelectSyncedRef.current) { apptSelectSyncedRef.current = true; return; }
+    onAppointmentSelect?.(detail?.id ?? null);
+  }, [detail?.id]);
 
   // En espera assignment modal
   const [assignModal,     setAssignModal]     = useState(false);
@@ -578,8 +608,8 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
       <div className="h-full relative overflow-hidden">
       <div className="h-full flex flex-col gap-2">
 
-        {/* ── Header ── */}
-      <div className="flex items-center gap-3 shrink-0">
+        {/* ── Header ── (móvil: los controles bajan a otra línea en vez de cortarse) */}
+      <div className="flex flex-wrap items-center gap-2 md:gap-3 shrink-0">
         <div className="flex items-center gap-2.5">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center shadow-sm">
             <Calendar className="w-4.5 h-4.5 text-primary" />
@@ -837,8 +867,9 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
         </div>
       )}
 
-      {/* ── Main content (scrollable when zoom overflows) ── */}
-      <div className="flex-1 min-h-0 overflow-y-auto pb-4">
+      {/* ── Main content (scrollable when zoom overflows) — overflow-x permite deslizar el
+             calendario en móvil en vez de que se corte ── */}
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto pb-4">
       <div style={{ zoom: mainView === 'agenda' ? scheduleZoom : 1 }}>
         {mainView === 'tecnicos' ? (
           <TechScheduleBoard
@@ -911,7 +942,7 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: '100%', opacity: 0 }}
               transition={{ type: 'spring', damping: 28, stiffness: 220 }}
-              className="absolute top-0 right-0 bottom-0 w-[320px] z-30 flex flex-col"
+              className="absolute top-0 right-0 bottom-0 w-[320px] max-w-[88vw] z-30 flex flex-col"
               style={{
                 background:   'hsl(var(--card) / 0.97)',
                 backdropFilter: 'blur(20px)',
@@ -1088,21 +1119,42 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
               </ScrollArea>
 
               {/* Action buttons */}
-              <div className="p-4 border-t border-border/40 flex gap-2 flex-shrink-0">
-                <Button
-                  variant="outline"
-                  className="flex-1 h-9 rounded-xl gap-1.5 text-[11px] font-semibold"
-                  onClick={() => openEdit(detail)}
-                >
-                  <Pencil className="w-3.5 h-3.5" /> Editar
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-9 rounded-xl gap-1.5 text-[11px] font-semibold text-red-500 border-red-500/20 hover:bg-red-500/10"
-                  onClick={() => setCancelConfirm(detail)}
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Cancelar
-                </Button>
+              <div className="p-4 border-t border-border/40 flex flex-col gap-2 flex-shrink-0">
+                {/* Atajo al ticket: ahí queda la evidencia que sube el técnico al cerrar
+                    el trabajo. Con `ticket_id` se abre el ticket exacto. Sin él —las citas
+                    creadas antes de que se guardara el vínculo— se deja la búsqueda puesta
+                    en vez de deducirlo por `conversation_id`, que es uno a muchos y
+                    apuntaría al ticket equivocado. */}
+                {onOpenTicket && (detail.ticket_id || detail.client_rut || detail.client_name) && (
+                  <Button
+                    variant="outline"
+                    className="w-full h-9 rounded-xl gap-1.5 text-[11px] font-semibold text-primary border-primary/30 hover:bg-primary/10"
+                    onClick={() => onOpenTicket(
+                      detail.ticket_id
+                        ? { ticketId: detail.ticket_id }
+                        : { buscar: detail.client_rut || detail.client_name }
+                    )}
+                  >
+                    <Ticket className="w-3.5 h-3.5" />
+                    {detail.ticket_id ? "Ver ticket y evidencia del técnico" : "Buscar el ticket de este cliente"}
+                  </Button>
+                )}
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 h-9 rounded-xl gap-1.5 text-[11px] font-semibold"
+                    onClick={() => openEdit(detail)}
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> Editar
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-9 rounded-xl gap-1.5 text-[11px] font-semibold text-red-500 border-red-500/20 hover:bg-red-500/10"
+                    onClick={() => setCancelConfirm(detail)}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Cancelar
+                  </Button>
+                </div>
               </div>
 
               {/* Send-task buttons */}
@@ -1433,7 +1485,7 @@ export default function ScheduleManager({ companyId, userId, isAdmin = false, on
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               transition={{ type: 'spring', damping: 28, stiffness: 260 }}
-              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[340px] bg-card border border-border rounded-2xl shadow-2xl p-5 space-y-4"
+              className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[340px] max-w-[92vw] bg-card border border-border rounded-2xl shadow-2xl p-5 space-y-4"
             >
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center flex-shrink-0">

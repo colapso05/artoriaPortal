@@ -19,6 +19,8 @@ const STATUS_BADGE_COLORS: Record<AppointmentStatus, string> = {
   cancelado:  '#ef4444',
 };
 
+import AppointmentHoverPreview, { ATRIBUTO_CITA } from "./AppointmentHoverPreview";
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const HOUR_HEIGHT   = 64;
 const DEFAULT_START = 7;
@@ -89,11 +91,16 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
     return () => ro.disconnect();
   }, []);
 
-  // hourW fills the container exactly; Math.floor prevents 1px rounding scrollbar
+  // Columna de técnico más angosta en móvil para dar más espacio a las citas
+  const leftW = containerW > 0 && containerW < 640 ? 118 : LEFT_W;
+
+  // hourW llena el contenedor en desktop; en móvil usa un mínimo más grande para que las
+  // citas se vean grandes y tocables (el contenedor permite deslizar en horizontal).
   const hourW = useMemo(() => {
     if (!containerW || hours.length === 0) return 80;
-    return Math.max(55, Math.min(180, Math.floor((containerW - LEFT_W - 1) / hours.length)));
-  }, [containerW, hours.length]);
+    const minW = containerW < 640 ? 76 : 55;
+    return Math.max(minW, Math.min(180, Math.floor((containerW - leftW - 1) / hours.length)));
+  }, [containerW, hours.length, leftW]);
 
   // Dynamic row height based on number of technicians
   // 1 tech = ~120px, decreases until it hits the safe minimum of 56px (at ~7+ techs)
@@ -127,8 +134,8 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
   }
 
   return (
-    <div ref={containerRef} className="overflow-x-hidden rounded-2xl border border-border/60 bg-card/60 select-none">
-      <div style={{ minWidth: LEFT_W + totalW }}>
+    <div ref={containerRef} className="overflow-x-auto overflow-y-hidden rounded-2xl border border-border/60 bg-card/60 select-none [scrollbar-width:thin]">
+      <div style={{ minWidth: leftW + totalW }}>
 
         {/* ── Header: time labels ── */}
         <div
@@ -138,7 +145,7 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
           {/* Corner cell */}
           <div
             className="sticky left-0 z-30 bg-card/96 flex-shrink-0 flex items-center justify-center border-r border-border/50"
-            style={{ width: LEFT_W, backdropFilter: 'blur(12px)' }}
+            style={{ width: leftW, backdropFilter: 'blur(12px)' }}
           >
             <span className="text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest">
               {format(selectedDate, 'd MMM', { locale: es })}
@@ -186,7 +193,7 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
               <div
                 className="sticky left-0 z-10 flex items-center gap-2.5 px-3 flex-shrink-0 border-r"
                 style={{
-                  width:      LEFT_W,
+                  width:      leftW,
                   background: `linear-gradient(to right, color-mix(in srgb, ${tech.color} 12%, hsl(var(--card) / 0.98)), hsl(var(--card) / 0.97))`,
                   borderColor: `${tech.color}30`,
                   backdropFilter: 'blur(12px)',
@@ -265,7 +272,7 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
                         borderRadius: 10,
                         boxShadow:    isEnEspera ? 'none' : `0 2px 10px color-mix(in srgb, ${tech.color} 18%, transparent)`,
                       }}
-                      onClick={e => { e.stopPropagation(); onAppointmentClick(appt); }}
+                      {...{ [ATRIBUTO_CITA]: appt.id }} onClick={e => { e.stopPropagation(); onAppointmentClick(appt); }}
                     >
                       {!isEnEspera && (
                         <div className="absolute top-0 left-0 bottom-0 w-px" style={{ background: `linear-gradient(to bottom, ${tech.color}80, transparent)` }} />
@@ -318,7 +325,7 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
             <div
               className="sticky left-0 z-10 flex items-center gap-2.5 px-3 flex-shrink-0 border-r"
               style={{
-                width:          LEFT_W,
+                width:          leftW,
                 background:     'linear-gradient(to right, color-mix(in srgb, #8b5cf6 12%, hsl(var(--card) / 0.98)), hsl(var(--card) / 0.97))',
                 borderColor:    '#8b5cf630',
                 backdropFilter: 'blur(12px)',
@@ -378,7 +385,7 @@ function DayView({ activeTechs, byTech, selectedDate, onAppointmentClick, onSlot
                       border:       '1.5px dashed #8b5cf680',
                       borderRadius: 10,
                     }}
-                    onClick={e => { e.stopPropagation(); onAppointmentClick(appt); }}
+                    {...{ [ATRIBUTO_CITA]: appt.id }} onClick={e => { e.stopPropagation(); onAppointmentClick(appt); }}
                   >
                     <div className="px-2 h-full flex flex-col justify-center gap-0.5 overflow-hidden" style={{ zoom: fontScale }}>
                       <p className="text-[10px] font-bold leading-tight truncate" style={{ color: '#8b5cf6bb' }}>
@@ -489,7 +496,7 @@ function WeekView({ technicians, weekDays, appointments, onDayClick, onAppointme
                     key={appt.id}
                     whileHover={{ scale: 1.02, x: 1 }}
                     whileTap={{ scale: 0.98 }}
-                    onClick={() => onAppointmentClick(appt)}
+                    {...{ [ATRIBUTO_CITA]: appt.id }} onClick={() => onAppointmentClick(appt)}
                     className="w-full text-left p-1.5 overflow-hidden"
                     style={{
                       background:   `color-mix(in srgb, ${tech?.color || '#6366f1'} 15%, hsl(var(--card)))`,
@@ -625,7 +632,7 @@ function ListView({ technicians, appointments, onAppointmentClick, fontScale }: 
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: i * 0.04 }}
                     whileHover={{ x: 3, transition: { duration: 0.12 } }}
-                    onClick={() => onAppointmentClick(appt)}
+                    {...{ [ATRIBUTO_CITA]: appt.id }} onClick={() => onAppointmentClick(appt)}
                     className="w-full flex items-center gap-3 p-3 text-left overflow-hidden transition-all"
                     style={{
                       background:   tech
@@ -926,6 +933,9 @@ export default function AppointmentCalendar({
               fontScale={fontScale}
             />
           )}
+
+          {/* Previa al pasar el mouse por una cita: se dibuja en un portal al body */}
+          <AppointmentHoverPreview appointments={appointments} />
         </motion.div>
       </AnimatePresence>
     </div>

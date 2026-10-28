@@ -116,6 +116,17 @@ export function OnboardingTour({ run, view, onFinish, isAdmin = false }: Props) 
             continuous
             showSkipButton
             showProgress
+            /*
+             * El velo del tour tapa el menu entero mientras esta abierto. Un cliente
+             * nuevo que quiera navegar antes de terminarlo gasta el primer click en
+             * cerrar el tour, sin que nada le diga por que no paso nada.
+             *
+             * spotlightClicks deja que el elemento resaltado reciba el click de verdad,
+             * y disableOverlayClose en false —el valor por defecto, explicito aca para
+             * que nadie lo cambie sin querer— hace que clickear afuera cierre el tour.
+             */
+            spotlightClicks
+            disableOverlayClose={false}
             callback={handleJoyrideCallback}
             styles={{
                 options: {

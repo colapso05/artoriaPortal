@@ -34,6 +34,12 @@ export interface Appointment {
   company_id: string;
   technician_id: string;
   conversation_id?: string | null;
+  /**
+   * Vínculo exacto con el ticket. Es el único camino válido para llegar de la cita
+   * a su ticket: `conversation_id` es uno a muchos —una conversación acumula
+   * varios tickets a lo largo de meses— y llevaría al equivocado.
+   */
+  ticket_id?: string | null;
   client_name: string;
   client_rut?: string | null;
   client_address: string;

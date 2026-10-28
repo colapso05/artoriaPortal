@@ -8,19 +8,6 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 
-const PLATFORMS = [
-  "MikroWisp",
-  "WispHub",
-  "SmartOLT",
-  "Mikrotik",
-  "Splynx",
-  "ISPCube",
-  "UISP (Ubiquiti)",
-  "Visualtik",
-  "Otra",
-  "Aún no uso ninguna",
-];
-
 export function ContactForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -166,20 +153,15 @@ export function ContactForm() {
 
           <div>
             <Label className="mb-1.5 block text-sm text-muted-foreground">
-              ¿Qué plataforma de gestión usas?
+              ¿Qué plataforma de gestión usas? *
             </Label>
             <Input
-              list="platform-options"
-              placeholder="Ej: MikroWisp, WispHub, SmartOLT…"
+              required
+              placeholder="Escribe tu sistema de gestión (ej: MikroWisp, ISPCONTROL…)"
               value={formData.platform}
               onChange={(e) => handleInputChange("platform", e.target.value)}
               className="bg-background/50 border-border focus:border-primary"
             />
-            <datalist id="platform-options">
-              {PLATFORMS.map((p) => (
-                <option key={p} value={p} />
-              ))}
-            </datalist>
             <p className="mt-1.5 text-xs text-muted-foreground/60">
               Nos ayuda a saber cómo integrar Artoria con tu operación actual.
             </p>

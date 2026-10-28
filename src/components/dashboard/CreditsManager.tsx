@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { BANK_DETAILS } from "@/lib/datosBancarios";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   MessageCircle, Zap, AlertTriangle, CheckCircle2,
@@ -73,13 +74,6 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleString("es-CL", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-const BANK_DETAILS = [
-  { label: "Nombre",          value: "DEMIS ALEJANDRO ZUNIGA" },
-  { label: "RUT",             value: "21.311.925-7" },
-  { label: "Banco",           value: "Banco BCI" },
-  { label: "Tipo de cuenta",  value: "Cuenta Corriente" },
-  { label: "N° de cuenta",    value: "50458931" },
-];
 
 export default function CreditsManager({ companyId, userId }: Props) {
   const [credits, setCredits] = useState<Credits | null>(null);
@@ -337,6 +331,7 @@ export default function CreditsManager({ companyId, userId }: Props) {
                 <>
                   <p className="text-3xl font-black text-emerald-500 tabular-nums tracking-tight">
                     {new Intl.NumberFormat("en-US", { style: "currency", currency: ycloudBalance.currency }).format(ycloudBalance.amount)}
+                    <span className="ml-1.5 text-sm font-bold tracking-wide text-muted-foreground/60">{ycloudBalance.currency}</span>
                   </p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">fondos disponibles en YCloud</p>
                 </>

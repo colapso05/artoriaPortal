@@ -25,7 +25,10 @@ interface Props {
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
   pendiente:  { label: "Pendiente",  color: "bg-muted/60 text-muted-foreground border-border/30",    icon: Clock },
-  revisado:   { label: "Revisado",   color: "bg-amber-500/10 text-amber-500 border-amber-500/20",    icon: Eye },
+  // El estado en la base es `en_revision`. Acá decía `revisado`, que no existe:
+  // un reporte que el equipo ya tomó caía al valor por defecto y el cliente lo
+  // veía como "Pendiente", igual que uno que nadie miró.
+  en_revision: { label: "En revisión", color: "bg-amber-500/10 text-amber-500 border-amber-500/20", icon: Eye },
   resuelto:   { label: "Resuelto",   color: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20", icon: CheckCircle },
 };
 

@@ -21,7 +21,7 @@ export function ScrollBackground() {
       >
         <motion.div
           className="w-full h-full rounded-full bg-sky-500/15 blur-[120px]"
-          animate={{ scale: [1, 1.15, 1], opacity: [0.5, 0.8, 0.5] }}
+          animate={{ opacity: [0.5, 0.8, 0.5] }}
           transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
         />
       </motion.div>
@@ -33,7 +33,7 @@ export function ScrollBackground() {
       >
         <motion.div
           className="w-full h-full rounded-full bg-cyan-400/10 blur-[130px]"
-          animate={{ scale: [1, 1.2, 1], opacity: [0.4, 0.7, 0.4] }}
+          animate={{ opacity: [0.4, 0.7, 0.4] }}
           transition={{ duration: 14, repeat: Infinity, ease: "easeInOut", delay: 1 }}
         />
       </motion.div>

@@ -1,4 +1,7 @@
 import React, { useState } from "react";
+
+// Inyectado en build por Vite (define en vite.config.ts).
+declare const __BUILD_NUMBER__: number;
 import {
   Sidebar,
   SidebarContent,
@@ -13,9 +16,8 @@ import {
 } from "@/components/ui/sidebar";
 import {
   Users, Database, FolderKanban, Home,
-  HelpCircle, Activity, Bot, MessageCircle, Ticket, MapPin, UserCog, AlertCircle, Zap, CreditCard, ClipboardList, BadgeDollarSign, CalendarDays, Receipt,
-  Phone, Mail, Clock, ExternalLink, HeartHandshake, X,
-} from "lucide-react";
+  HelpCircle, Activity, Bot, MessageCircle, Ticket, MapPin, AlertCircle, Zap, CreditCard, ClipboardList, BadgeDollarSign, CalendarDays, Receipt, Cpu,
+  Phone, Mail, Clock, ExternalLink, HeartHandshake, X, Globe, Banknote, FlaskConical,} from "lucide-react";
 import { motion } from "framer-motion";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -35,11 +37,13 @@ interface DashboardSidebarProps {
   companyName?: string;
   isSimulating?: boolean;
   creditsEnabled?: boolean;
+  sitioWebEnabled?: boolean;
+  pagosEnabled?: boolean;
   iconSize?: number;
 }
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  administrador: ["team", "inbox", "coverage", "tickets", "schedule"],
+  administrador: ["conversations-analytics", "inbox", "coverage", "tickets", "schedule"],
   supervisor:    ["inbox", "tickets", "schedule"],
   operador:      ["inbox", "tickets"],
 };
@@ -52,19 +56,21 @@ const iconMap: Record<string, any> = {
 
 const menuItemClass = `
   rounded-xl h-10 gap-3 text-sm font-medium transition-all duration-200
-  text-sidebar-foreground/70
-  data-[active=true]:bg-sidebar-accent data-[active=true]:text-primary data-[active=true]:shadow-[inset_3px_0_0_0_hsl(var(--primary))]
+  [@media(min-height:701px)_and_(max-height:820px)]:h-9 [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:text-[13px]
+  text-sidebar-foreground dark:text-sidebar-foreground/70
+  data-[active=true]:bg-primary data-[active=true]:text-primary-foreground data-[active=true]:shadow-md data-[active=true]:shadow-primary/30 dark:data-[active=true]:bg-sidebar-accent dark:data-[active=true]:text-primary dark:data-[active=true]:shadow-[inset_3px_0_0_0_hsl(var(--primary))]
   hover:bg-sidebar-accent/70 hover:text-sidebar-foreground hover:translate-x-0.5
 `;
 
 const toggleItemClass = `
   rounded-xl h-10 gap-3 text-sm font-medium transition-all duration-200
-  text-sidebar-foreground/70
+  [@media(min-height:701px)_and_(max-height:820px)]:h-9 [@media(max-height:700px)]:h-8 [@media(max-height:700px)]:text-[13px]
+  text-sidebar-foreground dark:text-sidebar-foreground/70
   data-[active=true]:bg-sidebar-accent data-[active=true]:text-emerald-400 data-[active=true]:shadow-[inset_3px_0_0_0_hsl(150,60%,50%)]
   hover:bg-sidebar-accent/70 hover:text-sidebar-foreground hover:translate-x-0.5
 `;
 
-export default function DashboardSidebar({ isAdmin, activeView, onViewChange, toggles = [], companyRole, companyName, isSimulating = false, creditsEnabled = false, iconSize = 24 }: DashboardSidebarProps) {
+export default function DashboardSidebar({ isAdmin, activeView, onViewChange, toggles = [], companyRole, companyName, isSimulating = false, creditsEnabled = false, sitioWebEnabled = false, pagosEnabled = false, iconSize = 24 }: DashboardSidebarProps) {
   const { state, setOpenMobile, isMobile, setOpen } = useSidebar();
   const collapsed = state === "collapsed";
   const [helpOpen, setHelpOpen] = useState(false);
@@ -76,7 +82,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
   };
 
   const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-    <SidebarGroupLabel className="text-[10px] uppercase tracking-[0.15em] text-sidebar-foreground/40 font-bold px-3 mb-1.5 mt-1">
+    <SidebarGroupLabel className="h-auto text-[10px] uppercase tracking-[0.15em] text-sidebar-foreground/75 dark:text-sidebar-foreground/40 font-bold px-3 mb-1 mt-2.5 [@media(max-height:700px)]:mt-1.5 [@media(max-height:700px)]:mb-0.5">
       {children}
     </SidebarGroupLabel>
   );
@@ -94,7 +100,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
         className={className}
       >
         <Icon
-          className="flex-shrink-0 opacity-80 transition-all duration-200"
+          className="flex-shrink-0 opacity-100 dark:opacity-80 transition-all duration-200"
           style={collapsed ? undefined : { width: 18, height: 18 }}
         />
         <span className="group-data-[state=collapsed]:hidden">{label}</span>
@@ -127,10 +133,15 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
         </div>
       </div>
 
-      <SidebarContent className="px-2 py-4 space-y-1">
+      {/*
+        `sidebar-scroll` esconde la barra de desplazamiento hasta que el puntero
+        entra, y la pinta del color del propio panel. El aire se recorto para que
+        el menu entre completo: se toca el espaciado, nunca el tamano de la letra.
+      */}
+      <SidebarContent className="sidebar-scroll px-2 py-2 space-y-0">
         {/* Admin section — solo visible cuando NO está simulando */}
         {isAdmin && !isSimulating && (
-          <SidebarGroup>
+          <SidebarGroup className="py-0">
             <SectionLabel>Administración</SectionLabel>
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
@@ -138,38 +149,78 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                 <div className="tour-sidebar-empresas"><NavItem view="users" icon={Users} label="Empresas" /></div>
                 <NavItem view="reports" icon={AlertCircle} label="Reportes IA" />
                 <NavItem view="credit-requests" icon={BadgeDollarSign} label="Solicitudes Créditos" />
+                <NavItem view="consumo-ia" icon={Cpu} label="Consumo de IA" />
+                <NavItem view="simulador" icon={FlaskConical} label="Simulador WhatsApp" />
                 <NavItem view="admin-billing" icon={Receipt} label="Facturación" />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         )}
 
-        {/* Company role-based section */}
+        {/* Menú de la empresa, en tres bloques.
+            Nueve entradas seguidas bajo un solo rótulo se leen como una lista y hay
+            que recorrerla entera para encontrar algo. Agrupadas por para qué sirve
+            cada una, el ojo va directo al bloque. */}
         {!isAdmin && companyRole && (
-          <SidebarGroup>
-            <SectionLabel>{companyName || "Mi Empresa"}</SectionLabel>
-            <SidebarGroupContent>
-              <SidebarMenu className="space-y-0.5">
-                <NavItem view="home" icon={Home} label="Inicio" />
-                {hasPermission("team") && <NavItem view="team" icon={UserCog} label="Equipo" />}
-                {hasPermission("inbox") && <div className="tour-sidebar-bandeja"><NavItem view="inbox" icon={MessageCircle} label="Bandeja" /></div>}
-                {hasPermission("tickets") && <div className="tour-sidebar-tickets"><NavItem view="tickets" icon={Ticket} label="Tickets" /></div>}
-                {hasPermission("inbox") && <div className="tour-sidebar-atajos"><NavItem view="shortcuts" icon={Zap} label="Atajos" /></div>}
-                {hasPermission("coverage") && <NavItem view="coverage" icon={MapPin} label="Coberturas" />}
-                {hasPermission("schedule") && <NavItem view="schedule" icon={CalendarDays} label="Agenda" />}
-                {companyRole === "administrador" && creditsEnabled && <NavItem view="credits" icon={CreditCard} label="Créditos" />}
-                {companyRole === "administrador" && <NavItem view="billing" icon={Receipt} label="Facturación" />}
-                <NavItem view="my-reports" icon={ClipboardList} label="Mis Reportes" />
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
+          <>
+            <SidebarGroup className="py-0">
+              <SectionLabel>Operación</SectionLabel>
+              <SidebarGroupContent>
+                <SidebarMenu className="space-y-0.5">
+                  <NavItem view="home" icon={Home} label="Inicio" />
+                  {hasPermission("inbox") && <div className="tour-sidebar-bandeja"><NavItem view="inbox" icon={MessageCircle} label="Bandeja" /></div>}
+                  {hasPermission("tickets") && <div className="tour-sidebar-tickets"><NavItem view="tickets" icon={Ticket} label="Tickets" /></div>}
+                  {hasPermission("inbox") && <div className="tour-sidebar-atajos"><NavItem view="shortcuts" icon={Zap} label="Atajos" /></div>}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+
+            {(hasPermission("coverage") || hasPermission("schedule")) && (
+              <SidebarGroup className="py-0">
+                <SectionLabel>Servicio</SectionLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu className="space-y-0.5">
+                    {hasPermission("coverage") && <NavItem view="coverage" icon={MapPin} label="Coberturas" />}
+                    {hasPermission("schedule") && <NavItem view="schedule" icon={CalendarDays} label="Agenda" />}
+                    {/* Solo para las empresas cuyo sitio público lee estas tablas. */}
+                    {sitioWebEnabled && companyRole === "administrador" && (
+                      <NavItem view="sitio-web" icon={Globe} label="Sitio web" />
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
+
+            <SidebarGroup className="py-0">
+              <SectionLabel>Análisis</SectionLabel>
+              <SidebarGroupContent>
+                <SidebarMenu className="space-y-0.5">
+                  {hasPermission("conversations-analytics") && <NavItem view="conversations-analytics" icon={Activity} label="Rendimiento de IA" />}
+                  <NavItem view="my-reports" icon={ClipboardList} label="Mis Reportes" />
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+
+            {companyRole === "administrador" && (
+              <SidebarGroup className="py-0">
+                <SectionLabel>Administración</SectionLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu className="space-y-0.5">
+                    {creditsEnabled && <NavItem view="credits" icon={CreditCard} label="Créditos" />}
+                    {pagosEnabled && <NavItem view="pagos" icon={Banknote} label="Pagos" />}
+                    <NavItem view="billing" icon={Receipt} label="Facturación" />
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
+          </>
         )}
 
 
 
         {/* Toggles */}
         {toggles.length > 0 && (
-          <SidebarGroup>
+          <SidebarGroup className="py-0">
             <SectionLabel>Agentes</SectionLabel>
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
@@ -182,7 +233,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
                       className={toggleItemClass}
                     >
                       <Bot
-                          className="flex-shrink-0 opacity-80 transition-all duration-200"
+                          className="flex-shrink-0 opacity-100 dark:opacity-80 transition-all duration-200"
                           style={collapsed ? undefined : { width: 18, height: 18 }}
                         />
                       <span className="truncate group-data-[state=collapsed]:hidden">{tog.name}</span>
@@ -196,7 +247,7 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
 
         {/* Fallback for no role */}
         {!isAdmin && !companyRole && (
-          <SidebarGroup>
+          <SidebarGroup className="py-0">
             <SectionLabel>Mi Cuenta</SectionLabel>
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0.5">
@@ -208,36 +259,18 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
         )}
       </SidebarContent>
 
-      <SidebarFooter className="px-2 pb-4 pt-2 border-t border-sidebar-border/50">
-        {/* Necesitas ayuda card */}
-        {!collapsed && (
-          <div
-            className="rounded-xl overflow-hidden mb-2 cursor-pointer"
-            style={{ background: 'linear-gradient(135deg, hsl(265,75%,38%), hsl(243,65%,28%))' }}
-            onClick={() => setHelpOpen(true)}
-          >
-            <div className="p-3.5">
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
-                  <HelpCircle className="w-3.5 h-3.5 text-white" />
-                </div>
-                <p className="text-[11px] font-bold text-white">¿Necesitas ayuda?</p>
-              </div>
-              <p className="text-[10px] mb-2.5 pl-8" style={{ color: 'rgba(255,255,255,0.55)' }}>Consulta guías y recursos</p>
-              <div className="rounded-lg py-1.5 text-center text-[10px] font-bold text-white transition-colors" style={{ backgroundColor: 'rgba(255,255,255,0.15)' }}>
-                Ir a ayuda →
-              </div>
-            </div>
-          </div>
-        )}
-        {/* Ayuda icon (collapsed) */}
-        {collapsed && (
+      <SidebarFooter className="px-2 pb-4 pt-2 border-t border-sidebar-border/50 [@media(max-height:700px)]:pb-2 [@media(max-height:700px)]:pt-1">
+        {/* Ayuda — una entrada mas del menu.
+            La tarjeta con degradado ocupaba un tercio de la columna para algo que
+            se consulta una vez al mes, y era lo que empujaba el menu fuera de la
+            pantalla. */}
+        {(
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton
                 tooltip="Ayuda y soporte"
                 onClick={() => setHelpOpen(true)}
-                className="rounded-xl h-10 gap-3 text-sm text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/70 transition-all duration-200"
+                className="rounded-xl h-10 gap-3 text-sm text-sidebar-foreground/85 dark:text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/70 transition-all duration-200"
               >
                 <HelpCircle className="flex-shrink-0 transition-all duration-200" style={{ width: 18, height: 18 }} />
                 <span className="group-data-[state=collapsed]:hidden">Ayuda</span>
@@ -245,6 +278,11 @@ export default function DashboardSidebar({ isAdmin, activeView, onViewChange, to
             </SidebarMenuItem>
           </SidebarMenu>
         )}
+
+        {/* Versión del portal */}
+        <p className={`text-[9px] text-sidebar-foreground/60 dark:text-sidebar-foreground/25 font-medium select-none ${collapsed ? "text-center mt-1" : "text-center mt-2"}`}>
+          v.{__BUILD_NUMBER__}
+        </p>
       </SidebarFooter>
 
       {/* Panel de soporte Artoria */}

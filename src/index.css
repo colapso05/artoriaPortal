@@ -6,48 +6,49 @@
 
 @layer base {
   :root {
-    /* Fondo general neutro claro — los cards blancos resaltan sobre él */
-    --background: 220 13% 95%;
-    --foreground: 220 15% 8%;
+    /* Tema claro "panel empresarial": fondo azul-gris muy suave, tarjetas blancas con sombra
+       difusa, azul de acción y una barra lateral azul marino que ancla la pantalla. */
+    --background: 218 42% 95%;
+    --foreground: 222 35% 12%;
 
-    /* Cards: blanco puro con sombra sutil — se distinguen del fondo */
+    /* Tarjetas: blanco puro; lo que las separa del fondo es la sombra, no el borde. */
     --card: 0 0% 100%;
-    --card-foreground: 240 15% 8%;
+    --card-foreground: 222 35% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 240 15% 8%;
+    --popover-foreground: 222 35% 12%;
 
-    --primary: 280 100% 60%;
+    --primary: 221 91% 56%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 8% 92%;
-    --secondary-foreground: 240 15% 8%;
+    --secondary: 218 30% 93%;
+    --secondary-foreground: 222 35% 12%;
 
-    --muted: 240 8% 92%;
-    --muted-foreground: 240 6% 38%;
+    --muted: 218 30% 93%;
+    --muted-foreground: 218 14% 42%;
 
-    --accent: 280 100% 60%;
+    --accent: 221 91% 56%;
     --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 84% 60%;
+    --destructive: 0 78% 56%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 240 10% 88%;
-    --input: 240 8% 91%;
-    --ring: 280 100% 60%;
+    --border: 218 28% 89%;
+    --input: 218 28% 92%;
+    --ring: 221 91% 56%;
 
-    --radius: 0.75rem;
+    --radius: 0.875rem;
 
-    --glow: 280 100% 60%;
-    --glow-secondary: 320 100% 55%;
+    --glow: 221 91% 56%;
+    --glow-secondary: 199 90% 56%;
 
-    /* Sidebar: siempre oscuro (panel de control) */
-    --sidebar-background: 244 50% 11%;
-    --sidebar-foreground: 220 15% 82%;
-    --sidebar-border: 244 35% 20%;
-    --sidebar-accent: 244 42% 19%;
-    --sidebar-accent-foreground: 220 15% 92%;
-    --sidebar-ring: 265 90% 65%;
+    /* Menú lateral azul marino, como el de la referencia: el ítem activo va relleno de azul. */
+    --sidebar-background: 215 55% 13%;
+    --sidebar-foreground: 214 35% 96%;
+    --sidebar-border: 215 40% 19%;
+    --sidebar-accent: 215 45% 21%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-ring: 221 91% 62%;
   }
 
   .dark {
@@ -124,15 +125,34 @@
   }
 
   h1, h2, h3, h4, h5, h6 {
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: 'Inter', sans-serif;
     letter-spacing: -0.02em;
     line-height: 1.25;
+  }
+
+  /* En claro, las tarjetas que antes eran un velo translúcido pasan a blanco pleno, con borde
+     visible, y los textos atenuados ganan contraste: sobre fondo claro el "40 %" de opacidad
+     se volvía casi invisible. */
+  :root:not(.dark) [class*="bg-card/40"],
+  :root:not(.dark) [class*="bg-card/60"] { background-color: hsl(var(--card)); }
+  :root:not(.dark) [class*="border-border/20"],
+  :root:not(.dark) [class*="border-border/25"],
+  :root:not(.dark) [class*="border-border/30"] { border-color: hsl(var(--border)); }
+  :root:not(.dark) .text-muted-foreground\/40,
+  :root:not(.dark) .text-muted-foreground\/45,
+  :root:not(.dark) .text-muted-foreground\/50,
+  :root:not(.dark) .text-muted-foreground\/55,
+  :root:not(.dark) .text-muted-foreground\/60 { color: hsl(var(--muted-foreground) / 0.9); }
+
+  /* En oscuro se mantiene la tipografía de siempre. */
+  .dark h1, .dark h2, .dark h3, .dark h4, .dark h5, .dark h6 {
+    font-family: 'Space Grotesk', sans-serif;
   }
 
   /* Sombra sutil en cards para tema claro — invisible en oscuro */
   :root .bg-card,
   :root [class*="bg-card"] {
-    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.07), 0 1px 2px -1px rgb(0 0 0 / 0.05);
+    box-shadow: 0 1px 2px rgb(16 36 74 / 0.04), 0 10px 28px -10px rgb(16 36 74 / 0.12);
   }
 
   .dark .bg-card,
@@ -217,4 +237,212 @@
     border: 1px solid hsl(var(--secondary) / 0.3);
     box-shadow: 0 0 10px hsl(var(--secondary) / 0.1);
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Panel de Control — la página no se desplaza, solo sus paneles internos.
+   Lo pone Dashboard.tsx sobre <body> mientras está montado. Sin esto, cualquier
+   descuadre de un píxel en algún navegador saca una barra de desplazamiento de
+   página y deja un vacío de fondo bajo la aplicación; con la landing montada la
+   clase no está y la página se desplaza normalmente.
+   ──────────────────────────────────────────────────────────────────────────── */
+body.panel-sin-scroll {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Portal Técnicos — paleta conmutable
+   El portal es la única pantalla que usa estas variables; el resto del sitio
+   (landing, dashboard) conserva su tema propio. El atributo lo pone
+   useTemaTecnicos() sobre <html> mientras el portal está montado.
+   ──────────────────────────────────────────────────────────────────────────── */
+:root,
+:root[data-tema-tec="oscuro"] {
+  --tec-fondo: #050B14;
+  --tec-fondo-velo: rgba(5, 11, 20, 0.95);
+  --tec-superficie: #070F1E;
+  --tec-superficie-2: #0D1B2E;
+  --tec-borde: #14243C;
+
+  --tec-texto: #F8FAFC;
+  --tec-texto-2: #94A3B8;
+  --tec-texto-3: #64748B;
+  --tec-texto-4: #475569;
+
+  --tec-acento: #00A3FF;
+  --tec-acento-suave: rgba(0, 163, 255, 0.15);
+  --tec-acento-tenue: rgba(0, 163, 255, 0.08);
+  --tec-acento-borde: rgba(0, 163, 255, 0.40);
+  --tec-acento-glow: rgba(0, 163, 255, 0.6);
+  --tec-sobre-acento: #FFFFFF;
+
+  /* Globo del tour guiado: va sobre el velo oscuro del recorrido */
+  --tec-globo: #0A1526;
+
+  --tec-exito: #00E676;
+  --tec-sobre-exito: #04150B;
+  --tec-exito-glow: rgba(0, 230, 118, 0.7);
+
+  --tec-aviso: #FFD600;
+  --tec-aviso-suave: rgba(255, 214, 0, 0.08);
+  --tec-aviso-borde: rgba(255, 214, 0, 0.25);
+
+  --tec-error: #F87171;
+  --tec-error-suave: rgba(239, 68, 68, 0.10);
+  --tec-error-borde: rgba(239, 68, 68, 0.30);
+
+  --tec-cian: #00E5FF;
+  --tec-cian-suave: rgba(0, 229, 255, 0.15);
+
+  /* Tonos de estado de una cita (estado.ts devuelve la clave, no el color) */
+  --tec-tono-azul: #00A3FF;   --tec-tono-azul-bg: rgba(0, 163, 255, 0.13);
+  --tec-tono-verde: #00E676;  --tec-tono-verde-bg: rgba(0, 230, 118, 0.13);
+  --tec-tono-rojo: #FF1744;   --tec-tono-rojo-bg: rgba(255, 23, 68, 0.13);
+  --tec-tono-ambar: #FFD600;  --tec-tono-ambar-bg: rgba(255, 214, 0, 0.13);
+  --tec-tono-gris: #94A3B8;   --tec-tono-gris-bg: rgba(148, 163, 184, 0.13);
+}
+
+/* Modo claro: pensado para leerse con sol directo, no es un simple invertido.
+   Los acentos se oscurecen porque el cian y el verde neón sobre blanco no
+   alcanzan contraste legible. */
+:root[data-tema-tec="claro"] {
+  --tec-fondo: #EEF2F7;
+  --tec-fondo-velo: rgba(238, 242, 247, 0.95);
+  --tec-superficie: #FFFFFF;
+  --tec-superficie-2: #FFFFFF;
+  --tec-borde: #D3DCE7;
+
+  --tec-texto: #0F172A;
+  --tec-texto-2: #475569;
+  --tec-texto-3: #64748B;
+  --tec-texto-4: #94A3B8;
+
+  --tec-acento: #0369A1;
+  --tec-acento-suave: rgba(3, 105, 161, 0.10);
+  --tec-acento-tenue: rgba(3, 105, 161, 0.06);
+  --tec-acento-borde: rgba(3, 105, 161, 0.35);
+  --tec-acento-glow: rgba(3, 105, 161, 0.45);
+  --tec-sobre-acento: #FFFFFF;
+
+  --tec-globo: #FFFFFF;
+
+  --tec-exito: #047857;
+  --tec-sobre-exito: #FFFFFF;
+  --tec-exito-glow: rgba(4, 120, 87, 0.35);
+
+  --tec-aviso: #B45309;
+  --tec-aviso-suave: rgba(180, 83, 9, 0.08);
+  --tec-aviso-borde: rgba(180, 83, 9, 0.28);
+
+  --tec-error: #B91C1C;
+  --tec-error-suave: rgba(185, 28, 28, 0.08);
+  --tec-error-borde: rgba(185, 28, 28, 0.28);
+
+  --tec-cian: #0E7490;
+  --tec-cian-suave: rgba(14, 116, 144, 0.12);
+
+  --tec-tono-azul: #0369A1;   --tec-tono-azul-bg: rgba(3, 105, 161, 0.10);
+  --tec-tono-verde: #047857;  --tec-tono-verde-bg: rgba(4, 120, 87, 0.10);
+  --tec-tono-rojo: #B91C1C;   --tec-tono-rojo-bg: rgba(185, 28, 28, 0.10);
+  --tec-tono-ambar: #B45309;  --tec-tono-ambar-bg: rgba(180, 83, 9, 0.10);
+  --tec-tono-gris: #475569;   --tec-tono-gris-bg: rgba(71, 85, 105, 0.10);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Chat de soporte (Arto Web) — paleta propia
+   La pantalla imita a WhatsApp para que el cliente no tenga que aprender nada,
+   pero con los morados de Artoria en vez del verde de Meta. Solo la usa /soporte.
+   ──────────────────────────────────────────────────────────────────────────── */
+:root {
+  --sop-fondo: #0B0F1A;
+  --sop-barra: #151A2B;
+  --sop-borde: #232B45;
+
+  --sop-burbuja-arto: #1B2138;
+  --sop-burbuja-cliente: #4C2A85;
+
+  --sop-texto: #F1F5F9;
+  --sop-texto-2: #9AA6BF;
+  --sop-texto-3: #6B7794;
+
+  --sop-campo: #1B2138;
+  --sop-acento: #A855F7;
+  --sop-error: #F87171;
+}
+
+/*
+ * Barra de desplazamiento del menu lateral.
+ *
+ * Ocupaba una franja clara pegada al borde y se veia todo el tiempo, tambien
+ * cuando no hacia falta. Ahora es transparente hasta que el puntero entra, y
+ * cuando aparece es del color del propio panel: se nota lo justo para agarrarla.
+ */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  /* Siempre un poco visible: en una pantalla baja el menu no cabe entero, y con la
+     barra invisible nada avisaba de que habia mas entradas mas abajo. */
+  scrollbar-color: hsl(var(--sidebar-foreground) / 0.14) transparent;
+  transition: scrollbar-color 0.2s ease;
+}
+.sidebar-scroll:hover,
+.sidebar-scroll:focus-within {
+  scrollbar-color: hsl(var(--sidebar-foreground) / 0.25) transparent;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: hsl(var(--sidebar-foreground) / 0.14);
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+.sidebar-scroll:hover::-webkit-scrollbar-thumb,
+.sidebar-scroll:focus-within::-webkit-scrollbar-thumb {
+  background: hsl(var(--sidebar-foreground) / 0.22);
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--sidebar-foreground) / 0.4);
+}
+
+/* ── Mapas (Leaflet) ──────────────────────────────────────────────────
+ *
+ * Al hacer clic en una zona aparecía un rectángulo negro alrededor.
+ * No es del mapa ni de la zona: es el contorno de foco que el navegador
+ * le pone a cualquier elemento clicable, y como el elemento es un <path>
+ * de SVG, ese contorno se dibuja sobre su caja envolvente — o sea un
+ * rectángulo que no se parece en nada al polígono.
+ *
+ * Se quita solo en punteros. Con `:focus-visible` —teclado— el contorno
+ * se mantiene, porque ahí sí es la única señal de qué está seleccionado.
+ */
+.leaflet-container .leaflet-interactive:focus:not(:focus-visible) {
+  outline: none;
+}
+.leaflet-container .leaflet-interactive:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+}
+
+
+/* Dentro de los paneles grandes (Mensajería, Conversaciones…) el texto y los números crecen un
+   escalón: las tarjetas se diseñaron para el inicio y ahí quedaban chicas y con espacio sobrando. */
+@layer components {
+  .panel-amplio .text-\[10px\] { font-size: 12px; }
+  .panel-amplio .text-\[10\.5px\] { font-size: 12.5px; }
+  .panel-amplio .text-\[11px\] { font-size: 13px; }
+  .panel-amplio .text-\[11\.5px\] { font-size: 13.5px; }
+  .panel-amplio .text-\[12px\] { font-size: 14px; }
+  .panel-amplio .text-\[12\.5px\] { font-size: 14.5px; }
+  .panel-amplio .text-\[13px\] { font-size: 15.5px; }
+  .panel-amplio .text-\[15px\] { font-size: 17px; }
+  .panel-amplio .text-\[17px\] { font-size: 21px; }
+  .panel-amplio .text-\[19px\] { font-size: 25px; }
+  .panel-amplio .text-\[25px\] { font-size: 32px; }
+  .panel-amplio .text-\[27px\] { font-size: 34px; }
+  .panel-amplio .text-\[30px\] { font-size: 38px; }
+  .panel-amplio .text-\[32px\] { font-size: 40px; }
 }

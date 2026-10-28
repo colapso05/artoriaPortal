@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback, Suspense, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, Suspense, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2, MessageCircle, X } from "lucide-react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
 // ── Siempre cargados (layout visible desde el primer render) ──────────────────
 import DashboardHeader from "@/components/dashboard/DashboardHeader";
@@ -10,6 +10,10 @@ import { OnboardingTour } from "@/components/dashboard/OnboardingTour";
 import ChangePasswordScreen from "@/components/dashboard/ChangePasswordScreen";
 import AgentToggle from "@/components/dashboard/AgentToggle";
 import { syncShortcutsCache } from "@/components/dashboard/ShortcutsManager";
+import { esSesionTecnico } from "@/lib/tecnicos/api";
+import SitioWebPanel from "@/components/dashboard/SitioWebPanel";
+import PagosComprobantes from "@/components/dashboard/PagosComprobantes";
+import { moduloDisponible } from "@/lib/comprobantes";
 // ── Lazy: se cargan solo cuando el usuario navega a esa vista ─────────────────
 const AdminUserManager     = React.lazy(() => import("@/components/dashboard/AdminUserManager"));
 const WhatsAppInbox        = React.lazy(() => import("@/components/dashboard/WhatsAppInbox"));
@@ -17,6 +21,15 @@ const TicketManager        = React.lazy(() => import("@/components/dashboard/Tic
 const CoverageMap          = React.lazy(() => import("@/components/dashboard/CoverageMap"));
 const CompanyTeamManager   = React.lazy(() => import("@/components/dashboard/CompanyTeamManager"));
 const AdminDashboardHome   = React.lazy(() => import("@/components/dashboard/AdminDashboardHome"));
+const PanelEmpresa         = React.lazy(() => import("@/components/dashboard/PanelEmpresa"));
+
+/**
+ * Interruptor del panel de empresa: `true` = el nuevo, `false` = el de siempre.
+ *
+ * Una línea, sin borrar nada. El panel anterior queda intacto en
+ * `ClientDashboardHome.tsx` por si hay que volver.
+ */
+const PANEL_EMPRESA_NUEVO = true;
 const ClientDashboardHome  = React.lazy(() => import("@/components/dashboard/ClientDashboardHome"));
 const AdminAgentReports    = React.lazy(() => import("@/components/dashboard/AdminAgentReports"));
 const ShortcutsManager     = React.lazy(() => import("@/components/dashboard/ShortcutsManager"));
@@ -28,6 +41,8 @@ const ConversationsAnalytics = React.lazy(() => import("@/components/dashboard/C
 const ScheduleManager        = React.lazy(() => import("@/components/dashboard/schedule/ScheduleManager"));
 const BillingManager         = React.lazy(() => import("@/components/dashboard/BillingManager"));
 const AdminBillingPanel      = React.lazy(() => import("@/components/dashboard/AdminBillingPanel"));
+const ConsumoIA              = React.lazy(() => import("@/components/dashboard/ConsumoIA"));
+const SimuladorWhatsApp      = React.lazy(() => import("@/components/dashboard/SimuladorWhatsApp"));
 
 // Spinner mínimo para el Suspense boundary
 function ViewLoader() {
@@ -58,13 +73,67 @@ export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [displayName, setDisplayName] = useState("");
-
   const [toggles, setToggles] = useState<UserToggle[]>([]);
-  const [activeView, setActiveView] = useState("");
+  // La vista activa vive en la URL (?view=...) para que el botón atrás/adelante
+  // del navegador funcione y la recarga conserve la sección.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeView = searchParams.get("view") || "";
+  const setActiveView = useCallback((view: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set("view", view);
+      // Estos los pone solo quien navega a un destino concreto (una sección de
+      // Configuración, un ticket puntual). Si quedaran pegados, la próxima visita
+      // aterrizaría en lo de la vez anterior en vez de donde corresponde.
+      next.delete("sec");
+      next.delete("ticket");
+      next.delete("tbuscar");
+      // `conv` tambien: ir a la Bandeja desde el menu o desde una alerta no puede
+      // reabrir el chat que alguien miro hace dos dias. Quien quiere abrir uno
+      // concreto usa `openInboxConversation`, que lo fija en el mismo cambio de URL.
+      next.delete("conv");
+      return next;
+    });
+  }, [setSearchParams]);
+
+  // El panel ocupa exactamente la ventana y se desplaza por dentro. Se bloquea el
+  // desplazamiento del documento mientras está montado; al salir a la landing se
+  // devuelve, porque esa sí tiene que poder desplazarse.
+  useEffect(() => {
+    document.body.classList.add("panel-sin-scroll");
+    return () => document.body.classList.remove("panel-sin-scroll");
+  }, []);
+
+  // Ir a vincular el canal sin costo. Fija ?sec= junto con ?view= en el mismo cambio
+  // de URL: con dos actualizaciones seguidas, Configuración alcanza a montarse en
+  // "Personalizar" y el operador aterriza en la pantalla equivocada.
+  const abrirVinculacionCanal = useCallback(() => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set("view", "settings");
+      next.set("sec", "integraciones");
+      return next;
+    });
+  }, [setSearchParams]);
+
+  // Navegar a la Bandeja y abrir una conversación puntual. Fija ?conv= en el MISMO
+  // cambio de URL que ?view=inbox — si no, el efecto que restaura el chat desde la
+  // URL (deps: [activeView]) puede leer un ?conv= viejo (de una visita anterior a la
+  // Bandeja) y pisar la conversación que se quiso abrir.
+  const openInboxConversation = useCallback((conversationId: string) => {
+    setPendingConversationId(conversationId);
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set("view", "inbox");
+      next.set("conv", conversationId);
+      return next;
+    });
+  }, [setSearchParams]);
   const [sidebarIconSize, setSidebarIconSize] = useState<number>(24);
   // Guardamos el tamaño del admin para restaurarlo al salir de simulación
   const adminIconSizeRef = React.useRef<number>(24);
   const [pendingConversationId, setPendingConversationId] = useState<string | null>(null);
+  const [pendingConvData, setPendingConvData] = useState<any>(null);
   const [pendingInboxPhone, setPendingInboxPhone] = useState<string | null>(null);
   const [pendingInboxMessage, setPendingInboxMessage] = useState<string | null>(null);
   const [tourContextoTemporal, setTourContextoTemporal] = useState(false);
@@ -78,11 +147,45 @@ export default function Dashboard() {
   const [simulatedCompanyId, setSimulatedCompanyId] = useState<string | null>(null);
   const [simulatedCompanyName, setSimulatedCompanyName] = useState<string>("");
   const [simulatedUserName, setSimulatedUserName] = useState<string>("");
+
+  /**
+   * Con que nombre saludar.
+   *
+   * `profiles.display_name` a veces trae el cargo en vez del nombre -"Administrador",
+   * "Usuario"- y saludar con el cargo se lee como un formulario, no como un saludo.
+   * Cuando pasa eso se prefiere la parte del correo antes de la arroba, que al menos
+   * es propia de la persona.
+   *
+   * Y si se esta simulando a alguien, manda el nombre de esa persona: el punto de
+   * simular es ver lo que ve ella.
+   */
+  const nombreSaludo = useMemo(() => {
+    const esCargo = (v: string) =>
+      /^(administrador|administradora|admin|usuario|usuaria|user|cliente|empresa)$/i.test(v.trim());
+    for (const c of [simulatedUserName, displayName]) {
+      const v = (c || "").trim();
+      if (v && !esCargo(v)) return v;
+    }
+    const local = (session?.user?.email || "").split("@")[0] || "";
+    // Los separadores del correo se vuelven espacios: "juan.perez" -> "Juan perez".
+    const limpio = local.replace(/[._-]+/g, " ").trim();
+    if (limpio && !/^[0-9]+$/.test(limpio)) return limpio.charAt(0).toUpperCase() + limpio.slice(1);
+    return "";
+  }, [simulatedUserName, displayName, session?.user?.email]);
   const [simulatedUserRole, setSimulatedUserRole] = useState<string | null>(null);
   const [simulatedUserOperatorRoles, setSimulatedUserOperatorRoles] = useState<string[]>([]);
   const [creditsEnabled, setCreditsEnabled] = useState(false);
+  /** `sitio_web_activo`: solo las empresas cuyo sitio público lee estas tablas. */
+  const [sitioWebEnabled, setSitioWebEnabled] = useState(false);
+  // El módulo de pagos aparece solo cuando la base ya tiene sus funciones: mientras no
+  // existan, la entrada del menú no se ofrece (en vez de llevar a una pantalla vacía).
+  const [pagosEnabled, setPagosEnabled] = useState(false);
   const [runTour, setRunTour] = useState(false);
   const [ticketInitialFilter, setTicketInitialFilter] = useState<string | undefined>();
+  /** En qué pestaña abre Coberturas: "alerts" cuando se llega desde el inicio. */
+  const [coverageTab, setCoverageTab] = useState<"map" | "alerts">("map");
+  // Al salir de Coberturas se olvida la pestaña: entrar después por el menú tiene que abrir el mapa.
+  useEffect(() => { if (activeView !== "coverage") setCoverageTab("map"); }, [activeView]);
   const navigate = useNavigate();
 
   // ── Notificaciones globales (activas fuera de la sección Bandeja) ────────────
@@ -97,9 +200,55 @@ export default function Dashboard() {
 
   const effectiveIsAdmin = simulatedCompanyId ? false : isAdmin;
   const effectiveCompanyId = simulatedCompanyId || companyId;
+
+  /*
+   * `credits_enabled` es de la empresa que se está mirando, no de la del usuario.
+   *
+   * Se leía una sola vez, al arrancar, desde la empresa propia. Un admin de
+   * plataforma no tiene empresa, así que al simular a una que sí compra créditos
+   * la bandera quedaba en false y el saldo no aparecía por ninguna parte.
+   */
+  useEffect(() => {
+    if (!effectiveCompanyId) { setCreditsEnabled(false); return; }
+    let cancelado = false;
+    supabase
+      .from("company_config")
+      .select("credits_enabled, sitio_web_activo")
+      .eq("id", effectiveCompanyId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelado) return;
+        setCreditsEnabled(!!(data as any)?.credits_enabled);
+        setSitioWebEnabled(!!(data as any)?.sitio_web_activo);
+      });
+    return () => { cancelado = true; };
+  }, [effectiveCompanyId]);
   const effectiveCompanyRole = simulatedUserRole ?? (simulatedCompanyId ? "administrador" : companyRole);
+  useEffect(() => {
+    setPagosEnabled(false);
+    if (!effectiveCompanyId || effectiveCompanyRole !== "administrador") return;
+    let cancelado = false;
+    moduloDisponible(effectiveCompanyId).then(ok => { if (!cancelado) setPagosEnabled(ok); });
+    return () => { cancelado = true; };
+  }, [effectiveCompanyId, effectiveCompanyRole]);
   const effectiveCompanyName = simulatedCompanyId ? simulatedCompanyName : companyName;
   const effectiveOperatorRoles = simulatedUserRole ? simulatedUserOperatorRoles : operatorRoles;
+
+  /**
+   * Vistas cuyo contenido crece hacia abajo y se desplaza como una pagina.
+   * Los dos paneles de inicio entran: ambos tienen contenido bajo la primera
+   * pantalla y por dentro usan `min-h-full` en vez de altura fija.
+   */
+  const vistaConScroll =
+    activeView === "conversations-analytics" ||
+    activeView === "home" ||
+    /*
+     * El sitio web también crece hacia abajo: la lista de planes es larga y la
+     * vista previa va al lado. Sin esto el contenedor quedaba con `min-h-0` y la
+     * columna de la izquierda se cortaba a media lista, sin forma de bajar.
+     */
+    activeView === "sitio-web" ||
+    activeView === "pagos";
 
   // Carga el icon size de un usuario específico desde Supabase (para simulación)
   const loadIconSizeForUser = async (userId: string): Promise<number> => {
@@ -116,6 +265,45 @@ export default function Dashboard() {
       }
     } catch {}
     return 24; // default
+  };
+
+  /**
+   * Entrar a simular una empresa y caer en la vista indicada.
+   *
+   * Estaba escrito dentro del `onSimulate` de la home del administrador, así que
+   * cualquier otro sitio que quisiera simular tenía que copiarlo entero — y
+   * copiado a medias deja al admin con la barra de otro usuario o sin nombre.
+   */
+  const simularEmpresa = async (id: string, name: string, vista: string) => {
+    let adminName = "";
+    let simulatedUserId = "";
+    try {
+      const { data: cu } = await supabase
+        .from("company_users" as any)
+        .select("user_id")
+        .eq("company_id", id)
+        .eq("role", "administrador")
+        .limit(1)
+        .single();
+      if (cu) {
+        simulatedUserId = (cu as any).user_id;
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("display_name")
+          .eq("user_id", simulatedUserId)
+          .single();
+        adminName = profile?.display_name || "";
+      }
+    } catch {}
+    adminIconSizeRef.current = sidebarIconSize;
+    const simSize = simulatedUserId ? await loadIconSizeForUser(simulatedUserId) : 24;
+    setSidebarIconSize(simSize);
+    setSimulatedCompanyId(id);
+    setSimulatedCompanyName(name);
+    setSimulatedUserName(adminName);
+    setSimulatedUserRole(null);
+    setSimulatedUserOperatorRoles([]);
+    setActiveView(vista);
   };
 
   // Escuchar cambios de tamaño de iconos desde SettingsPage
@@ -149,6 +337,14 @@ export default function Dashboard() {
       if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESH_FAILURE' || !session) {
         dashboardInitialized = false;
         navigate("/portal");
+        return;
+      }
+      // El portal de técnicos usa este mismo cliente de Supabase, así que una sesión
+      // de técnico queda guardada bajo la misma llave. Sin este corte, el técnico
+      // caía en el dashboard de operadores y veía "Cambiar Contraseña", porque su
+      // perfil trae must_change_password mientras use la clave temporal.
+      if (esSesionTecnico(session.user?.email)) {
+        navigate("/portal-tecnicos", { replace: true });
         return;
       }
       setSession(session);
@@ -245,12 +441,7 @@ export default function Dashboard() {
     const loadedToggles: UserToggle[] = togglesData || [];
     setToggles(loadedToggles);
 
-    // Set default view
-    if (admin) {
-      setActiveView("home");
-    } else {
-      setActiveView("home");
-    }
+    // La vista por defecto ("home") la fija el efecto de default cuando no hay ?view=
   };
 
   // Re-fetch credits_enabled whenever the effective company changes (e.g. admin simulation)
@@ -271,6 +462,35 @@ export default function Dashboard() {
     setActiveToggle(toggle || null);
   };
 
+  // Vista por defecto: si no hay ?view= en la URL, fijar "home" (replace para no
+  // dejar una entrada muerta en el historial).
+  useEffect(() => {
+    if (session && !searchParams.get("view")) {
+      setSearchParams({ view: "home" }, { replace: true });
+    }
+  }, [session, searchParams, setSearchParams]);
+
+  // Restaurar el agente/toggle activo desde la URL (para back/forward y recarga).
+  useEffect(() => {
+    if (activeView.startsWith("toggle-")) {
+      const id = activeView.slice("toggle-".length);
+      setActiveToggle(toggles.find(t => t.id === id) || null);
+    } else {
+      setActiveToggle(null);
+    }
+  }, [activeView, toggles]);
+
+  // Al entrar a la Bandeja (incluido back/forward y recarga), abrir el chat del ?conv=.
+  // Depende solo de activeView, así no interfiere cuando el usuario cambia de chat
+  // estando ya dentro de la bandeja (eso solo actualiza el ?conv= vía replace).
+  useEffect(() => {
+    if (activeView === "inbox") {
+      const conv = searchParams.get("conv");
+      if (conv) setPendingConversationId(conv);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
+
   useEffect(() => {
     const tourViews = ["home", "inbox", "team"];
     if (tourViews.includes(activeView) && !localStorage.getItem(`tour_seen_${activeView}`)) {
@@ -287,11 +507,13 @@ export default function Dashboard() {
   const location = useLocation();
   useEffect(() => {
     if (location.state?.view === 'inbox') {
-      setActiveView('inbox');
       if (location.state.conversationId) {
-        setPendingConversationId(location.state.conversationId);
+        openInboxConversation(location.state.conversationId);
+      } else {
+        setActiveView('inbox');
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.state]);
 
   const handleLogout = async () => {
@@ -403,6 +625,75 @@ export default function Dashboard() {
     return perms.includes(view);
   };
 
+  /*
+   * Si esta vista va a dibujar algo o no.
+   *
+   * El area de contenido es una lista de `activeView === "x" && permiso && (...)`.
+   * Cuando ninguna calza no pasa nada: ni error, ni redireccion, ni estado vacio.
+   * Queda la barra lateral pintada y el centro en negro.
+   *
+   * Se llega ahi por dos caminos y los dos son reales:
+   *
+   *   1. Una vista que existe pero que el rol no tiene. Un visualizador que escribe
+   *      ?view=tickets, o que tiene el enlace guardado de cuando era operador.
+   *   2. Un nombre de vista que no existe. `?view=analytics` y `?view=config` no son
+   *      vistas del portal —se llaman `conversations-analytics` y `settings`— asi que
+   *      cualquiera que los escriba de memoria cae en el mismo vacio.
+   *
+   * Esta lista espeja las condiciones de abajo. Si se agrega una vista alla, va aca
+   * tambien; el costo de olvidarse es que la vista nueva muestre "sin acceso", que
+   * es molesto pero visible — al reves de ahora, que el olvido es invisible.
+   */
+  const vistaRenderizable = useMemo(() => {
+    const puede = (p: string) => effectiveIsAdmin || hasPermission(p);
+    switch (activeView) {
+      case "home":
+      case "shortcuts":
+      case "my-reports":
+      case "settings":
+        return true;
+      case "users":
+      case "reports":
+      case "credit-requests":
+      case "admin-billing":
+      // El costo de los modelos es informacion nuestra: la pantalla es solo del
+      // administrador de la plataforma. Las RPC tambien lo rechazan por su cuenta,
+      // asi que esto es la primera de dos puertas, no la unica.
+      case "consumo-ia":
+        // El simulador también es solo del administrador de plataforma: habla
+        // con el agente en modo prueba y muestra trazas internas.
+      case "simulador":
+        return isAdmin;
+      case "inbox":
+      case "tickets":
+      case "coverage":
+        return puede(activeView);
+      case "team":
+        return hasPermission("team") && !!effectiveCompanyId;
+      case "conversations-analytics":
+        return !effectiveIsAdmin;
+      case "credits":
+        return !!effectiveCompanyId && creditsEnabled;
+      case "billing":
+        return !!effectiveCompanyId && !effectiveIsAdmin;
+      case "schedule":
+        return !!effectiveCompanyId;
+      /*
+       * Faltaba, y el síntoma era raro: la sección se dibujaba bien y más abajo
+       * aparecía "no está disponible para tu cuenta". Las dos cosas se renderizan
+       * por separado, así que al no reconocer la vista acá el cartel se colaba
+       * debajo del contenido que sí había cargado.
+       */
+      case "sitio-web":
+        return !!effectiveCompanyId && sitioWebEnabled;
+      case "pagos":
+        return !!effectiveCompanyId && pagosEnabled && effectiveCompanyRole === "administrador";
+      default:
+        // Los toggles son dinamicos: existen si hay un toggle cargado con ese nombre.
+        return activeView.startsWith("toggle-") && !!activeToggle;
+    }
+  }, [activeView, effectiveIsAdmin, isAdmin, hasPermission, effectiveCompanyId, creditsEnabled, sitioWebEnabled, pagosEnabled, effectiveCompanyRole, activeToggle]);
+
   if (!session) return null;
 
   if (mustChangePassword) {
@@ -416,8 +707,12 @@ export default function Dashboard() {
 
   return (
     <>
-    <SidebarProvider>
-      <div className="h-screen overflow-hidden flex w-full bg-background">
+    {/* SidebarProvider trae `min-h-svh` por dentro. Se sobrescribe con `min-h-0` y una
+        altura de viewport dinámica: si el envoltorio puede crecer más que la ventana
+        —por una barra horizontal, una barra de descargas, una franja de extensión—,
+        el documento entero se vuelve desplazable y aparece un vacío bajo la app. */}
+    <SidebarProvider className="h-[100dvh] min-h-0 overflow-hidden">
+      <div className="h-full overflow-hidden flex w-full bg-background min-w-0">
         <DashboardSidebar
           isAdmin={effectiveIsAdmin}
           activeView={activeView}
@@ -427,6 +722,8 @@ export default function Dashboard() {
           companyName={effectiveCompanyName}
           isSimulating={!!simulatedCompanyId}
           creditsEnabled={creditsEnabled}
+          sitioWebEnabled={sitioWebEnabled}
+          pagosEnabled={pagosEnabled}
           iconSize={sidebarIconSize}
         />
 
@@ -434,6 +731,9 @@ export default function Dashboard() {
           {activeView !== "inbox" && (
             <DashboardHeader
               email={session.user.email}
+              userId={session.user.id}
+              onAbrirConversacion={openInboxConversation}
+              onAbrirVinculacion={abrirVinculacionCanal}
               displayName={displayName}
               onLogout={handleLogout}
               onSettings={() => setActiveView("settings")}
@@ -453,68 +753,118 @@ export default function Dashboard() {
                 setSimulatedUserName("");
                 setSimulatedUserRole(null);
                 setSimulatedUserOperatorRoles([]);
-                setActiveView("users");
+                // Al Inicio: dejar de simular no es "volver al listado de empresas",
+                // es volver a ser uno mismo, y uno mismo arranca en su panel.
+                setActiveView("home");
               }}
             />
           )}
 
-          <main className={`flex-1 min-h-0 flex flex-col ${activeView === "conversations-analytics" ? "overflow-y-auto" : "overflow-hidden"} ${activeView === "inbox" ? "p-0" : "p-4 md:p-6 lg:p-8"}`}>
+          {/* El relleno vive DENTRO del contenedor que se desplaza, no fuera.
+              Si va en <main>, la barra de desplazamiento se dibuja en el borde
+              interior y queda flotando a 32 px del canto de la ventana, con un
+              vacío a su derecha. */}
+          <main className={`flex-1 min-h-0 flex flex-col ${vistaConScroll ? "overflow-y-auto" : "overflow-hidden"}`}>
             <Suspense fallback={<ViewLoader />}>
-            <div className={`flex-1 flex flex-col w-full max-w-none ${activeView === "conversations-analytics" ? "" : "min-h-0"}`}>
+            <div className={`flex-1 flex flex-col w-full max-w-none ${vistaConScroll ? "" : "min-h-0"} ${activeView === "inbox" ? "p-0" : "p-4 md:p-6 lg:p-8"}`}>
               {activeView === "home" && effectiveIsAdmin && (
                 <AdminDashboardHome
-                  onSimulate={async (id, name) => {
-                    let adminName = "";
-                    let simulatedUserId = "";
-                    try {
-                      const { data: cu } = await supabase
-                        .from("company_users" as any)
-                        .select("user_id")
-                        .eq("company_id", id)
-                        .eq("role", "administrador")
-                        .limit(1)
-                        .single();
-                      if (cu) {
-                        simulatedUserId = (cu as any).user_id;
-                        const { data: profile } = await supabase
-                          .from("profiles")
-                          .select("display_name")
-                          .eq("user_id", simulatedUserId)
-                          .single();
-                        adminName = profile?.display_name || "";
-                      }
-                    } catch {}
-                    adminIconSizeRef.current = sidebarIconSize;
-                    const simSize = simulatedUserId ? await loadIconSizeForUser(simulatedUserId) : 24;
-                    setSidebarIconSize(simSize);
-                    setSimulatedCompanyId(id);
-                    setSimulatedCompanyName(name);
-                    setSimulatedUserName(adminName);
-                    setSimulatedUserRole(null);
-                    setSimulatedUserOperatorRoles([]);
-                    setActiveView("home");
+                  onVerReportes={() => setActiveView("reports")}
+                  onVerConsumoIA={() => setActiveView("consumo-ia")}
+                  /*
+                   * Una conversación que falló se mira en Rendimiento de IA, no en la
+                   * bandeja: lo que se quiere ver es el análisis. Y hay que simular la
+                   * empresa primero, porque esa pantalla trabaja sobre una sola.
+                   */
+                  onVerAnalisis={async ({ companyId: cid, companyName: cname, analysisId, waId }) => {
+                    await simularEmpresa(cid, cname, "conversations-analytics");
+                    setPendingConvData({ analysis_id: analysisId, wa_id: waId, profile_name: null });
+                  }}
+                  onSimulate={(id, name) => simularEmpresa(id, name, "home")}
+                />
+              )}
+              {/*
+                * Panel nuevo de la empresa. Para volver al anterior basta con poner
+                * PANEL_EMPRESA_NUEVO en false: el componente viejo sigue entero y
+                * con sus props, no se borró nada.
+                */}
+              {activeView === "home" && !effectiveIsAdmin && PANEL_EMPRESA_NUEVO && (
+                <PanelEmpresa
+                  companyId={effectiveCompanyId}
+                  companyName={effectiveCompanyName}
+                  userName={nombreSaludo}
+                  onIrABandeja={() => setActiveView("inbox")}
+                  onConversationClick={(id) => openInboxConversation(id)}
+                  /* Configuración → Sistema de Alertas: los números que reciben el aviso y
+                     cuántos reclamos lo disparan. Esa sección es solo de administradores, así
+                     que el acceso directo también: no puede llevar a una pantalla cerrada. */
+                  onIrASistemaAlertas={(effectiveCompanyRole === "administrador" || effectiveCompanyRole === "admin") ? () => {
+                    setActiveView("settings");
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      next.set("view", "settings");
+                      next.set("sec", "alertas");
+                      next.delete("ticket"); next.delete("tbuscar");
+                      return next;
+                    });
+                  } : undefined}
+                  /* La alerta global (mensaje a clientes por zona) vive en Coberturas. */
+                  onIrAAlertaActiva={(effectiveIsAdmin || hasPermission("coverage")) ? () => {
+                    setCoverageTab("alerts");
+                    setActiveView("coverage");
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      next.set("view", "coverage");
+                      next.delete("ticket"); next.delete("tbuscar"); next.delete("sec");
+                      return next;
+                    });
+                  } : undefined}
+                  onNavigateToTickets={(status, ticketId) => {
+                    // El filtro tiene que quedar puesto: llegar al Centro de Tickets
+                    // sin filtro obliga a repetir a mano lo que ya se pidió.
+                    setTicketInitialFilter(status && status !== "all" ? status : undefined);
+                    setActiveView("tickets");
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      next.set("view", "tickets");
+                      if (ticketId) next.set("ticket", ticketId); else next.delete("ticket");
+                      next.delete("tbuscar");
+                      next.delete("sec");
+                      return next;
+                    });
+                  }}
+                  onNavigateToConversations={(analysisId, convData) => {
+                    setPendingConvData(convData ?? null);
+                    setActiveView("conversations-analytics");
                   }}
                 />
               )}
-              {activeView === "home" && !effectiveIsAdmin && (
+              {activeView === "home" && !effectiveIsAdmin && !PANEL_EMPRESA_NUEVO && (
                 <ClientDashboardHome
                   companyId={effectiveCompanyId}
                   companyName={effectiveCompanyName}
                   userId={session.user.id}
-                  userName={displayName}
+                  userName={nombreSaludo}
                   userRole={effectiveCompanyRole || undefined}
                   operatorRoles={effectiveOperatorRoles}
-                  onConversationClick={(id) => {
-                    setPendingConversationId(id);
-                    setActiveView("inbox");
-                  }}
-                  onNavigateToTickets={(status) => {
+                  onConversationClick={(id) => openInboxConversation(id)}
+                  onNavigateToTickets={(status, ticketId) => {
                     setTicketInitialFilter(status);
-                    setActiveView("tickets");
+                    // ?ticket= se fija (o se borra) en el mismo cambio de URL que ?view=:
+                    // si quedaba el de una visita anterior, el panel derecho seguía
+                    // mostrando aquel ticket aunque la lista viniera filtrada por otro.
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      next.set("view", "tickets");
+                      if (ticketId) next.set("ticket", ticketId); else next.delete("ticket");
+                      next.delete("tbuscar");
+                      next.delete("sec");
+                      return next;
+                    });
                   }}
                   creditsEnabled={creditsEnabled}
                   onNavigateToCredits={() => setActiveView("credits")}
-                  onNavigateToConversations={() => setActiveView("conversations-analytics")}
+                  onNavigateToConversations={(analysisId, convData) => { setPendingConvData(convData ?? null); setActiveView("conversations-analytics"); }}
                   onNavigateToSchedule={() => setActiveView("schedule")}
                 />
               )}
@@ -573,8 +923,7 @@ export default function Dashboard() {
                     onOpenConversation={(companyId, companyName, conversationId) => {
                       setSimulatedCompanyId(companyId);
                       setSimulatedCompanyName(companyName);
-                      setPendingConversationId(conversationId);
-                      setActiveView("inbox");
+                      openInboxConversation(conversationId);
                     }}
                   />
                 </div>
@@ -584,32 +933,46 @@ export default function Dashboard() {
                 <WhatsAppInbox
                   companyId={effectiveCompanyId || undefined}
                   userId={session.user.id}
-                  userName={displayName}
+                  userName={nombreSaludo}
                   userRole={effectiveCompanyRole || undefined}
                   operatorRoles={effectiveOperatorRoles}
                   initialConversationId={pendingConversationId || undefined}
                   initialPhone={pendingInboxPhone || undefined}
                   initialMessage={pendingInboxMessage || undefined}
                   onConversationOpened={() => { setPendingConversationId(null); setPendingInboxPhone(null); setPendingInboxMessage(null); }}
+                  onConversationSelect={(convId) => {
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      if (convId) next.set("conv", convId); else next.delete("conv");
+                      return next;
+                    }, { replace: true });
+                  }}
                   isSimulating={!!simulatedCompanyId}
                   simulatedUserName={simulatedUserName || simulatedCompanyName || undefined}
                   onNavigateToSchedule={() => setActiveView("schedule")}
+                  onNavigateToSettings={abrirVinculacionCanal}
                 />
               )}
               {activeView === "tickets" && (effectiveIsAdmin || hasPermission("tickets")) && (
                 <TicketManager
                   companyId={effectiveCompanyId || undefined}
                   initialFilter={ticketInitialFilter}
-                  onOpenConversation={(conversationId) => {
-                    setPendingConversationId(conversationId);
-                    setActiveView("inbox");
+                  initialTicketId={searchParams.get("ticket") || undefined}
+                  initialSearch={searchParams.get("tbuscar") || undefined}
+                  onTicketSelect={(ticketId) => {
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      if (ticketId) next.set("ticket", ticketId); else next.delete("ticket");
+                      return next;
+                    }, { replace: true });
                   }}
+                  onOpenConversation={(conversationId) => openInboxConversation(conversationId)}
                 />
               )}
               {activeView === "coverage" && (effectiveIsAdmin || hasPermission("coverage")) && (
                 <div className="flex-1 flex flex-col gap-8 min-h-0">
                   <div className="flex-1 min-h-[500px]">
-                    <CoverageMap companyId={effectiveCompanyId || undefined} />
+                    <CoverageMap companyId={effectiveCompanyId || undefined} tabInicial={coverageTab} />
                   </div>
                 </div>
               )}
@@ -624,12 +987,26 @@ export default function Dashboard() {
                   companyId={effectiveCompanyId || ""}
                   companyName={effectiveCompanyName}
                   isAdminView={isAdmin}
-                  onOpenConversation={(convId) => {
-                    setPendingConversationId(convId);
-                    setActiveView("inbox");
-                  }}
+                  initialConvData={pendingConvData ?? undefined}
+                  onInitialConvDataHandled={() => setPendingConvData(null)}
+                  onOpenConversation={(convId) => openInboxConversation(convId)}
                 />
               )}
+              {/*
+                * El sitio web dejó de ser una pestaña de Configuración.
+                *
+                * Ahí dentro vivía apretado contra un `max-w-3xl` y escondido tres
+                * clics adentro, cuando es la cara pública de la empresa. Acá tiene
+                * el ancho completo y se llega de una.
+                */}
+              {activeView === "sitio-web" && effectiveCompanyId && sitioWebEnabled && (
+                <SitioWebPanel companyId={effectiveCompanyId} />
+              )}
+
+              {activeView === "pagos" && effectiveCompanyId && pagosEnabled && effectiveCompanyRole === "administrador" && (
+                <PagosComprobantes companyId={effectiveCompanyId} />
+              )}
+
               {activeView === "credits" && effectiveCompanyId && creditsEnabled && (
                 <div className="flex-1 min-h-0 flex flex-col">
                   <CreditsManager
@@ -641,6 +1018,14 @@ export default function Dashboard() {
               {activeView === "credit-requests" && isAdmin && (
                 <div className="flex-1 min-h-0 flex flex-col">
                   <AdminCreditRequests />
+                </div>
+              )}
+              {activeView === "consumo-ia" && isAdmin && (
+                <ConsumoIA />
+              )}
+              {activeView === "simulador" && isAdmin && (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <SimuladorWhatsApp />
                 </div>
               )}
               {activeView === "admin-billing" && isAdmin && (
@@ -661,9 +1046,11 @@ export default function Dashboard() {
               {activeView === "settings" && (
                 <SettingsPage
                   companyId={effectiveCompanyId}
+                  companyName={effectiveCompanyName}
                   userRole={effectiveCompanyRole}
                   userId={session.user.id}
                   isSimulating={!!simulatedCompanyId}
+                  initialSection={searchParams.get("sec") || undefined}
                   tourActive={tourContextoTemporal}
                   onTourComplete={async () => {
                     setTourContextoTemporal(false);
@@ -684,10 +1071,38 @@ export default function Dashboard() {
                   companyId={effectiveCompanyId}
                   userId={session.user.id}
                   isAdmin={effectiveIsAdmin || effectiveCompanyRole === "administrador"}
+                  initialAppointmentId={searchParams.get("appt") || undefined}
+                  onAppointmentSelect={(appointmentId) => {
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      if (appointmentId) next.set("appt", appointmentId); else next.delete("appt");
+                      return next;
+                    }, { replace: true });
+                  }}
+                  onOpenTicket={({ ticketId, buscar }) => {
+                    // El filtro va en "all" porque el ticket casi siempre está resuelto
+                    // —el técnico ya cerró— y con el filtro por defecto quedaría fuera.
+                    setTicketInitialFilter("all");
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      next.set("view", "tickets");
+                      if (ticketId) next.set("ticket", ticketId); else next.delete("ticket");
+                      if (buscar) next.set("tbuscar", buscar); else next.delete("tbuscar");
+                      next.delete("appt");
+                      return next;
+                    });
+                  }}
                   onOpenInboxConversation={(phone, message) => {
                     setPendingInboxPhone(phone);
                     setPendingInboxMessage(message || null);
-                    setActiveView("inbox");
+                    // Esta navegación es por teléfono, no por conversation_id — limpiar un
+                    // ?conv= viejo para que no dispare la restauración por id y compita.
+                    setSearchParams(prev => {
+                      const next = new URLSearchParams(prev);
+                      next.set("view", "inbox");
+                      next.delete("conv");
+                      return next;
+                    });
                   }}
                 />
               )}
@@ -696,6 +1111,35 @@ export default function Dashboard() {
               {activeView.startsWith("toggle-") && activeToggle && (
                 <div className="max-w-xl">
                   <AgentToggle tableId={activeToggle.nocodb_table_id} name={activeToggle.name} />
+                </div>
+              )}
+
+              {/* Lo que antes era una pantalla en negro. */}
+              {!vistaRenderizable && (
+                <div className="flex-1 min-h-[60vh] flex flex-col items-center justify-center text-center gap-3 px-6">
+                  <div className="w-12 h-12 rounded-2xl bg-muted/40 flex items-center justify-center">
+                    <X className="w-6 h-6 text-muted-foreground/50" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[15px] font-bold">Esta sección no está disponible para tu cuenta</p>
+                    <p className="text-[12.5px] text-muted-foreground/65 max-w-sm">
+                      Puede que el enlace sea viejo, o que tu rol no incluya esta parte del portal.
+                      Si deberías tener acceso, pedilo a quien administra tu empresa.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setActiveView("home");
+                      setSearchParams(prev => {
+                        const next = new URLSearchParams(prev);
+                        next.set("view", "home");
+                        return next;
+                      }, { replace: true });
+                    }}
+                    className="mt-1 text-[12.5px] font-semibold px-4 py-2 rounded-xl bg-primary/15 text-primary hover:bg-primary/25 transition-colors"
+                  >
+                    Volver al inicio
+                  </button>
                 </div>
               )}
 
@@ -717,8 +1161,7 @@ export default function Dashboard() {
         className="fixed bottom-6 right-6 z-[9999] w-80 bg-card border border-border/30 rounded-2xl shadow-2xl overflow-hidden cursor-pointer"
         style={{ animation: 'slideInNotif 0.25s ease-out' }}
         onClick={() => {
-          setPendingConversationId(globalNotif.convId);
-          setActiveView('inbox');
+          openInboxConversation(globalNotif.convId);
           if (globalNotifTimeoutRef.current) clearTimeout(globalNotifTimeoutRef.current);
           setGlobalNotif(null);
         }}

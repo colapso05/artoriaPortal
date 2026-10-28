@@ -1,8 +1,26 @@
 import type { Config } from "tailwindcss";
+import path from "path";
+import { fileURLToPath } from "url";
+
+/*
+ * Las rutas de `content` se resuelven contra el directorio desde el que arranca el
+ * proceso, no contra este archivo.
+ *
+ * Al quedar el portal dentro de la carpeta Artoria, el servidor de desarrollo
+ * arranca desde la carpeta padre y `./src/**` apuntaba a un sitio que no existe:
+ * Tailwind no encontraba ningún archivo, no generaba ninguna clase de utilidad y la
+ * página salía con las variables de color pero sin maquetación. `npm run build` sí
+ * arranca dentro del portal, por eso solo se notaba en desarrollo.
+ *
+ * Las barras invertidas de Windows se cambian por barras normales porque el buscador
+ * de archivos las interpreta como escapes y no encontraría nada.
+ */
+const aqui = path.dirname(fileURLToPath(import.meta.url));
+const delProyecto = (patron: string) => path.join(aqui, patron).replace(/\\/g, "/");
 
 export default {
   darkMode: ["class"],
-  content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
+  content: ["pages/**/*.{ts,tsx}", "components/**/*.{ts,tsx}", "app/**/*.{ts,tsx}", "src/**/*.{ts,tsx}"].map(delProyecto),
   prefix: "",
   theme: {
     container: {

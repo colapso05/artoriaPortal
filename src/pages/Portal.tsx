@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import PasswordStrengthBar, { isPasswordValid } from "@/components/ui/PasswordStrengthBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/Logo";
+import { esSesionTecnico } from "@/lib/tecnicos/api";
 
 const MAX_ATTEMPTS = 5;
 
@@ -56,7 +57,14 @@ export default function Portal() {
       document.body.removeAttribute("data-scroll-locked");
     }, 100);
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) navigate("/dashboard");
+      if (!session) return;
+      // Un técnico con sesión abierta no va al dashboard de operadores: se le
+      // devuelve a su propio portal. Comparten la llave de sesión del navegador.
+      if (esSesionTecnico(session.user?.email)) {
+        navigate("/portal-tecnicos", { replace: true });
+        return;
+      }
+      navigate("/dashboard");
     });
     return () => { if (cooldownRef.current) clearInterval(cooldownRef.current); };
   }, [navigate]);
@@ -77,10 +85,33 @@ export default function Portal() {
     setLoginError(null);
     setLoading(true);
 
-    // Intentar login directamente — Supabase devuelve error si el email no existe
+    // Limpiar cualquier token residual de una sesión anterior en este navegador.
+    // Evita el "Invalid Refresh Token: Session Expired" al arrastrar un token viejo.
+    // scope 'local' solo borra el storage local, sin llamada de red que pueda fallar.
+    await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+
+    // Intentar login directamente — Supabase devuelve el mismo error genérico exista o no el email
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
     if (error) {
+      // Distinguir "correo no registrado" de "contraseña incorrecta" sin gastar un intento
+      // en el primer caso. email-exists es público y no envía ningún código.
+      const emailToCheck = email.trim().toLowerCase();
+      let emailExists: boolean | null = true; // default optimista: si falla la consulta, no acusar al correo
+      try {
+        const { data } = await supabase.functions.invoke("email-exists", { body: { email: emailToCheck } });
+        if (data?.exists === false) emailExists = false;
+        // exists === null (error transitorio del backend) o true → tratamos como "sigue el flujo normal"
+      } catch {
+        // Sin conexión al endpoint: no bloqueamos el flujo normal de login
+      }
+      setLoading(false);
+
+      if (emailExists === false) {
+        setLoginError("no_account");
+        setPassword("");
+        return;
+      }
+
       attemptsRef.current += 1;
       const attempts = attemptsRef.current;
       setLoginAttempts(attempts);
@@ -90,7 +121,10 @@ export default function Portal() {
       } else {
         setLoginError(`invalid:${remaining}`);
       }
+      // Limpiar el campo de contraseña para que el siguiente intento empiece en blanco
+      setPassword("");
     } else {
+      setLoading(false);
       attemptsRef.current = 0;
       setLoginAttempts(0);
       setLoginError(null);
