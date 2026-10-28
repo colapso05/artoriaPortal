@@ -7,41 +7,16 @@ import {
   FlaskConical,
   ImagePlus,
   Loader2,
-  MessageSquarePlus,
   Mic,
+  RotateCcw,
   Send,
-  Trash2,
+  Sparkles,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { AdjuntoMensaje } from "@/components/soporte/AdjuntoMensaje";
 import type { Adjunto } from "@/lib/soporte/adjuntos";
 import {
@@ -70,12 +45,29 @@ const EMPRESAS: Array<{ key: CompanyKey; label: string }> = [
   { key: "optve", label: "Optve" },
 ];
 
+/** Empresa con la que se abren las pruebas (decisión de Demis). */
+const EMPRESA_PRUEBA: CompanyKey = "dropp";
+
+/** Teléfono sintético para "empezar de cero": nunca es un número de cliente. */
+function telefonoDePrueba() {
+  const n = Math.floor(10000000 + Math.random() * 89999999);
+  return `+569${n}`;
+}
+
 /* ─── Piezas visuales ────────────────────────────────────────────────────── */
 
 /**
- * Burbuja copiada de `Burbuja` de src/components/soporte/ChatArto.tsx (es interna
- * y no se exporta). Se mantiene el mismo markup y los mismos tokens
- * `--sop-burbuja-*`, para que el simulador se vea como el widget real.
+ * Burbuja del simulador. Usa SÓLO tokens del tema, a propósito.
+ *
+ * La versión anterior copió los `--sop-burbuja-*` del widget de soporte, que son
+ * hex fijos oscuros (#1B2138 burbuja del agente, #4C2A85 la del cliente) y están
+ * pensados para un widget que fija su propio `color` de texto. Acá el texto
+ * heredaba el color del tema → en modo claro, texto casi negro sobre #1B2138:
+ * bloque oscuro ilegible.
+ *
+ * Contraste medido sobre los tokens de src/index.css:
+ *   claro  → cliente primary-foreground/primary 4,72:1 · agente foreground/muted 14,58:1
+ *   oscuro → cliente primary-foreground/primary 3,96:1 · agente foreground/secondary-20 11,06:1
  */
 function BurbujaSim({
   rol,
@@ -98,24 +90,20 @@ function BurbujaSim({
   return (
     <div className={`flex ${mio ? "justify-end" : "justify-start"} ${pegada ? "" : "mt-1.5"}`}>
       <div
-        className={`max-w-[80%] rounded-2xl px-3 py-2 ${mio ? "rounded-br-md" : "rounded-bl-md"}`}
-        style={{ background: mio ? "var(--sop-burbuja-cliente)" : "var(--sop-burbuja-arto)" }}
+        className={`max-w-[80%] rounded-2xl px-3 py-2 ${mio ? "rounded-br-md" : "rounded-bl-md"} ${
+          mio ? "bg-primary text-primary-foreground" : "bg-muted text-foreground dark:bg-secondary/20"
+        }`}
       >
-        {autor && !mio && (
-          <p className="mb-0.5 text-xs font-semibold" style={{ color: "var(--sop-acento)" }}>
-            {autor}
-          </p>
-        )}
+        {autor && !mio && <p className="mb-0.5 text-xs font-semibold text-foreground/80">{autor}</p>}
 
         {imagen && <AdjuntoMensaje adjunto={imagen} onAbrir={() => onAbrirImagen(imagen)} />}
 
-        {texto && (
-          <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{texto}</p>
-        )}
+        {texto && <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{texto}</p>}
 
         <div
-          className="mt-0.5 flex items-center justify-end gap-1 text-[11px]"
-          style={{ color: "var(--sop-texto-2)" }}
+          className={`mt-0.5 flex items-center justify-end gap-1 text-[11px] ${
+            mio ? "text-primary-foreground/75" : "text-muted-foreground"
+          }`}
         >
           <span>{hora}</span>
         </div>
@@ -150,11 +138,13 @@ function horaCorta(iso: string | null | undefined) {
   return format(d, "HH:mm");
 }
 
-function fechaCorta(iso: string | null | undefined) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return format(d, "dd/MM HH:mm");
+function tonoEstado(estado: string | null | undefined) {
+  const e = (estado || "").toLowerCase();
+  if (e.includes("activo") || e.includes("vigente") || e.includes("ok"))
+    return "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+  if (e.includes("suspend") || e.includes("mora") || e.includes("cortad") || e.includes("baja"))
+    return "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400";
+  return "border-border/50 text-muted-foreground";
 }
 
 /* ─── Panel de traza ─────────────────────────────────────────────────────── */
@@ -396,37 +386,22 @@ function TrazaPanel({
 /* ─── Pantalla ───────────────────────────────────────────────────────────── */
 
 export default function SimuladorWhatsApp() {
-  // Lista de conversaciones
-  const [convs, setConvs] = useState<ConversacionSim[]>([]);
-  const [cargandoLista, setCargandoLista] = useState(true);
+  const [perfiles, setPerfiles] = useState<PerfilSim[]>([]);
+  const [cargandoPerfiles, setCargandoPerfiles] = useState(true);
 
-  // Conversación abierta
-  const [selId, setSelId] = useState<string | null>(null);
+  /** Perfil de la prueba en curso (null = "empezar de cero"). */
+  const [perfil, setPerfil] = useState<PerfilSim | null>(null);
+  const [conv, setConv] = useState<ConversacionSim | null>(null);
+  const [creando, setCreando] = useState(false);
+
   const [detalle, setDetalle] = useState<DetalleConversacion | null>(null);
-  const [cargandoDetalle, setCargandoDetalle] = useState(false);
+  const [pendientes, setPendientes] = useState<MensajeSim[]>([]);
+  const [turno, setTurno] = useState<RespuestaTurno | null>(null);
 
-  // Turno en curso
   const [texto, setTexto] = useState("");
   const [imagen, setImagen] = useState<Adjunto | null>(null);
   const [audio, setAudio] = useState<Adjunto | null>(null);
   const [enviando, setEnviando] = useState(false);
-  const [turno, setTurno] = useState<RespuestaTurno | null>(null);
-
-  // Mensajes optimistas (los que todavía no volvieron del servidor)
-  const [pendientes, setPendientes] = useState<MensajeSim[]>([]);
-
-  // Nueva conversación
-  const [perfiles, setPerfiles] = useState<PerfilSim[]>([]);
-  const [abrirNuevo, setAbrirNuevo] = useState(false);
-  const [companyKey, setCompanyKey] = useState<CompanyKey>("dropp");
-  const [perfilRut, setPerfilRut] = useState<string>("");
-  const [telefono, setTelefono] = useState("");
-  const [nombreLibre, setNombreLibre] = useState("");
-  const [creando, setCreando] = useState(false);
-
-  // Borrar
-  const [aBorrar, setABorrar] = useState<ConversacionSim | null>(null);
-  const [borrando, setBorrando] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [trazaAbierta, setTrazaAbierta] = useState(false);
@@ -435,36 +410,16 @@ export default function SimuladorWhatsApp() {
   const inputArchivoRef = useRef<HTMLInputElement | null>(null);
   const inputAudioRef = useRef<HTMLInputElement | null>(null);
   const juezTimer = useRef<number | null>(null);
-  const abrirConversacionRef = useRef<
-    ((id: string, opciones?: { conservarTurno?: boolean; silencioso?: boolean }) => Promise<void>) | null
-  >(null);
+  const refrescarRef = useRef<((id: string) => void) | null>(null);
 
-  /** El juez LLM corre en segundo plano: se vuelve a pedir la conversación a
-   *  los ~6 s para traer `runs[].veredictos` sin bloquear el turno. */
+  /** El juez LLM corre en segundo plano: ~6 s después del turno se vuelve a
+   *  pedir la conversación para traer `runs[].veredictos`, sin bloquear nada. */
   const cancelarJuez = useCallback(() => {
     if (juezTimer.current != null) {
       window.clearTimeout(juezTimer.current);
       juezTimer.current = null;
     }
   }, []);
-
-  const programarJuez = useCallback(
-    (id: string) => {
-      cancelarJuez();
-      juezTimer.current = window.setTimeout(() => {
-        juezTimer.current = null;
-        void abrirConversacionRef.current?.(id, { conservarTurno: true, silencioso: true });
-      }, 6000);
-    },
-    [cancelarJuez],
-  );
-
-  useEffect(() => () => cancelarJuez(), [cancelarJuez]);
-
-  const perfilSeleccionado = useMemo(
-    () => perfiles.find((p) => p.rut === perfilRut) || null,
-    [perfiles, perfilRut],
-  );
 
   const mensajes = useMemo(() => {
     const base = detalle?.mensajes ? [...detalle.mensajes] : [];
@@ -477,65 +432,99 @@ export default function SimuladorWhatsApp() {
     });
   }, []);
 
-  const cargarLista = useCallback(async () => {
-    setCargandoLista(true);
-    try {
-      const r = await simuladorApi.listar();
-      setConvs(r.conversaciones || []);
-      setError(null);
-    } catch (e: any) {
-      setError(e?.message || "No se pudieron cargar las conversaciones.");
-    } finally {
-      setCargandoLista(false);
-    }
-  }, []);
-
-  const abrirConversacion = useCallback(
-    async (id: string, opciones?: { conservarTurno?: boolean; silencioso?: boolean }) => {
-      const conservar = !!opciones?.conservarTurno;
-      const silencioso = !!opciones?.silencioso;
-      if (!conservar) {
-        setTurno(null);
-        setPendientes([]);
-      }
-      setSelId(id);
-      if (!silencioso) setCargandoDetalle(true);
-      try {
-        const d = await simuladorApi.obtener(id);
-        setDetalle(d);
-        // Lo que ya está en la base reemplaza a las burbujas optimistas.
-        setPendientes([]);
-        setError(null);
-      } catch (e: any) {
-        if (!silencioso) {
-          setDetalle(null);
-          setError(e?.message || "No se pudo abrir la conversación.");
-        }
-      } finally {
-        if (!silencioso) setCargandoDetalle(false);
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    abrirConversacionRef.current = abrirConversacion;
-  }, [abrirConversacion]);
-
-  useEffect(() => {
-    void cargarLista();
-  }, [cargarLista]);
-
-  useEffect(() => {
-    void simuladorApi
-      .perfiles()
-      .then((r) => setPerfiles(r.perfiles || []))
-      .catch(() => setPerfiles([]));
-  }, []);
-
   useEffect(() => {
     if (mensajes.length > 0) scrollAlFinal();
   }, [mensajes.length, scrollAlFinal]);
+
+  useEffect(() => () => cancelarJuez(), [cancelarJuez]);
+
+  /** Única carga automática de la pantalla: los perfiles de prueba. */
+  const cargarPerfiles = useCallback(async () => {
+    setCargandoPerfiles(true);
+    try {
+      const r = await simuladorApi.perfiles();
+      setPerfiles(r.perfiles || []);
+      setError(null);
+    } catch (e: any) {
+      setError(e?.message || "No se pudieron cargar los perfiles de prueba.");
+    } finally {
+      setCargandoPerfiles(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void cargarPerfiles();
+  }, [cargarPerfiles]);
+
+  const refrescar = useCallback(async (id: string) => {
+    try {
+      const d = await simuladorApi.obtener(id);
+      setDetalle(d);
+      setPendientes([]);
+    } catch {
+      /* silencioso: es un refresco de fondo */
+    }
+  }, []);
+
+  useEffect(() => {
+    refrescarRef.current = (id: string) => {
+      cancelarJuez();
+      juezTimer.current = window.setTimeout(() => {
+        juezTimer.current = null;
+        void refrescar(id);
+      }, 6000);
+    };
+  }, [cancelarJuez, refrescar]);
+
+  const volverAlSelector = useCallback(() => {
+    cancelarJuez();
+    setPerfil(null);
+    setConv(null);
+    setDetalle(null);
+    setPendientes([]);
+    setTurno(null);
+    setTexto("");
+    setImagen(null);
+    setAudio(null);
+  }, [cancelarJuez]);
+
+  /** Crea SIEMPRE una conversación nueva y deja el chat vacío. */
+  const iniciar = useCallback(async (elegido: PerfilSim | null) => {
+    setCreando(true);
+    setError(null);
+    try {
+      const r = await simuladorApi.crear({
+        companyKey: EMPRESA_PRUEBA,
+        phone: elegido?.telefono || telefonoDePrueba(),
+        ...(elegido ? { clientRut: elegido.rut, clientName: elegido.nombre } : {}),
+      });
+      setPerfil(elegido);
+      setConv(r.conversacion);
+      setDetalle({ conversacion: r.conversacion, mensajes: [], runs: [], tickets: [] });
+      setPendientes([]);
+      setTurno(null);
+      setTexto("");
+      setImagen(null);
+      setAudio(null);
+    } catch (e: any) {
+      setError(e?.message || "No se pudo abrir la conversación de prueba.");
+    } finally {
+      setCreando(false);
+    }
+  }, []);
+
+  /** Descartar la prueba: borra la conversación y vuelve al selector. */
+  const reiniciarPrueba = useCallback(async () => {
+    const id = conv?.id;
+    volverAlSelector();
+    if (id) {
+      try {
+        await simuladorApi.borrar(id);
+      } catch {
+        /* si falla el borrado igual volvemos al selector */
+      }
+    }
+  }, [conv, volverAlSelector]);
 
   /* ── Adjuntos ───────────────────────────────────────────────────────── */
 
@@ -602,7 +591,7 @@ export default function SimuladorWhatsApp() {
   /* ── Enviar ─────────────────────────────────────────────────────────── */
 
   const enviar = async () => {
-    if (!selId || enviando) return;
+    if (!conv || enviando) return;
     const limpio = texto.trim();
     if (!limpio && !imagen && !audio) return;
 
@@ -625,7 +614,7 @@ export default function SimuladorWhatsApp() {
 
     try {
       const r = await simuladorApi.mensaje({
-        id: selId,
+        id: conv.id,
         texto: limpio,
         ...(imagenEnviada
           ? {
@@ -664,10 +653,8 @@ export default function SimuladorWhatsApp() {
           },
         ]);
       }
-      void abrirConversacion(selId, { conservarTurno: true, silencioso: true }).then(() =>
-        programarJuez(selId),
-      );
-      void cargarLista();
+      await refrescar(conv.id);
+      refrescarRef.current?.(conv.id);
     } catch (e: any) {
       setPendientes((p) => p.filter((m) => m.id !== optimista.id));
       setTexto(limpio);
@@ -684,60 +671,11 @@ export default function SimuladorWhatsApp() {
     }
   };
 
-  const crear = async () => {
-    const tel = telefono.trim();
-    if (!tel) {
-      setError("Escribí el teléfono de prueba: el contrato de sim-proxy lo exige.");
-      return;
-    }
-    setCreando(true);
-    setError(null);
-    try {
-      const r = await simuladorApi.crear({
-        companyKey,
-        phone: tel,
-        ...(perfilSeleccionado
-          ? { clientRut: perfilSeleccionado.rut, clientName: perfilSeleccionado.nombre }
-          : nombreLibre.trim()
-            ? { clientName: nombreLibre.trim() }
-            : {}),
-      });
-      setAbrirNuevo(false);
-      setTelefono("");
-      setNombreLibre("");
-      setPerfilRut("");
-      await cargarLista();
-      if (r.conversacion?.id) await abrirConversacion(r.conversacion.id);
-    } catch (e: any) {
-      setError(e?.message || "No se pudo crear la conversación.");
-    } finally {
-      setCreando(false);
-    }
-  };
+  const abrirAdjunto = (a: Adjunto) => window.open(a.url, "_blank", "noopener,noreferrer");
 
-  const borrar = async () => {
-    if (!aBorrar) return;
-    setBorrando(true);
-    try {
-      await simuladorApi.borrar(aBorrar.id);
-      if (selId === aBorrar.id) {
-        setSelId(null);
-        setDetalle(null);
-        setPendientes([]);
-        setTurno(null);
-      }
-      setABorrar(null);
-      await cargarLista();
-    } catch (e: any) {
-      setError(e?.message || "No se pudo borrar la conversación.");
-    } finally {
-      setBorrando(false);
-    }
-  };
-
-  const abrirImagen = (a: Adjunto) => window.open(a.url, "_blank", "noopener,noreferrer");
-
-  const convActual = convs.find((c) => c.id === selId) || detalle?.conversacion || null;
+  const etiquetaPrueba = perfil
+    ? `Probando como ${perfil.nombre}${perfil.plan ? ` · ${perfil.plan}` : ""}`
+    : "Probando con un teléfono libre";
 
   /* ── Render ─────────────────────────────────────────────────────────── */
 
@@ -759,9 +697,11 @@ export default function SimuladorWhatsApp() {
             {trazaAbierta ? <ChevronDown className="mr-1 h-4 w-4" /> : <ChevronUp className="mr-1 h-4 w-4" />}
             Traza
           </Button>
-          <Button size="sm" onClick={() => setAbrirNuevo(true)}>
-            <MessageSquarePlus className="mr-1.5 h-4 w-4" /> Nueva conversación
-          </Button>
+          {conv && (
+            <Button variant="outline" size="sm" onClick={() => void reiniciarPrueba()}>
+              <RotateCcw className="mr-1.5 h-4 w-4" /> Reiniciar prueba
+            </Button>
+          )}
         </div>
       </div>
 
@@ -776,102 +716,91 @@ export default function SimuladorWhatsApp() {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-        {/* Lista */}
-        <aside className="flex min-h-[180px] w-full shrink-0 flex-col overflow-hidden rounded-xl border border-border/40 bg-card lg:h-full lg:w-[260px]">
-          <div className="border-b border-border/40 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Conversaciones
-          </div>
-          <ScrollArea className="min-h-0 flex-1">
-            {cargandoLista ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-primary/50" />
-              </div>
-            ) : convs.length === 0 ? (
-              <p className="px-3 py-6 text-center text-[12.5px] text-muted-foreground">Sin conversaciones.</p>
-            ) : (
-              <ul className="divide-y divide-border/30">
-                {convs.map((c) => (
-                  <li key={c.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        cancelarJuez();
-                        void abrirConversacion(c.id);
-                      }}
-                      className={`group flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-accent/60 ${
-                        selId === c.id ? "bg-accent/80" : ""
-                      }`}
-                    >
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-[13px] font-medium">{c.phone}</span>
-                        <span className="shrink-0 text-[10.5px] text-muted-foreground">{fechaCorta(c.updated_at)}</span>
-                      </span>
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-[11.5px] text-muted-foreground">
-                          {c.client_name || "sin nombre"} · {c.company_key}
-                        </span>
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          aria-label="Borrar conversación"
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            setABorrar(c);
-                          }}
-                          onKeyDown={(ev) => {
-                            if (ev.key === "Enter" || ev.key === " ") {
-                              ev.stopPropagation();
-                              setABorrar(c);
-                            }
-                          }}
-                          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </ScrollArea>
-        </aside>
-
-        {/* Chat */}
+        {/* Chat, o selector de perfil. Nunca se listan conversaciones viejas. */}
         <section className="flex min-h-[320px] flex-1 flex-col overflow-hidden rounded-xl border border-border/40 bg-card">
+          {!conv ? (
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <h2 className="text-sm font-semibold">Elegí un perfil de prueba</h2>
+              </div>
+
+              {cargandoPerfiles ? (
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="h-5 w-5 animate-spin text-primary/50" />
+                </div>
+              ) : perfiles.length === 0 ? (
+                <p className="py-6 text-[12.5px] text-muted-foreground">
+                  No hay perfiles cargados. Igual podés empezar de cero.
+                </p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  {perfiles.map((p) => (
+                    <button
+                      key={p.rut}
+                      type="button"
+                      disabled={creando}
+                      onClick={() => void iniciar(p)}
+                      className="flex flex-col gap-1 rounded-xl border border-border/60 bg-background p-3 text-left transition-colors hover:border-primary/50 hover:bg-accent/5 disabled:opacity-60"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-mono text-[11px] text-muted-foreground">{p.rut}</span>
+                        {p.estado && (
+                          <Badge variant="outline" className={`shrink-0 text-[9.5px] ${tonoEstado(p.estado)}`}>
+                            {p.estado}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="truncate text-[13.5px] font-semibold">{p.nombre}</p>
+                      <p className="truncate text-[11.5px] text-muted-foreground">
+                        {p.plan || "sin plan"}
+                        {p.telefono ? ` · ${p.telefono}` : ""}
+                      </p>
+                      {p.direccion && <p className="truncate text-[11px] text-muted-foreground">{p.direccion}</p>}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+                <Button variant="outline" size="sm" disabled={creando} onClick={() => void iniciar(null)}>
+                  {creando ? (
+                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="mr-1.5 h-4 w-4" />
+                  )}
+                  Empezar de cero
+                </Button>
+                <span className="text-[11.5px] text-muted-foreground">
+                  Crea una conversación nueva con un teléfono generado, sin perfil.
+                </span>
+              </div>
+            </div>
+          ) : (
+            <>
           <div className="flex items-center justify-between gap-2 border-b border-border/40 px-3 py-2">
             <div className="min-w-0">
-              <p className="truncate text-[13.5px] font-semibold">
-                {convActual ? convActual.phone : "Elegí una conversación"}
-              </p>
+              <p className="truncate text-[13.5px] font-semibold">{perfil ? perfil.nombre : conv.phone}</p>
               <p className="truncate text-[11.5px] text-muted-foreground">
-                {convActual
-                  ? `${convActual.client_name || "sin nombre"} · ${convActual.company_key}`
-                  : "o creá una nueva con un perfil de prueba"}
+                {conv.phone} · {conv.company_key}
               </p>
             </div>
-            {convActual && (
-              <Badge variant="outline" className="shrink-0 text-[10.5px]">
-                modo prueba
-              </Badge>
-            )}
+            <Badge variant="outline" className="shrink-0 text-[10.5px]">
+              modo prueba
+            </Badge>
           </div>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="px-3 py-3">
-              {!selId && (
-                <p className="py-10 text-center text-[12.5px] text-muted-foreground">
-                  Sin conversación abierta.
-                </p>
-              )}
-              {selId && cargandoDetalle && (
-                <div className="flex items-center justify-center py-10">
-                  <Loader2 className="h-5 w-5 animate-spin text-primary/50" />
-                </div>
-              )}
-              {selId && !cargandoDetalle && mensajes.length === 0 && (
-                <p className="py-10 text-center text-[12.5px] text-muted-foreground">
-                  Todavía no hay mensajes: escribí abajo para arrancar.
+              <div className="mb-3 flex justify-center">
+                <span className="rounded-full bg-muted px-3 py-1 text-center text-[11.5px] text-muted-foreground">
+                  {etiquetaPrueba}
+                </span>
+              </div>
+
+              {mensajes.length === 0 && (
+                <p className="py-8 text-center text-[12.5px] text-muted-foreground">
+                  Conversación nueva. Escribí abajo para arrancar.
                 </p>
               )}
               {mensajes.map((m, i) => {
@@ -913,7 +842,7 @@ export default function SimuladorWhatsApp() {
                     autor={m.role === "agent" ? "Agente ARTORIA" : null}
                     imagen={adjunto}
                     pegada={pegada}
-                    onAbrirImagen={abrirImagen}
+                    onAbrirImagen={abrirAdjunto}
                   />
                 );
               })}
@@ -979,7 +908,7 @@ export default function SimuladorWhatsApp() {
                 size="icon"
                 className="h-10 w-10 shrink-0"
                 aria-label="Adjuntar imagen"
-                disabled={!selId || enviando}
+                disabled={enviando}
                 onClick={() => inputArchivoRef.current?.click()}
               >
                 <ImagePlus className="h-5 w-5" />
@@ -990,7 +919,7 @@ export default function SimuladorWhatsApp() {
                 className="h-10 w-10 shrink-0"
                 aria-label="Adjuntar audio"
                 title="Audio: ogg, mp3, m4a, wav o webm (máx 12 MB)"
-                disabled={!selId || enviando}
+                disabled={enviando}
                 onClick={() => inputAudioRef.current?.click()}
               >
                 <Mic className="h-5 w-5" />
@@ -1005,8 +934,8 @@ export default function SimuladorWhatsApp() {
                     void enviar();
                   }
                 }}
-                disabled={!selId || enviando}
-                placeholder={selId ? "Escribí como si fueras el cliente…" : "Elegí una conversación"}
+                disabled={enviando}
+                placeholder="Escribí como si fueras el cliente…"
                 className="h-10 flex-1"
               />
 
@@ -1014,13 +943,15 @@ export default function SimuladorWhatsApp() {
                 className="h-10 w-10 shrink-0"
                 size="icon"
                 aria-label="Enviar"
-                disabled={!selId || enviando || (!texto.trim() && !imagen && !audio)}
+                disabled={enviando || (!texto.trim() && !imagen && !audio)}
                 onClick={() => void enviar()}
               >
                 {enviando ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
               </Button>
             </div>
           </div>
+            </>
+          )}
         </section>
 
         {/* Traza */}
@@ -1035,133 +966,6 @@ export default function SimuladorWhatsApp() {
         </aside>
       </div>
 
-      {/* Nueva conversación */}
-      <Dialog open={abrirNuevo} onOpenChange={setAbrirNuevo}>
-        <DialogContent className="border-border/30 bg-card sm:max-w-md" aria-describedby={undefined}>
-          <DialogHeader>
-            <DialogTitle>Nueva conversación de prueba</DialogTitle>
-            <DialogDescription>
-              Elegí un perfil de prueba o escribí un teléfono libre. Nada de esto toca el WhatsApp de producción.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-3 py-1">
-            <div className="space-y-1.5">
-              <label className="text-[12px] font-medium text-muted-foreground">Empresa</label>
-              <Select value={companyKey} onValueChange={(v) => setCompanyKey(v as CompanyKey)}>
-                <SelectTrigger className="h-9">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {EMPRESAS.map((e) => (
-                    <SelectItem key={e.key} value={e.key}>
-                      {e.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[12px] font-medium text-muted-foreground">Perfil de prueba</label>
-              <Select
-                value={perfilRut || "__ninguno"}
-                onValueChange={(v) => {
-                  if (v === "__ninguno") {
-                    setPerfilRut("");
-                    return;
-                  }
-                  setPerfilRut(v);
-                  // El perfil ya trae su teléfono: se precarga y queda editable
-                  // por si hay que probar otro número.
-                  const p = perfiles.find((x) => x.rut === v);
-                  if (p?.telefono) setTelefono(p.telefono);
-                }}
-              >
-                <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Sin perfil (teléfono libre)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__ninguno">Sin perfil (teléfono libre)</SelectItem>
-                  {perfiles.map((p) => (
-                    <SelectItem key={p.rut} value={p.rut}>
-                      {p.rut} · {p.nombre}
-                      {p.plan ? ` · ${p.plan}` : ""}
-                      {p.estado ? ` · ${p.estado}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {perfilSeleccionado && (
-                <p className="text-[11.5px] text-muted-foreground">
-                  {perfilSeleccionado.direccion || "sin dirección"}
-                  {perfilSeleccionado.plan ? ` · plan ${perfilSeleccionado.plan}` : ""}
-                  {perfilSeleccionado.estado ? ` · ${perfilSeleccionado.estado}` : ""}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[12px] font-medium text-muted-foreground">
-                Teléfono de prueba <span className="text-destructive">*</span>
-              </label>
-              <Input
-                value={telefono}
-                onChange={(e) => setTelefono(e.target.value)}
-                placeholder="+56 9 0000 0000"
-                className="h-9"
-              />
-            </div>
-
-            {!perfilSeleccionado && (
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-medium text-muted-foreground">Nombre del cliente (opcional)</label>
-                <Input
-                  value={nombreLibre}
-                  onChange={(e) => setNombreLibre(e.target.value)}
-                  placeholder="Cliente de prueba"
-                  className="h-9"
-                />
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setAbrirNuevo(false)} disabled={creando}>
-              Cancelar
-            </Button>
-            <Button onClick={() => void crear()} disabled={creando}>
-              {creando && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-              Crear
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Borrar */}
-      <AlertDialog open={!!aBorrar} onOpenChange={(v) => !v && setABorrar(null)}>
-        <AlertDialogContent className="border-border/30 bg-card" aria-describedby={undefined}>
-          <AlertDialogHeader>
-            <AlertDialogTitle>¿Borrar la conversación de prueba?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Se borra {aBorrar?.phone} con sus mensajes y trazas. No afecta nada fuera del simulador.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={borrando}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault();
-                void borrar();
-              }}
-              disabled={borrando}
-            >
-              {borrando && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-              Borrar
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
