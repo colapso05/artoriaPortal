@@ -250,6 +250,13 @@ export default function PanelEmpresa({
   const [horas, setHoras] = useState<{ hour: number; total: number }[]>([]);
   const [ventas, setVentas] = useState<FilaVenta[]>([]);
   const [cargando, setCargando] = useState(true);
+  /**
+   * La atención diaria (la consulta más lenta del panel) se pide aparte y no bloquea el
+   * inicio: mientras llega, las dos tarjetas que dependen de ella muestran su esqueleto.
+   */
+  const [cargandoAtencion, setCargandoAtencion] = useState(true);
+  /** Generación de la carga: descarta resultados viejos si cambia el rango o se desmonta. */
+  const genCarga = useRef(0);
 
   // El panel de Mensajería (sale de la tarjeta del saldo) y lo que cada persona fijó en el inicio.
   const [hub, setHub] = useState<HubId | null>(null);
@@ -303,13 +310,27 @@ export default function PanelEmpresa({
 
   const cargar = useCallback(async () => {
     if (!companyId) return;
+    const gen = ++genCarga.current;
     setCargando(true);
+    setCargandoAtencion(true);
     // El período anterior de la misma longitud, justo antes del actual. En "todo" no hay con qué comparar.
     const hayPrevio = rango !== "todo";
     const restar = (f: string, n: number) => iso(new Date(new Date(f + "T12:00:00").getTime() - n * 86400000));
     const finPrev = restar(desde, 1);
     const iniPrev = restar(desde, DIAS[rango] + 1);
-    const [res, tl, hr, vt, exp, pk, at, pr, vp, apv] = await Promise.all([
+    /*
+     * La atención diaria se pide APARTE y no se espera: es la consulta más lenta del panel
+     * (medido contra Dropp el 05-11-2026: 2,51 s, contra 0,06-0,29 s de las otras cinco, y
+     * eso devolviendo cero filas). Metida en el mismo Promise.all, el inicio se quedaba sin
+     * contenido hasta que terminaba. Arranca acá, en paralelo con las demás.
+     */
+    const atencionP = (supabase as any).rpc("get_atencion_ia_diaria", {
+      p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
+    });
+    const atencionPrevP = hayPrevio
+      ? (supabase as any).rpc("get_atencion_ia_diaria", { p_company_id: companyId, p_desde: iniPrev, p_hasta: finPrev })
+      : Promise.resolve(null);
+    const [res, tl, hr, vt, exp, pk, pr, vp] = await Promise.all([
       supabase.rpc("get_analytics_summary", {
         p_company_id: companyId, p_start_date: desde, p_end_date: hoy(),
       }),
@@ -326,44 +347,46 @@ export default function PanelEmpresa({
       (supabase as any).rpc("peak_concurrencia", {
         p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
       }),
-      // Conversaciones atendidas por día, abiertas en simples, complejas y derivadas.
-      (supabase as any).rpc("get_atencion_ia_diaria", {
-        p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
-      }),
       hayPrevio
         ? supabase.rpc("get_analytics_summary", { p_company_id: companyId, p_start_date: iniPrev, p_end_date: finPrev })
         : Promise.resolve(null),
       hayPrevio ? ventasResumen(companyId, iniPrev, finPrev) : Promise.resolve(null),
-      hayPrevio
-        ? (supabase as any).rpc("get_atencion_ia_diaria", { p_company_id: companyId, p_desde: iniPrev, p_hasta: finPrev })
-        : Promise.resolve(null),
     ]);
-    // Las conversaciones se cuentan con la atención diaria (la misma del gráfico), no con el análisis nocturno.
-    const filasPrev = apv?.error ? null : filasAtencion(apv?.data);
-    const sumPrev = filasPrev?.reduce((a, f) => ({
-      total: a.total + f.simples + f.complejas + f.derivadas + f.sinAtencion, ia: a.ia + f.simples + f.complejas,
-    }), { total: 0, ia: 0 }) ?? null;
-    const totalAt = sumPrev && sumPrev.total > 0 ? sumPrev.total : null;
-    const contAt = sumPrev && sumPrev.total > 0 ? (sumPrev.ia / sumPrev.total) * 100 : null;
+    if (gen !== genCarga.current) return;
     if (pr && (pr as any).data) {
       const p = (pr as any).data as Resumen;
       setPrevio({
         total: p.total_conversations ?? null,
         contencion: (TASA_ESTRICTA ? p.ai_resolution_rate_estricta ?? p.containment_rate : p.containment_rate) ?? null,
-        totalAt, contAt,
+        // La atención del período anterior llega después: se completa al final.
+        totalAt: null, contAt: null,
         horas: p.time_saved_hours ?? null,
         ventas: ((vp ?? []) as FilaVenta[]).reduce((a, x) => a + (Number(x.ventas) || 0), 0),
       });
     } else setPrevio(null);
-    // Si la función falla (o todavía no existe) queda null y el gráfico de siempre sigue funcionando.
-    setAtencion(at?.error ? null : filasAtencion(at?.data));
     setExperiencia((exp?.data as Experiencia) ?? null);
     setPeak((pk?.data as Peak) ?? null);
     setResumen((res.data as Resumen) ?? null);
     setLinea(Array.isArray(tl.data) ? (tl.data as FilaLinea[]) : []);
     setHoras(Array.isArray(hr.data) ? hr.data : []);
     setVentas(vt);
+    // Con esto el panel ya tiene todo lo rápido: pinta y deja en esqueleto lo que falta.
     setCargando(false);
+
+    // Parte lenta: las conversaciones se cuentan con la atención diaria (la misma del
+    // gráfico), no con el análisis nocturno.
+    const [at, apv] = await Promise.all([atencionP, atencionPrevP]);
+    if (gen !== genCarga.current) return;
+    const filasPrev = apv?.error ? null : filasAtencion(apv?.data);
+    const sumPrev = filasPrev?.reduce((a, f) => ({
+      total: a.total + f.simples + f.complejas + f.derivadas + f.sinAtencion, ia: a.ia + f.simples + f.complejas,
+    }), { total: 0, ia: 0 }) ?? null;
+    const totalAt = sumPrev && sumPrev.total > 0 ? sumPrev.total : null;
+    const contAt = sumPrev && sumPrev.total > 0 ? (sumPrev.ia / sumPrev.total) * 100 : null;
+    // Si la función falla (o todavía no existe) queda null y el gráfico de siempre sigue funcionando.
+    setAtencion(at?.error ? null : filasAtencion(at?.data));
+    setPrevio(p => (p ? { ...p, totalAt, contAt } : p));
+    setCargandoAtencion(false);
   }, [companyId, desde]);
 
   useEffect(() => { cargar(); }, [cargar]);
@@ -781,7 +804,7 @@ export default function PanelEmpresa({
           icon={MessageCircle} tono="text-primary" fondo="bg-primary/10"
           rotulo="Conversaciones"
           hub={{ abierto: hub === "conversaciones", alAbrir: () => setHub("conversaciones"), alEntrar: () => calentar("conversaciones"), innerRef: refConv }}
-          valor={cargando ? null : nf(totalConv)}
+          valor={cargando || cargandoAtencion ? null : nf(totalConv)}
           delta={dConv}
           pie={rango === "hoy" || rango === "todo"
             ? ""
@@ -791,7 +814,7 @@ export default function PanelEmpresa({
           icon={Bot} tono="text-emerald-600 dark:text-emerald-400" fondo="bg-emerald-500/15"
           rotulo="Resueltas sin operador"
           hub={{ abierto: hub === "resolucion", alAbrir: () => setHub("resolucion"), alEntrar: () => calentar("resolucion"), innerRef: refRes }}
-          valor={cargando || contVista == null ? null : `${Math.round(contVista)}%`}
+          valor={cargando || cargandoAtencion || contVista == null ? null : `${Math.round(contVista)}%`}
           delta={dCont}
           pie={`${nf(derivadasConv)} de ${nf(totalConv)} necesitaron a alguien`}
         />

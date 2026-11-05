@@ -6,7 +6,7 @@ import {
   Clock, CheckCircle2, TrendingUp, ArrowRight,
   BarChart3, PieChart as PieChartIcon, CreditCard,
   Plus, Inbox, CalendarDays, ClipboardList, Zap,
-  ChevronLeft, ChevronRight, DollarSign, Loader2,
+  ChevronLeft, ChevronRight, DollarSign,
   PackageCheck,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -57,6 +57,21 @@ const categoryLabels: Record<string, string> = {
   ventas: "Ventas",
   pagos: "Pagos",
 };
+
+/**
+ * Punto de una serie agregada: fecha local, estado (solo tickets) y peso.
+ * El inicio del panel ya no baja filas crudas (365 KB en Dropp): `dashboard_series`
+ * devuelve los agregados y aca se convierten a puntos con los que se arman los buckets.
+ */
+type TicketPoint = { d: Date; status: string; n: number };
+type ConvPoint = { d: Date; n: number };
+
+/** Clave de `dashboard_series`: "YYYY-MM-DD HH24", "YYYY-MM-DD" o "YYYY-MM" (hora local del panel). */
+function parseClave(clave: string): Date {
+  const [fecha, hora] = String(clave).split(" ");
+  const [y, m, d] = fecha.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, hora ? Number(hora) : 0, 0, 0, 0);
+}
 
 function CustomTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
@@ -123,8 +138,15 @@ export default function ClientDashboardHome({
   onConversationClick, onNavigateToTickets, creditsEnabled, onNavigateToCredits,
   onNavigateToConversations, onNavigateToSchedule,
 }: ClientDashboardProps) {
-  const [allTicketsData, setAllTicketsData] = useState<any[]>([]);
-  const [allConversationsData, setAllConversationsData] = useState<any[]>([]);
+  const [ticketHourPoints, setTicketHourPoints] = useState<TicketPoint[]>([]);
+  const [ticketDayPoints, setTicketDayPoints] = useState<TicketPoint[]>([]);
+  const [ticketMonthPoints, setTicketMonthPoints] = useState<TicketPoint[]>([]);
+  const [convHourPoints, setConvHourPoints] = useState<ConvPoint[]>([]);
+  const [convDayPoints, setConvDayPoints] = useState<ConvPoint[]>([]);
+  const [convMonthPoints, setConvMonthPoints] = useState<ConvPoint[]>([]);
+  const [catTotals, setCatTotals] = useState<Array<{ name: string; value: number }>>([]);
+  /** Espejo sincronico de `problemConvs`, para decidir en el handler de realtime sin estado viejo. */
+  const problemConvsRef = useRef<any[]>([]);
   const [labels, setLabels] = useState<any[]>([]);
   const [problemConvs, setProblemConvs] = useState<any[]>([]);
   /** Tickets de retiro cerrados por el técnico, a la espera de que un operador confirme. */
@@ -164,12 +186,34 @@ export default function ClientDashboardHome({
       }
     };
 
-    loadYCloudBalance();
-    
-    // Refrescar cada 10 minutos (600,000 ms)
-    const interval = setInterval(loadYCloudBalance, 10 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [companyId, companyName]);
+    // El invoke a la edge function bloquea un isolate en frio y retrasaba TODO el panel
+    // (se hacia al montar, en el mismo turno que los datos). Ahora se lanza despues del
+    // primer paint y se dibuja con su propio esqueleto.
+    setLoadingYCloud(true);
+    let cancelado = false;
+    let modo: "idle" | "timeout" | null = null;
+    let handle: any = null;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const arrancar = () => {
+      if (cancelado) return;
+      loadYCloudBalance();
+      // Refrescar cada 10 minutos (600,000 ms)
+      interval = setInterval(loadYCloudBalance, 10 * 60 * 1000);
+    };
+    if (typeof (window as any).requestIdleCallback === "function") {
+      modo = "idle";
+      handle = (window as any).requestIdleCallback(arrancar, { timeout: 2000 });
+    } else {
+      modo = "timeout";
+      handle = setTimeout(arrancar, 1200);
+    }
+    return () => {
+      cancelado = true;
+      if (interval) clearInterval(interval);
+      if (modo === "idle" && typeof (window as any).cancelIdleCallback === "function") (window as any).cancelIdleCallback(handle);
+      if (modo === "timeout") clearTimeout(handle);
+    };
+  }, [companyId, isDropp]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -232,41 +276,124 @@ export default function ClientDashboardHome({
     return () => { clearTimeout(t); supabase.removeChannel(ch); };
   }, [companyId]);
 
-  // Realtime: refrescar "Problemas del Agente IA" cuando cambia `reviewed`
-  // (el backend lo marca al cerrar un ticket Revisión IA, o al revisar desde el panel).
+  /** Espejo de problemConvs para el handler de realtime (no depende del render). */
+  useEffect(() => { problemConvsRef.current = problemConvs; }, [problemConvs]);
+
+  /**
+   * Lista completa de problemas. Se usa al cargar y -solo- cuando un evento anuncia un
+   * problema que no estaba en la lista: los campos de la tarjeta (profile_name, wa_id,
+   * summary) salen del join de la RPC, no del evento.
+   */
+  async function recargarProblemas() {
+    if (!companyId) return;
+    const { data } = await (supabase as any).rpc("get_problem_conversations", { p_company_id: companyId, p_only_unreviewed: true });
+    const probs = Array.isArray(data) ? data : [];
+    setProblemConvs(probs.filter((c: any) => c.bot_score == null || c.bot_score < 8));
+  }
+
+  // Realtime: "Problemas del Agente IA" se actualiza CON EL EVENTO, no con otra RPC.
+  // Antes cada UPDATE de conversation_analysis disparaba get_problem_conversations entera.
   useEffect(() => {
     if (!companyId) return;
     let t: ReturnType<typeof setTimeout>;
-    const reloadProblems = async () => {
-      const { data } = await (supabase as any).rpc("get_problem_conversations", { p_company_id: companyId, p_only_unreviewed: true });
-      const probs = Array.isArray(data) ? data : [];
-      setProblemConvs(probs.filter((c: any) => c.bot_score == null || c.bot_score < 8));
+    // Un analisis en lote llega en rafaga: el refresco se agrupa (400 ms) como antes.
+    const pedirLista = () => { clearTimeout(t); t = setTimeout(() => { void recargarProblemas(); }, 400); };
+    const aplicar = (fila: any) => {
+      if (!fila?.id) return;
+      const actuales = problemConvsRef.current;
+      const idx = actuales.findIndex((c: any) => c.analysis_id === fila.id);
+      const sigueSiendoProblema = fila.reviewed !== true && (fila.bot_score == null || fila.bot_score < 8);
+      if (idx === -1) {
+        if (sigueSiendoProblema) pedirLista();
+        return;
+      }
+      if (!sigueSiendoProblema) {
+        setProblemConvs(actuales.filter((_: any, i: number) => i !== idx));
+        return;
+      }
+      const siguiente = [...actuales];
+      siguiente[idx] = {
+        ...actuales[idx],
+        bot_score: fila.bot_score,
+        hallucination_detected: fila.hallucination_detected,
+        failed_to_respond: fila.failed_to_respond,
+        summary: fila.summary ?? actuales[idx].summary,
+      };
+      setProblemConvs(siguiente);
     };
     const ch = supabase
       .channel(`home_conv_analysis_${companyId}`)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversation_analysis", filter: `company_id=eq.${companyId}` }, () => {
-        clearTimeout(t); t = setTimeout(reloadProblems, 400);
-      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "conversation_analysis", filter: `company_id=eq.${companyId}` }, (payload: any) => aplicar(payload?.new))
       .subscribe();
     return () => { clearTimeout(t); supabase.removeChannel(ch); };
   }, [companyId]);
 
 
+  /** Filas de `dashboard_series` -> puntos por granularidad. */
+  function aplicarSeries(filas: Array<{ serie: string; clave: string; estado: string | null; total: number }>) {
+    const th: TicketPoint[] = [], td: TicketPoint[] = [], tm: TicketPoint[] = [];
+    const ch: ConvPoint[] = [], cd: ConvPoint[] = [], cm: ConvPoint[] = [];
+    const cats: Array<{ name: string; value: number }> = [];
+    filas.forEach(f => {
+      const n = Number(f.total) || 0;
+      if (!n) return;
+      switch (f.serie) {
+        case "ticket_hora":  th.push({ d: parseClave(f.clave), status: f.estado || "abierto", n }); break;
+        case "ticket_dia":   td.push({ d: parseClave(f.clave), status: f.estado || "abierto", n }); break;
+        case "ticket_mes":   tm.push({ d: parseClave(f.clave), status: f.estado || "abierto", n }); break;
+        case "conv_hora":    ch.push({ d: parseClave(f.clave), n }); break;
+        case "conv_dia":     cd.push({ d: parseClave(f.clave), n }); break;
+        case "conv_mes":     cm.push({ d: parseClave(f.clave), n }); break;
+        case "ticket_categoria":
+          cats.push({ name: categoryLabels[f.clave] || f.clave || "Sin categoría", value: n });
+          break;
+      }
+    });
+    setTicketHourPoints(th); setTicketDayPoints(td); setTicketMonthPoints(tm);
+    setConvHourPoints(ch); setConvDayPoints(cd); setConvMonthPoints(cm);
+    setCatTotals(cats.sort((a, b) => b.value - a.value));
+  }
+
+  /**
+   * Respaldo por si `dashboard_series` no esta aplicada en la base (PGRST202: funcion
+   * inexistente). Baja las filas crudas como antes para que el panel no se quede sin
+   * numeros; sin `category`, que no lo usa nadie en pantalla y es un tercio del payload.
+   */
+  async function cargarSeriesCrudas() {
+    if (!companyId) return;
+    const [allTickets, allConvos] = await Promise.all([
+      supabase.from("tickets").select("created_at, status").eq("company_id", companyId),
+      supabase.from("conversations").select("created_at").eq("company_id", companyId),
+    ]);
+    const tk: TicketPoint[] = (allTickets.data || []).map((t: any) => ({ d: new Date(t.created_at), status: t.status, n: 1 }));
+    const cv: ConvPoint[] = (allConvos.data || []).map((c: any) => ({ d: new Date(c.created_at), n: 1 }));
+    setTicketHourPoints(tk); setTicketDayPoints(tk); setTicketMonthPoints(tk);
+    setConvHourPoints(cv); setConvDayPoints(cv); setConvMonthPoints(cv);
+    setCatTotals([]);
+  }
+
   const loadData = async () => {
     if (!companyId) return;
     try {
-      const [allTickets, allConvos, rawLabels, problemRes] = await Promise.all([
-        supabase.from("tickets").select("category, created_at, status").eq("company_id", companyId),
-        supabase.from("conversations").select("created_at").eq("company_id", companyId),
+      const [rawLabels, problemRes, seriesRes] = await Promise.all([
         (supabase as any).from("ticket_labels").select("*").eq("company_id", companyId).order("id"),
         (supabase as any).rpc("get_problem_conversations", { p_company_id: companyId, p_only_unreviewed: true }),
+        (supabase as any).rpc("dashboard_series", { p_company_id: companyId }),
       ]);
-      setAllConversationsData(allConvos.data || []);
       setLabels(rawLabels.data || []);
-      setAllTicketsData(allTickets.data || []);
       // Regla: score >= 8 se considera buen rendimiento, no es un problema a revisar
       const probs = Array.isArray(problemRes.data) ? problemRes.data : [];
       setProblemConvs(probs.filter((c: any) => c.bot_score == null || c.bot_score < 8));
+
+      const filas = seriesRes?.data;
+      if (!seriesRes?.error && Array.isArray(filas) && filas.length > 0) {
+        aplicarSeries(filas);
+      } else {
+        // Falta que el servidor aplique public.dashboard_series v2 (la v1 no trae el corte
+        // por estado de los tickets ni cubre 95 dias). El SQL esta en el mensaje #76.
+        console.info("dashboard_series no disponible, se usan las consultas crudas", seriesRes?.error?.message);
+        await cargarSeriesCrudas();
+      }
     } catch (e) {
       console.error("Error loading client dashboard:", e);
     } finally {
@@ -279,25 +406,40 @@ export default function ClientDashboardHome({
     const startOfHour = new Date(now); startOfHour.setMinutes(0, 0, 0);
     const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
 
+    /**
+     * Inicio del periodo. Para los rangos por dia se resta CON CALENDARIO (`setDate`) y no
+     * con 24h*N: al cruzar el cambio de hora de septiembre la resta en milisegundos cae a
+     * las 23:00 del dia anterior y ese dia queda a medias (un bucket diario no se puede
+     * partir). Medido el 05-11-2026: el corte de "3 meses" daba 07-08 23:00 en vez de
+     * 08-08 00:00, y se perdia el ticket de las 23:33.
+     */
     const cutoff = (range: typeof timeRange): number => {
-      if (range === "day")     return startOfHour.getTime() - 23 * 60 * 60 * 1000;
-      if (range === "week")    return startOfDay.getTime()  -  6 * 24 * 60 * 60 * 1000;
-      if (range === "month")   return startOfDay.getTime()  - 29 * 24 * 60 * 60 * 1000;
-      if (range === "3months") return startOfDay.getTime()  - 89 * 24 * 60 * 60 * 1000;
-      return 0;
+      if (range === "day") return startOfHour.getTime() - 23 * 60 * 60 * 1000;
+      const dias = range === "week" ? 6 : range === "month" ? 29 : range === "3months" ? 89 : 0;
+      if (!dias) return 0;
+      const d = new Date(startOfDay);
+      d.setDate(d.getDate() - dias);
+      return d.getTime();
     };
 
     const cut = cutoff(timeRange);
-    const filteredTickets = allTicketsData.filter(t => new Date(t.created_at).getTime() >= cut);
-    const filteredConvos  = allConversationsData.filter(c => new Date(c.created_at).getTime() >= cut);
+
+    // Cada rango usa su granularidad: "Hoy" necesita los puntos por hora, "Historial" los
+    // mensuales (la serie diaria solo guarda 95 dias) y el resto los diarios.
+    const puntosTickets = timeRange === "day" ? ticketHourPoints
+      : timeRange === "all" ? ticketMonthPoints
+      : ticketDayPoints;
+    const puntosConv = timeRange === "day" ? convHourPoints
+      : timeRange === "all" ? convMonthPoints
+      : convDayPoints;
+
+    const filteredTickets = puntosTickets.filter(p => p.d.getTime() >= cut);
+    const filteredConvos  = puntosConv.filter(p => p.d.getTime() >= cut);
 
     const statusCounts: Record<string, number> = {};
-    const catMap: Record<string, number> = {};
 
-    filteredTickets.forEach((t: any) => {
-      statusCounts[t.status] = (statusCounts[t.status] || 0) + 1;
-      const label = categoryLabels[t.category] || t.category || "Sin categoría";
-      catMap[label] = (catMap[label] || 0) + 1;
+    filteredTickets.forEach(p => {
+      statusCounts[p.status] = (statusCounts[p.status] || 0) + p.n;
     });
 
     const isFinalStatus = (status: string) =>
@@ -314,9 +456,9 @@ export default function ClientDashboardHome({
           .toLocaleTimeString("es", { hour: "2-digit" }) + "h"
       );
       const map = buildBuckets(keys);
-      filteredTickets.forEach((t: any) => {
-        const k = new Date(t.created_at).toLocaleTimeString("es", { hour: "2-digit" }) + "h";
-        if (map[k]) { isFinalStatus(t.status) ? map[k].finalizados++ : map[k].activos++; }
+      filteredTickets.forEach(p => {
+        const k = p.d.toLocaleTimeString("es", { hour: "2-digit" }) + "h";
+        if (map[k]) { isFinalStatus(p.status) ? map[k].finalizados += p.n : map[k].activos += p.n; }
       });
       timeSeries = keys.map(k => ({ name: k, ...map[k] }));
     } else if (timeRange === "week") {
@@ -325,9 +467,9 @@ export default function ClientDashboardHome({
           .toLocaleDateString("es", { weekday: "short", day: "numeric" })
       );
       const map = buildBuckets(keys);
-      filteredTickets.forEach((t: any) => {
-        const k = new Date(t.created_at).toLocaleDateString("es", { weekday: "short", day: "numeric" });
-        if (map[k]) { isFinalStatus(t.status) ? map[k].finalizados++ : map[k].activos++; }
+      filteredTickets.forEach(p => {
+        const k = p.d.toLocaleDateString("es", { weekday: "short", day: "numeric" });
+        if (map[k]) { isFinalStatus(p.status) ? map[k].finalizados += p.n : map[k].activos += p.n; }
       });
       timeSeries = keys.map(k => ({ name: k, ...map[k] }));
     } else if (timeRange === "month") {
@@ -336,9 +478,9 @@ export default function ClientDashboardHome({
           .toLocaleDateString("es", { day: "numeric", month: "numeric" })
       );
       const map = buildBuckets(keys);
-      filteredTickets.forEach((t: any) => {
-        const k = new Date(t.created_at).toLocaleDateString("es", { day: "numeric", month: "numeric" });
-        if (map[k]) { isFinalStatus(t.status) ? map[k].finalizados++ : map[k].activos++; }
+      filteredTickets.forEach(p => {
+        const k = p.d.toLocaleDateString("es", { day: "numeric", month: "numeric" });
+        if (map[k]) { isFinalStatus(p.status) ? map[k].finalizados += p.n : map[k].activos += p.n; }
       });
       timeSeries = keys.map(k => ({ name: k, ...map[k] }));
     } else if (timeRange === "3months") {
@@ -347,21 +489,21 @@ export default function ClientDashboardHome({
         return d.toLocaleDateString("es", { day: "numeric", month: "short" });
       });
       const map = buildBuckets(keys);
-      filteredTickets.forEach((t: any) => {
-        const d = new Date(t.created_at);
+      filteredTickets.forEach(p => {
+        const d = p.d;
         const weekStart = new Date(d.getTime() - ((d.getDay() || 7) - 1) * 86400000);
         weekStart.setHours(0, 0, 0, 0);
         const k = keys.find(key => {
           const ref = new Date(startOfDay.getTime() - (12 - keys.indexOf(key)) * 7 * 86400000);
           return Math.abs(ref.getTime() - weekStart.getTime()) < 4 * 86400000;
         });
-        if (k && map[k]) { isFinalStatus(t.status) ? map[k].finalizados++ : map[k].activos++; }
+        if (k && map[k]) { isFinalStatus(p.status) ? map[k].finalizados += p.n : map[k].activos += p.n; }
       });
       timeSeries = keys.map(k => ({ name: k, ...map[k] }));
     } else {
       const allDates = [
-        ...allTicketsData.map(t => new Date(t.created_at)),
-        ...allConversationsData.map(c => new Date(c.created_at)),
+        ...ticketMonthPoints.map(p => p.d),
+        ...convMonthPoints.map(p => p.d),
       ];
       const earliest = allDates.length > 0
         ? new Date(Math.min(...allDates.map(d => d.getTime())))
@@ -374,9 +516,9 @@ export default function ClientDashboardHome({
         cur.setMonth(cur.getMonth() + 1);
       }
       const map = buildBuckets(months);
-      filteredTickets.forEach((t: any) => {
-        const k = new Date(t.created_at).toLocaleDateString("es", { month: "short", year: "2-digit" });
-        if (map[k]) { isFinalStatus(t.status) ? map[k].finalizados++ : map[k].activos++; }
+      filteredTickets.forEach(p => {
+        const k = p.d.toLocaleDateString("es", { month: "short", year: "2-digit" });
+        if (map[k]) { isFinalStatus(p.status) ? map[k].finalizados += p.n : map[k].activos += p.n; }
       });
       timeSeries = months.map(k => ({ name: k, ...map[k] }));
     }
@@ -384,10 +526,12 @@ export default function ClientDashboardHome({
     return {
       statusCounts,
       ticketsByDay: timeSeries,
-      ticketsByCategory: Object.entries(catMap).map(([name, value]) => ({ name, value })),
-      conversationsCount: filteredConvos.length,
+      // El total por categoria ya viene agregado de la base y es historico: la
+      // distribucion que se dibuja usa `ticketStatusData` (por estado), no esto.
+      ticketsByCategory: catTotals,
+      conversationsCount: filteredConvos.reduce((s, p) => s + p.n, 0),
     };
-  }, [allTicketsData, timeRange, labels]);
+  }, [ticketHourPoints, ticketDayPoints, ticketMonthPoints, convHourPoints, convDayPoints, convMonthPoints, catTotals, timeRange, labels]);
 
   const ticketStatusData = useMemo(() => {
     return labels.map((l, i) => ({
@@ -447,9 +591,9 @@ export default function ClientDashboardHome({
     if (right) { right.style.opacity = showRight ? "1" : "0"; right.style.pointerEvents = showRight ? "auto" : "none"; }
   };
 
-  // Registrar listeners cuando loading termina
+  // Los chips se dibujan desde el primer paint (con esqueleto mientras no hay datos),
+  // asi que los listeners se enganchan al montar y no cuando termina la carga.
   useEffect(() => {
-    if (loading) return;
     const el = chipsScrollRef.current;
     if (!el) return;
     updateChipsFade();
@@ -460,7 +604,7 @@ export default function ClientDashboardHome({
       window.removeEventListener("resize", updateChipsFade);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
+  }, []);
 
   // Re-mide cuando los chips cambian (datos async)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -469,27 +613,6 @@ export default function ClientDashboardHome({
     raf1 = requestAnimationFrame(() => { raf2 = requestAnimationFrame(updateChipsFade); });
     return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
   }, [statChips]);
-
-  if (loading) {
-    return (
-      <div className="flex flex-col h-full overflow-hidden gap-3 pt-1">
-        <div className="h-8 w-full flex items-center justify-between flex-shrink-0">
-          <div className="h-6 w-48 rounded-lg bg-muted/30 animate-pulse" />
-          <div className="h-8 w-36 rounded-lg bg-muted/20 animate-pulse" />
-        </div>
-        <div className="h-11 grid grid-cols-4 gap-2 flex-shrink-0">
-          {[1, 2, 3, 4].map(i => <div key={i} className="rounded-xl bg-muted/15 animate-pulse border border-border/10" />)}
-        </div>
-        <div className="flex gap-3 flex-1 min-h-0">
-          <div className="flex-[3] rounded-2xl bg-muted/15 animate-pulse border border-border/10" />
-          <div className="flex-[2] flex flex-col gap-3 min-h-0">
-            <div className="flex-[3] rounded-2xl bg-muted/15 animate-pulse border border-border/10" />
-            <div className="flex-[2] rounded-2xl bg-muted/15 animate-pulse border border-border/10" />
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (!companyId) {
     return (
@@ -562,10 +685,16 @@ export default function ClientDashboardHome({
       <div className="relative flex-shrink-0 w-full">
         <div ref={chipsScrollRef} className="overflow-x-auto no-scrollbar">
           <div className="flex flex-nowrap gap-2">
-            {statChips.map(chip => (
-              <KpiChip key={chip.label} icon={chip.icon} label={chip.label} value={chip.value} hexColor={chip.hexColor} onClick={() => onNavigateToTickets?.(chip.filterKey)} />
-            ))}
-            <KpiChip icon={MessageCircle} label="Conversaciones" value={conversationsCount.toLocaleString("es-CL")} hexColor="#10b981" subLabel="Totales" onClick={() => onNavigateToConversations()} />
+            {loading && statChips.length === 0
+              ? [0, 1, 2, 3].map(i => (
+                  <div key={i} className="rounded-2xl bg-muted/15 animate-pulse border border-border/10 flex-shrink-0 w-[140px] h-[78px]" />
+                ))
+              : statChips.map(chip => (
+                  <KpiChip key={chip.label} icon={chip.icon} label={chip.label} value={chip.value} hexColor={chip.hexColor} onClick={() => onNavigateToTickets?.(chip.filterKey)} />
+                ))}
+            {loading
+              ? <div className="rounded-2xl bg-muted/15 animate-pulse border border-border/10 flex-shrink-0 w-[140px] h-[78px]" />
+              : <KpiChip icon={MessageCircle} label="Conversaciones" value={conversationsCount.toLocaleString("es-CL")} hexColor="#10b981" subLabel="Totales" onClick={() => onNavigateToConversations()} />}
             {creditsEnabled && credits && (
               <KpiChip icon={CreditCard} label="Créditos WA" value={(credits.balance ?? 0).toLocaleString("es-CL")}
                 hexColor={(credits.balance ?? 0) <= Math.max(100, Math.floor((credits.total_purchased ?? 0) * 0.1)) ? "#f59e0b" : "#8b5cf6"}
@@ -618,6 +747,15 @@ export default function ClientDashboardHome({
               </div>
             </div>
             <div className="flex-1 p-2 min-h-0">
+              {loading ? (
+                // Columnas falsas con el alto disponible: el layout queda armado desde el
+                // primer paint en vez de una pantalla en blanco esperando la base.
+                <div className="h-full w-full flex items-end gap-1.5 px-1 pb-1">
+                  {[38, 62, 45, 80, 55, 70, 40, 66, 52, 74, 44, 60, 36, 58].map((h, i) => (
+                    <div key={i} className="flex-1 rounded-t-md bg-muted/20 animate-pulse" style={{ height: `${h}%` }} />
+                  ))}
+                </div>
+              ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={ticketsByDay} margin={{ top: 4, right: 10, left: -25, bottom: 0 }}>
                   <defs>
@@ -638,6 +776,7 @@ export default function ClientDashboardHome({
                   <Area type="monotone" dataKey="finalizados" name="Finalizados" stroke={CHART_COLORS[2]} fill="url(#gradFinalizados)" strokeWidth={2.5} dot={false} activeDot={{ r: 4, fill: CHART_COLORS[2] }} />
                 </AreaChart>
               </ResponsiveContainer>
+              )}
             </div>
           </div>
 
@@ -656,7 +795,17 @@ export default function ClientDashboardHome({
                 )}
               </div>
               <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-1.5">
-                {problemConvs.length === 0 ? (
+                {loading ? (
+                  [0, 1, 2, 3].map(i => (
+                    <div key={i} className="flex items-start gap-2 p-2 rounded-xl border border-border/30 bg-background/40">
+                      <div className="w-7 h-7 rounded-lg bg-muted/25 animate-pulse flex-shrink-0" />
+                      <div className="flex-1 space-y-1.5 pt-0.5">
+                        <div className="h-2.5 w-24 rounded bg-muted/25 animate-pulse" />
+                        <div className="h-2 w-full rounded bg-muted/15 animate-pulse" />
+                      </div>
+                    </div>
+                  ))
+                ) : problemConvs.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center gap-2">
                     <CheckCircle2 className="w-7 h-7 text-emerald-500/40" />
                     <p className="text-xs text-muted-foreground/60">Sin problemas pendientes</p>
@@ -698,7 +847,16 @@ export default function ClientDashboardHome({
                 <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Distribución de Tickets</span>
               </div>
               <div className="flex-1 flex flex-col min-h-0 p-3">
-                {ticketStatusData.length === 0 ? (
+                {loading ? (
+                  <div className="flex gap-3 flex-1 min-h-0 items-center">
+                    <div className="w-[100px] h-[100px] rounded-full bg-muted/20 animate-pulse flex-shrink-0" />
+                    <div className="flex-1 space-y-2">
+                      {[0, 1, 2, 3].map(i => (
+                        <div key={i} className="h-2.5 rounded bg-muted/20 animate-pulse" style={{ width: `${85 - i * 12}%` }} />
+                      ))}
+                    </div>
+                  </div>
+                ) : ticketStatusData.length === 0 ? (
                   <div className="flex-1 flex items-center justify-center">
                     <p className="text-xs text-muted-foreground/60">Sin tickets</p>
                   </div>
@@ -769,9 +927,10 @@ export default function ClientDashboardHome({
             {isDropp ? (
               <div className="flex-1 flex flex-col items-center justify-center p-3 text-center gap-1.5 select-none min-h-0">
                 {loadingYCloud && !ycloudBalance ? (
-                  <div className="flex flex-col items-center gap-2">
-                    <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
-                    <span className="text-[10px] text-muted-foreground">Cargando saldo...</span>
+                  <div className="flex flex-col items-center gap-2 w-full">
+                    <div className="w-11 h-11 rounded-2xl bg-muted/25 animate-pulse" />
+                    <div className="h-6 w-24 rounded-md bg-muted/25 animate-pulse" />
+                    <div className="h-2.5 w-16 rounded bg-muted/15 animate-pulse" />
                   </div>
                 ) : ycloudBalance ? (
                   <>
@@ -792,6 +951,21 @@ export default function ClientDashboardHome({
                     <p className="text-[9px] text-muted-foreground/40 leading-snug">Revisa la API Key en configuración</p>
                   </div>
                 )}
+              </div>
+            ) : loading ? (
+              <div className="flex-1 flex flex-col min-h-0 p-2.5 gap-1.5">
+                <div className="flex items-center gap-2.5 flex-shrink-0">
+                  <div className="w-14 h-14 rounded-full bg-muted/20 animate-pulse flex-shrink-0" />
+                  <div className="space-y-2">
+                    <div className="h-7 w-16 rounded bg-muted/25 animate-pulse" />
+                    <div className="h-2 w-20 rounded bg-muted/15 animate-pulse" />
+                  </div>
+                </div>
+                <div className="flex-1 space-y-2 pt-1">
+                  {[0, 1, 2, 3].map(i => (
+                    <div key={i} className="h-2.5 rounded bg-muted/20 animate-pulse" style={{ width: `${80 - i * 10}%` }} />
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="flex-1 flex flex-col min-h-0 p-2.5 gap-1.5">
