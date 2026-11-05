@@ -225,16 +225,27 @@ function ConvStatusBadge({ conv, ticketStatus, labels }: {
     );
   }
 
+  /*
+   * La etiqueta dice lo que el dato realmente dice: `is_agent_active` es el bot,
+   * no la presencia de un humano. Antes decía «EN VIVO» con el bot encendido y
+   * desaparecía con el bot apagado, así que el operador lo leía como «hay alguien
+   * atendiendo» y no como «el bot responde solo».
+   */
   if (conv.is_agent_active) {
     return (
       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-green-500/30 bg-green-500/10 shadow-sm">
         <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_6px_#22c55e]" />
-        <span className="text-[9px] font-black tracking-widest uppercase text-green-500 drop-shadow-sm">EN VIVO</span>
+        <span className="text-[9px] font-black tracking-widest uppercase text-green-500 drop-shadow-sm">Bot activo</span>
       </span>
     );
   }
 
-  return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-muted-foreground/25 bg-muted-foreground/10">
+      <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/60" />
+      <span className="text-[9px] font-bold tracking-widest uppercase text-muted-foreground">Bot pausado</span>
+    </span>
+  );
 }
 
 function getMediaType(mediaUrl: string, messageType?: string): 'image' | 'audio' | 'video' | 'document' {
@@ -635,6 +646,28 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  /**
+   * Mensajes de CADA conversación, para que volver a un chat abierto hace un
+   * minuto no cueste un viaje de red. La clave es el `conversation_id`: un
+   * cambio de chat nunca puede pintar la caché de otro.
+   */
+  const mensajesCacheRef = useRef<Map<string, { msgs: Message[]; at: number; hayMas?: boolean }>>(new Map());
+  /** Página del hilo: los últimos N mensajes, no la conversación entera. */
+  const MENSAJES_PAGINA = 200;
+  /** Cuánto vale una página como para no volver a pedirla al cambiar de chat. */
+  const MENSAJES_CACHE_MS = 60_000;
+  /** Mientras es true y no hay mensajes, el hilo muestra un skeleton, no el chat anterior. */
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  /** Quedan mensajes más viejos por traer (el hilo bajó una página completa). */
+  const [hayMasViejos, setHayMasViejos] = useState(false);
+  const hayMasViejosRef = useRef(false);
+  const cargandoViejosRef = useRef(false);
+  /** Posición del scroll antes de anteponer mensajes viejos: hay que devolverla. */
+  const scrollRestaurarRef = useRef<{ alto: number; top: number } | null>(null);
+  /** Consumido por el auto-scroll al fondo para no pisar la carga de mensajes viejos. */
+  const evitarAutoScrollRef = useRef(false);
+  const prefetchEnVueloRef = useRef<Set<string>>(new Set());
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hasContent, setHasContent] = useState(false);
   const [showMobilePanel, setShowMobilePanel] = useState(false);
   const { setOpenMobile: setSidebarOpen } = useSidebar();
@@ -1480,6 +1513,21 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     if (!selectedConv) return;
     const convId = selectedConv.id;
 
+    /*
+     * Al cambiar de chat el hilo se limpia ANTES de pedir nada.
+     *
+     * Antes el estado se quedaba con los mensajes del chat anterior hasta que
+     * llegaba la respuesta, así que el operador podía contestarle a un cliente
+     * leyendo la conversación de otro. Con caché de la conversación el cambio es
+     * instantáneo; sin caché se pinta un skeleton de 3-4 burbujas.
+     */
+    const enCache = mensajesCacheRef.current.get(convId);
+    const cacheFresca = !!enCache && Date.now() - enCache.at < MENSAJES_CACHE_MS;
+    setMessages(cacheFresca ? enCache!.msgs : []);
+    setMessagesLoading(!cacheFresca);
+    setHayMasViejos(cacheFresca && !!enCache!.hayMas);
+    if (!cacheFresca) loadMessages(convId).catch(() => setMessagesLoading(false));
+
     // Reset unread_count
     const resetUnread = async () => {
       await supabase.from('conversations')
@@ -1491,7 +1539,6 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     // FIX RACE CONDITION: suscribirse PRIMERO y luego cargar mensajes.
     // Antes se cargaban los mensajes y luego se suscribía → si llegaba un mensaje
     // en ese intervalo, se perdía y nunca aparecía en pantalla aunque estuviera en la DB.
-    let latestLoadedAt: string | null = null;
 
     const channel = supabase
       .channel(`messages-${convId}`)
@@ -1504,19 +1551,25 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           .from("messages").select("*").eq("id", payload.new.id).single();
         const msg = (fullMsg || payload.new) as Message;
 
-        setMessages((prev) => {
-          if (prev.find(m => m.id === msg.id)) return prev;
-          const withoutOptimistic = prev.filter(m => {
-            if (!m.id.startsWith('opt-')) return true;
-            const sameContent = m.content === msg.content;
-            const sameDirection = m.direction === msg.direction;
-            const closeInTime = Math.abs(
-              new Date(m.created_at).getTime() - new Date(msg.created_at).getTime()
-            ) < 15_000;
-            return !(sameContent && sameDirection && closeInTime);
+        // Si el evento llega cuando el operador ya cambió de chat, no se pinta acá.
+        if (selectedConvRef.current === convId) {
+          setMessages((prev) => {
+            if (prev.find(m => m.id === msg.id)) return prev;
+            const withoutOptimistic = prev.filter(m => {
+              if (!m.id.startsWith('opt-')) return true;
+              const sameContent = m.content === msg.content;
+              const sameDirection = m.direction === msg.direction;
+              const closeInTime = Math.abs(
+                new Date(m.created_at).getTime() - new Date(msg.created_at).getTime()
+              ) < 15_000;
+              return !(sameContent && sameDirection && closeInTime);
+            });
+            const siguiente = [...withoutOptimistic, msg];
+            // La caché sigue al estado: volver a este chat no pierde lo recién llegado.
+            refrescarCacheMensajes(convId, siguiente);
+            return siguiente;
           });
-          return [...withoutOptimistic, msg];
-        });
+        }
 
         setConversations(prev => prev.map(c =>
           c.id === msg.conversation_id
@@ -1529,17 +1582,40 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         filter: `conversation_id=eq.${convId}`,
       }, (payload) => {
         // Actualiza status (read/delivered) en tiempo real sin recargar
-        setMessages((prev) => prev.map(m =>
-          m.id === payload.new.id ? { ...m, status: payload.new.status } : m
-        ));
+        if (selectedConvRef.current !== convId) return;
+        setMessages((prev) => {
+          const siguiente = prev.map(m =>
+            m.id === payload.new.id ? { ...m, status: payload.new.status } : m
+          );
+          refrescarCacheMensajes(convId, siguiente);
+          return siguiente;
+        });
       })
       .subscribe((status) => {
-        // Una vez confirmada la suscripción, cargar mensajes.
-        // Así no hay ventana de tiempo donde un mensaje pueda escaparse.
+        /*
+         * El hilo ya se pidió al abrir el chat. Acá sólo se cubre el hueco entre
+         * esa consulta y la suscripción confirmada: si un mensaje entra justo en
+         * el medio, no se pierde. Son 20 filas, no el hilo completo otra vez.
+         */
         if (status === "SUBSCRIBED") {
-          loadMessages(convId).then((msgs: any) => {
-            if (msgs) latestLoadedAt = msgs[msgs.length - 1]?.created_at || null;
-          });
+          supabase
+            .from("messages")
+            .select("*")
+            .eq("conversation_id", convId)
+            .order("created_at", { ascending: false })
+            .limit(20)
+            .then(({ data }) => {
+              if (!data || selectedConvRef.current !== convId) return;
+              setMessages((prev) => {
+                const porId = new Map(prev.map(m => [m.id, m]));
+                for (const m of data as unknown as Message[]) porId.set(m.id, m);
+                const siguiente = [...porId.values()].sort(
+                  (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                );
+                refrescarCacheMensajes(convId, siguiente);
+                return siguiente;
+              });
+            });
         }
       });
 
@@ -1565,6 +1641,9 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   }, [selectedConv?.id, loading]);
 
   useEffect(() => {
+    // Al anteponer mensajes viejos el scroll se conserva donde estaba; bajar al
+    // fondo ahí sería justo lo contrario de lo que el operador pidió.
+    if (evitarAutoScrollRef.current) { evitarAutoScrollRef.current = false; return; }
     const timer = setTimeout(() => {
       const wrapper = messagesContainerRef.current;
       if (!wrapper) return;
@@ -1575,6 +1654,33 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }, 50);
     return () => clearTimeout(timer);
   }, [messages, selectedConv?.id]);
+
+  /** Mantener el scroll donde estaba al anteponer la página de mensajes viejos. */
+  useLayoutEffect(() => {
+    const restaurar = scrollRestaurarRef.current;
+    if (!restaurar) return;
+    const wrapper = messagesContainerRef.current;
+    const viewport = wrapper?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+    scrollRestaurarRef.current = null;
+    if (!viewport) return;
+    viewport.scrollTop = viewport.scrollHeight - restaurar.alto + restaurar.top;
+  }, [messages]);
+
+  useEffect(() => { hayMasViejosRef.current = hayMasViejos; }, [hayMasViejos]);
+
+  /** Al llegar arriba del hilo se pide la página anterior (cursor por created_at). */
+  useEffect(() => {
+    if (!selectedConv) return;
+    const convId = selectedConv.id;
+    const wrapper = messagesContainerRef.current;
+    const viewport = wrapper?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+    if (!viewport) return;
+    const alLlegarArriba = () => {
+      if (viewport.scrollTop <= 80 && hayMasViejosRef.current) cargarMensajesViejos(convId);
+    };
+    viewport.addEventListener("scroll", alLlegarArriba, { passive: true });
+    return () => viewport.removeEventListener("scroll", alLlegarArriba);
+  }, [selectedConv?.id, messages.length]);
 
   useEffect(() => {
     selectedConvRef.current = selectedConv ? selectedConv.id : null;
@@ -2203,7 +2309,18 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   };
 
   const loadConversations = async () => {
-    let query: any = supabase.from("conversations").select("*");
+    /*
+     * La bandeja pedía `select("*")` SIN límite: 4.072 filas, 3,4 MB y 14-23 s
+     * medidos contra producción. De ahí el «Cargando chats...» que no salía
+     * nunca. Se traen las 500 más recientes y sólo las columnas que la vista usa.
+     */
+    let query: any = supabase
+      .from("conversations")
+      .select(
+        "id, wa_id, profile_name, profile_picture_url, last_message_at, last_message_preview, " +
+        "unread_count, is_agent_active, assigned_role, assigned_user_id, assigned_to, " +
+        "taken_by, taken_at, company_id, status, priority, web_activo_en"
+      );
     if (companyId) {
       query = query.eq("company_id", companyId);
     }
@@ -2217,6 +2334,11 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       }
       query = query.or(orConditions.join(','));
     }
+
+    // Tope y orden: las conversaciones más recientes primero, como las pinta la lista.
+    query = query
+      .order("last_message_at", { ascending: false, nullsFirst: false })
+      .limit(500);
 
     // Lanzar conversaciones y RPC de etiquetas en paralelo para que ticketLabels
     // esté disponible antes de construir el mapa de tickets.
@@ -2256,6 +2378,8 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
         status: c.is_agent_active ? 'abierto' : 'en_progreso'
       }));
       setConversations(enriched as unknown as Conversation[]);
+      // La bandeja ya está: que «Cargando chats...» no espere también el mapa de tickets.
+      setLoading(false);
       if (selectedConvRef.current) {
         const updated = enriched.find((c: any) => c.id === selectedConvRef.current);
         if (updated) setSelectedConv(updated as unknown as Conversation);
@@ -2293,13 +2417,123 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     setLoading(false);
   };
 
-  const loadMessages = async (convId: string) => {
-    const { data, error } = await supabase.from("messages").select("*").eq("conversation_id", convId).order("created_at", { ascending: true });
+  /**
+   * Los últimos mensajes de una conversación.
+   *
+   * Antes era `select("*")` sin `LIMIT` ni `ORDER`: se traía el hilo entero y en
+   * orden ascendente, que en un chat de 200+ mensajes son cientos de KB y un
+   * `Sort` completo en PostgREST. Ahora baja la página más reciente y se da
+   * vuelta en memoria, que es el orden en que se pinta.
+   *
+   * La respuesta SÓLO se pinta si el chat abierto sigue siendo el pedido: es lo
+   * que impedía ver los mensajes de la conversación anterior al cambiar rápido.
+   */
+  const refrescarCacheMensajes = (convId: string, msgs: Message[], hayMas?: boolean) => {
+    const previa = mensajesCacheRef.current.get(convId);
+    mensajesCacheRef.current.set(convId, {
+      msgs,
+      at: Date.now(),
+      hayMas: hayMas ?? previa?.hayMas ?? false,
+    });
+  };
 
-    if (data) {
-      setMessages(data as unknown as Message[]);
+  const loadMessages = async (convId: string, opts?: { forzar?: boolean }) => {
+    const cache = mensajesCacheRef.current.get(convId);
+    if (cache && !opts?.forzar && Date.now() - cache.at < MENSAJES_CACHE_MS) {
+      if (selectedConvRef.current === convId) {
+        setMessages(cache.msgs);
+        setMessagesLoading(false);
+        setHayMasViejos(!!cache.hayMas);
+      }
+      return cache.msgs;
     }
-    return data;
+
+    const { data } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", convId)
+      .order("created_at", { ascending: false })
+      .limit(MENSAJES_PAGINA);
+
+    const mas = (data?.length ?? 0) >= MENSAJES_PAGINA;
+    const msgs = ((data || []) as unknown as Message[]).slice().reverse();
+    if (data) refrescarCacheMensajes(convId, msgs, mas);
+
+    // Respuesta obsoleta: mientras llegaba, el operador cambió de chat.
+    if (selectedConvRef.current !== convId) return msgs;
+
+    setMessages(msgs);
+    setMessagesLoading(false);
+    setHayMasViejos(mas);
+    return msgs;
+  };
+
+  /** Precarga al pasar el mouse por la bandeja: al hacer clic el hilo ya está en memoria. */
+  const prefetchMensajes = (convId: string) => {
+    if (!convId) return;
+    const cache = mensajesCacheRef.current.get(convId);
+    if (cache && Date.now() - cache.at < MENSAJES_CACHE_MS) return;
+    if (prefetchEnVueloRef.current.has(convId)) return;
+    prefetchEnVueloRef.current.add(convId);
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("messages")
+          .select("*")
+          .eq("conversation_id", convId)
+          .order("created_at", { ascending: false })
+          .limit(MENSAJES_PAGINA);
+        if (data) {
+          refrescarCacheMensajes(convId, (data as unknown as Message[]).slice().reverse());
+        }
+      } finally {
+        prefetchEnVueloRef.current.delete(convId);
+      }
+    })();
+  };
+
+  /**
+   * Mensajes más viejos al llegar arriba del hilo (cursor por `created_at`).
+   * Sin esto, abrir un chat largo mostraría sólo la última página y el principio
+   * de la conversación desaparecería sin aviso.
+   */
+  const cargarMensajesViejos = async (convId: string) => {
+    if (cargandoViejosRef.current) return;
+    const actuales = mensajesCacheRef.current.get(convId)?.msgs
+      ?? (selectedConvRef.current === convId ? messages : []);
+    const primero = actuales[0];
+    if (!primero) return;
+
+    const wrapper = messagesContainerRef.current;
+    const vp = wrapper?.querySelector('[data-radix-scroll-area-viewport]') as HTMLElement | null;
+    if (vp) scrollRestaurarRef.current = { alto: vp.scrollHeight, top: vp.scrollTop };
+
+    cargandoViejosRef.current = true;
+    try {
+      const { data } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("conversation_id", convId)
+        .lt("created_at", primero.created_at)
+        .order("created_at", { ascending: false })
+        .limit(MENSAJES_PAGINA);
+
+      const viejos = ((data || []) as unknown as Message[]).slice().reverse();
+      const hayMas = viejos.length >= MENSAJES_PAGINA;
+      setHayMasViejos(hayMas);
+      if (!viejos.length || selectedConvRef.current !== convId) {
+        scrollRestaurarRef.current = null;
+        return;
+      }
+      evitarAutoScrollRef.current = true;
+      setMessages(prev => {
+        const siguiente = [...viejos, ...prev];
+        refrescarCacheMensajes(convId, siguiente, hayMas);
+        return siguiente;
+      });
+    } finally {
+      cargandoViejosRef.current = false;
+    }
   };
 
   const sendMessage = async () => {
@@ -3189,6 +3423,20 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   };
 
   const handleConvSelect = async (conv: Conversation) => {
+    /*
+     * El hilo se cambia en el mismo render que la cabecera.
+     *
+     * Si sólo se cambia `selectedConv`, el primer frame pinta los mensajes del
+     * chat anterior con el teléfono del nuevo. Se sustituye por la caché de ese
+     * chat o por el skeleton, nunca por lo que había.
+     */
+    if (conv.id !== selectedConv?.id) {
+      const enCache = mensajesCacheRef.current.get(conv.id);
+      const fresca = !!enCache && Date.now() - enCache.at < MENSAJES_CACHE_MS;
+      setMessages(fresca ? enCache!.msgs : []);
+      setMessagesLoading(!fresca);
+      setHayMasViejos(fresca && !!enCache!.hayMas);
+    }
     setSelectedConv(conv);
     if (conv.unread_count > 0) {
       // Clear unread count locally and db
@@ -3852,6 +4100,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           ) : convVisible.map((conv) => (
             <button
               key={conv.id}
+              data-conv-id={conv.id}
               onClick={() => handleConvSelect(conv)}
               /*
                * La vista previa se abre en cualquier fila que tenga algo que mostrar.
@@ -3863,6 +4112,14 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                * siente trabado.
                */
               onMouseEnter={(e) => {
+                /*
+                 * Precarga del hilo al pasar el mouse: el clic abre con los mensajes
+                 * ya en memoria. 120 ms para no disparar una consulta por cada fila
+                 * que el puntero cruza al bajar por la lista.
+                 */
+                if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
+                prefetchTimerRef.current = setTimeout(() => prefetchMensajes(conv.id), 120);
+
                 const hayNota = !!convNotes[conv.id]?.trim();
                 const hayMensaje = !!conv.last_message_preview?.trim();
                 if (!hayNota && !hayMensaje) return;
@@ -3874,6 +4131,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 }, 450);
               }}
               onMouseLeave={() => {
+                if (prefetchTimerRef.current) clearTimeout(prefetchTimerRef.current);
                 if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
                 setTooltipConvId(null);
                 setTooltipRect(null);
@@ -4194,7 +4452,26 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
             {/* Messages */}
             <div ref={messagesContainerRef} className="flex-1 min-h-0">
             <ScrollArea className="h-full px-4 md:px-8 pt-4 pb-0 scroll-smooth">
-              <div className="max-w-4xl mx-auto space-y-1 pb-0">
+              {/* `key` por conversación: el hilo se remonta limpio en cada cambio de chat. */}
+              <div key={selectedConv.id} data-hilo-conv={selectedConv.id} className="max-w-4xl mx-auto space-y-1 pb-0">
+                {messagesLoading && messages.length === 0 && (
+                  /*
+                   * Skeleton al abrir un chat que no está en caché. Lo que NUNCA
+                   * puede aparecer acá son los mensajes de la conversación anterior.
+                   */
+                  <div className="pt-6 space-y-4" aria-hidden="true">
+                    {[
+                      { w: "w-2/5", lado: "justify-start" },
+                      { w: "w-3/5", lado: "justify-end" },
+                      { w: "w-1/2", lado: "justify-start" },
+                      { w: "w-2/5", lado: "justify-end" },
+                    ].map((b, i) => (
+                      <div key={i} className={`flex ${b.lado}`}>
+                        <div className={`${b.w} h-12 rounded-2xl bg-muted-foreground/10 animate-pulse`} />
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {grouped.map((group) => (
                   <div key={group.date}>
                     <div className="flex justify-center my-6 sticky top-2 z-10">
