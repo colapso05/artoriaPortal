@@ -1,0 +1,1 @@
+import{c as e}from"./supabase-D-vHfFRB.js";const t="https://supabase.artoria.cl",s="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzcxMDM4MDAwLCJleHAiOjE5Mjg4MDQ0MDB9.9gJt5uMXBlDvFQC7CsRt7hU1Kch1NqNZJ27U7kek9CU",a=e(t,s,{auth:{storage:localStorage,persistSession:!0,autoRefreshToken:!0}});export{a as supabase};
