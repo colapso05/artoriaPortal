@@ -60,7 +60,9 @@ export function AppUpdater() {
         const res = await fetch(`/version.json?_=${Date.now()}`, { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
-        if (data?.version && data.version !== __APP_VERSION__) {
+        // Solo avisar si el deploy se marco como critico (fix de produccion).
+        // Los deploys normales no interrumpen a las empresas.
+        if (data?.critical === true && data.version && data.version !== __APP_VERSION__) {
           updateReadyRef.current = true;
           setUpdateReady(true);
         }
@@ -105,7 +107,7 @@ export function AppUpdater() {
           <RefreshCw className="w-4 h-4 text-primary" />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-semibold leading-tight">Hay una versión nueva del portal</p>
+          <p className="text-sm font-semibold leading-tight">Actualización importante del portal</p>
           <p className="text-[11px] text-muted-foreground leading-tight mt-0.5">
             Se aplicará sola al cambiar de sección, o actualiza ahora.
           </p>

@@ -26,6 +26,10 @@ export default defineConfig(({ mode, command }) => {
   // Identificador único de esta build para detectar cambios (número de build + timestamp,
   // así aunque alguien olvide versionar .build-number, cada build sigue siendo distinguible).
   const appVersion = `${buildNumber}-${Date.now()}`;
+  // Solo las builds marcadas como criticas avisan a los usuarios y fuerzan la recarga.
+  // Un deploy normal (pruebas, estilos, features sin urgencia) no molesta a las empresas.
+  const criticalUpdate = process.env.VITE_CRITICAL_UPDATE === "1";
+  const updateNotes = process.env.VITE_UPDATE_NOTES ?? "";
 
   return {
     server: {
@@ -51,7 +55,10 @@ export default defineConfig(({ mode, command }) => {
           const outDir = path.resolve(__dirname, "dist");
           try {
             mkdirSync(outDir, { recursive: true });
-            writeFileSync(path.join(outDir, "version.json"), JSON.stringify({ version: appVersion, build: buildNumber }));
+            writeFileSync(
+              path.join(outDir, "version.json"),
+              JSON.stringify({ version: appVersion, build: buildNumber, critical: criticalUpdate, notes: updateNotes }),
+            );
           } catch (e) {
             console.warn("[emit-version-json] no se pudo escribir version.json:", e);
           }

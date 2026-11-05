@@ -13,6 +13,7 @@ import { detalleDelError } from "@/lib/canalSalida";
 export type CompanyKey = "dropp" | "optve";
 
 export interface ConversacionSim {
+  client_rut?: string | null;
   id: string;
   company_key: string;
   phone: string;
@@ -29,6 +30,8 @@ export interface MensajeSim {
   kind: string;
   content: string;
   created_at: string;
+  /** JSON con intencion, runId, juez y ms (latencia del turno). */
+  meta?: string | null;
 }
 
 export interface EventoSim {
@@ -94,11 +97,44 @@ export interface RunSim {
   veredictos?: Veredicto[];
 }
 
+export interface TicketSim {
+  id: string;
+  categoria: string;
+  titulo: string;
+  descripcion: string;
+  phone: string | null;
+  rut: string | null;
+  sin_rut: number;
+  created_at: string;
+  nombre: string | null;
+  direccion: string | null;
+  plan: string | null;
+  prioridad: string;
+  estado: string;
+}
+
 export interface DetalleConversacion {
   conversacion: ConversacionSim;
   mensajes: MensajeSim[];
   runs: RunSim[];
-  tickets: unknown[];
+  tickets: TicketSim[];
+  /** Ficha real del cliente (ISPControl, solo lectura) si la conversación tiene RUT. */
+  ficha?: PerfilSim | null;
+}
+
+export interface EquipoSim {
+  id?: string;
+  modelo: string;
+  estado: string;
+  onu_type?: string;
+  online_dias?: number;
+}
+
+export interface BoletaSim {
+  numero: string;
+  monto: number;
+  vence: string;
+  pagada: boolean;
 }
 
 export interface PerfilSim {
@@ -108,9 +144,11 @@ export interface PerfilSim {
   telefono: string | null;
   direccion: string | null;
   plan: string | null;
+  costo_plan?: number | null;
+  dia_vencimiento?: number | null;
   estado: string | null;
-  equipos: unknown;
-  boletas: unknown;
+  equipos: EquipoSim[];
+  boletas: BoletaSim[];
 }
 
 export interface HerramientaSim {
@@ -138,6 +176,9 @@ export interface RespuestaTurno {
   violaciones: ViolacionSim[];
   veredicto: string | null;
   tipo_falla: string | null;
+  tickets?: TicketSim[];
+  /** Ventana de agrupacion aplicada antes del turno (ms). */
+  debounceMs?: number;
 }
 
 export interface ImagenEntrante {
@@ -216,7 +257,7 @@ export const simuladorApi = {
 
   borrar: (id: string) => invocar<{ ok: true }>({ action: "borrar", id }),
 
-  mensaje: (p: { id: string; texto: string; imagen?: ImagenEntrante; audio?: AudioEntrante }) =>
+  mensaje: (p: { id: string; texto: string; imagen?: ImagenEntrante; audio?: AudioEntrante; documento?: string }) =>
     invocar<RespuestaTurno>({
       action: "mensaje",
       id: p.id,
