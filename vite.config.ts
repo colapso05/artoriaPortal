@@ -104,6 +104,12 @@ export default defineConfig(({ mode, command }) => {
             if (/node_modules\/(leaflet|leaflet-draw|react-leaflet|@geoman-io)\//.test(p)) return "mapas";
             if (/node_modules\/@sentry\//.test(p)) return "sentry";
             if (/node_modules\/framer-motion\//.test(p)) return "motion";
+            // Los iconos de lucide son un módulo por icono y los usan casi todas las
+            // secciones: sin agrupar, Rollup deja ~45 chunks de 1 KB compartidos y el
+            // hosting responde por HTTP/1.1 (máximo 6 conexiones en paralelo), así que
+            // se convierten en varias tandas de peticiones. Un solo `icons` = 1 petición.
+            if (/node_modules\/lucide-react\//.test(p)) return "icons";
+            if (/node_modules\/date-fns\//.test(p)) return "dates";
             return undefined;
           },
         },
