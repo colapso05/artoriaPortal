@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+// El cliente de Supabase se importa dinámicamente al enviar: son ~45 KB gzip que
+// no tienen por qué bajar para ver la portada.
 
 export function ContactForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -25,6 +26,7 @@ export function ContactForm() {
     e.preventDefault();
     setIsSubmitting(true);
     try {
+      const { supabase } = await import("@/integrations/supabase/client");
       const { error } = await supabase.functions.invoke("contact-webhook", {
         body: {
           nombre: formData.name,

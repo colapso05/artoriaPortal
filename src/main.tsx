@@ -1,5 +1,4 @@
 import { createRoot } from "react-dom/client";
-import * as Sentry from "@sentry/react";
 import App from "./App.tsx";
 import "./index.css";
 
@@ -17,47 +16,62 @@ import "./index.css";
 // cambiar una linea de codigo.
 //
 // El DSN es publico por diseno: va en el bundle del cliente.
+// El SDK (~29 KB gzip) se carga despues del primer render y solo si hay DSN: no
+// tiene sentido frenar la portada para inicializar monitoreo.
 const DSN_ERRORES = import.meta.env.VITE_SENTRY_DSN as string | undefined;
-
-Sentry.init({
-  dsn: DSN_ERRORES || undefined,
-  environment: import.meta.env.PROD ? "production" : "development",
-
-  // Sin servidor configurado no se activa ni en produccion.
-  enabled: import.meta.env.PROD && !!DSN_ERRORES,
-
-  // Captura el 10% de sesiones para performance — suficiente para detectar cuellos de botella
-  tracesSampleRate: 0.1,
-
-  // Sin replay — los formularios de pago (MercadoPago) tienen datos de tarjeta sensibles
-  replaysSessionSampleRate: 0,
-  replaysOnErrorSampleRate: 0,
-
-  // Filtrar ruido conocido: ad-blockers bloqueando tracking de MP, errores de extensiones
-  ignoreErrors: [
-    "ResizeObserver loop limit exceeded",
-    "ResizeObserver loop completed with undelivered notifications",
-    /^Could not send event/,
-    /ERR_BLOCKED_BY_CLIENT/,
-    /^Non-Error promise rejection/,
-    /^Script error/,
-  ],
-
-  beforeSend(event) {
-    // Descartar errores que vienen del SDK interno de MercadoPago (no son nuestros)
-    const frames = event.exception?.values?.[0]?.stacktrace?.frames ?? [];
-    const fromMP = frames.some(f =>
-      f.filename?.includes("mercadopago") ||
-      f.filename?.includes("mlstatic") ||
-      f.filename?.includes("cardPayment")
-    );
-    if (fromMP) return null;
-    return event;
-  },
-});
 
 if ("scrollRestoration" in history) {
   history.scrollRestoration = "manual";
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
+
+if (import.meta.env.PROD && DSN_ERRORES) {
+  const iniciarSentry = () => {
+    import("@sentry/react")
+      .then((Sentry) => {
+        Sentry.init({
+          dsn: DSN_ERRORES,
+          environment: "production",
+
+          // Captura el 10% de sesiones para performance — suficiente para detectar cuellos de botella
+          tracesSampleRate: 0.1,
+
+          // Sin replay — los formularios de pago (MercadoPago) tienen datos de tarjeta sensibles
+          replaysSessionSampleRate: 0,
+          replaysOnErrorSampleRate: 0,
+
+          // Filtrar ruido conocido: ad-blockers bloqueando tracking de MP, errores de extensiones
+          ignoreErrors: [
+            "ResizeObserver loop limit exceeded",
+            "ResizeObserver loop completed with undelivered notifications",
+            /^Could not send event/,
+            /ERR_BLOCKED_BY_CLIENT/,
+            /^Non-Error promise rejection/,
+            /^Script error/,
+          ],
+
+          beforeSend(event) {
+            // Descartar errores que vienen del SDK interno de MercadoPago (no son nuestros)
+            const frames = event.exception?.values?.[0]?.stacktrace?.frames ?? [];
+            const fromMP = frames.some((f) =>
+              f.filename?.includes("mercadopago") ||
+              f.filename?.includes("mlstatic") ||
+              f.filename?.includes("cardPayment"),
+            );
+            if (fromMP) return null;
+            return event;
+          },
+        });
+      })
+      .catch(() => { /* sin monitoreo no se rompe nada */ });
+  };
+
+  // requestIdleCallback no existe en navegadores viejos: cae a setTimeout.
+  const conIdle = window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void };
+  if (typeof conIdle.requestIdleCallback === "function") {
+    conIdle.requestIdleCallback(iniciarSentry, { timeout: 3000 });
+  } else {
+    setTimeout(iniciarSentry, 1200);
+  }
+}

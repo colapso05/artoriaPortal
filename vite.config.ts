@@ -64,9 +64,50 @@ export default defineConfig(({ mode, command }) => {
           }
         },
       },
+      {
+        // Preload de los chunks críticos del inicio: el navegador los empieza a bajar
+        // mientras parsea el HTML, en vez de esperar a descubrirlos en el entry.
+        // Se resuelven en tiempo de build, así que nunca queda un hash viejo escrito a mano.
+        name: "preload-criticos",
+        apply: "build",
+        transformIndexHtml: {
+          order: "post",
+          handler(html, ctx) {
+            const bundle = (ctx as { bundle?: Record<string, { type: string; name?: string; fileName: string }> }).bundle ?? {};
+            const criticos = ["react-vendor"];
+            const links: string[] = [];
+            for (const item of Object.values(bundle)) {
+              if (item.type === "chunk" && item.name && criticos.includes(item.name) && item.fileName.endsWith(".js")) {
+                const href = `/${item.fileName}`;
+                if (!html.includes(href)) links.push(`    <link rel="modulepreload" crossorigin href="${href}" />`);
+              }
+            }
+            return links.length ? html.replace("</head>", links.join("\n") + "\n  </head>") : html;
+          },
+        },
+      },
     ].filter(Boolean),
     build: {
       sourcemap: false, // no exponer source maps en producción
+      manifest: process.env.VITE_MANIFEST === "1", // solo para diagnóstico local
+      rollupOptions: {
+        output: {
+          // Separa las librerías del código propio: se descargan en paralelo y, al no
+          // cambiar entre deploys, quedan cacheadas por el navegador. Sin catch-all: lo
+          // que no está listado se queda en el chunk que lo importa (así el inicio no
+          // arrastra pdf, xlsx ni los gráficos).
+          manualChunks(id: string) {
+            if (!id.includes("node_modules")) return undefined;
+            const p = id.replace(/\\/g, "/");
+            if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(p)) return "react-vendor";
+            if (/node_modules\/@supabase\//.test(p)) return "supabase";
+            if (/node_modules\/(leaflet|leaflet-draw|react-leaflet|@geoman-io)\//.test(p)) return "mapas";
+            if (/node_modules\/@sentry\//.test(p)) return "sentry";
+            if (/node_modules\/framer-motion\//.test(p)) return "motion";
+            return undefined;
+          },
+        },
+      },
     },
     resolve: {
       alias: {
