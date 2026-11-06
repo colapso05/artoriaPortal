@@ -21,6 +21,7 @@ import { motion } from "framer-motion";
 import { UMBRAL_ROJO, UMBRAL_AMARILLO } from "@/lib/saldoMensajes";
 import ResolucionesPorTema from "@/components/dashboard/ResolucionesPorTema";
 import GraficoAtencion, { filasAtencion, type FilaAtencion } from "@/components/dashboard/GraficoAtencion";
+import { leerAtencionCache, guardarAtencionCache } from "@/lib/cacheAtencion";
 import { isoChile, inicioMesChile, diaMes } from "@/lib/meses";
 import { ventasResumen, clp, type FilaVenta } from "@/lib/planes";
 import { metricasCanal, type FilaMetrica } from "@/lib/canalSalida";
@@ -86,6 +87,15 @@ const nf = (n: number) => (n || 0).toLocaleString("es-CL");
  * sale es un número que nadie puede discutir.
  */
 const VALOR_HORA_DEFECTO = 4000;
+
+/**
+ * Cuánto se espera la atención diaria antes de seguir con lo que ya se sabe.
+ *
+ * `get_atencion_ia_diaria` tarda 2,3-2,5 s medidos (05-11-2026) y es la única del panel
+ * que pasa de 200 ms. 4 s deja margen para una corrida lenta sin que la tarjeta quede
+ * esperando; si se pasa, se muestra la última lectura guardada y se reintenta una vez.
+ */
+const TIMEOUT_ATENCION_MS = 4000;
 
 /**
  * Si el panel usa la definición estricta de "resuelta sola".
@@ -313,6 +323,17 @@ export default function PanelEmpresa({
     const gen = ++genCarga.current;
     setCargando(true);
     setCargandoAtencion(true);
+    /*
+     * Arrancar con lo último que se sabe de la atención diaria.
+     *
+     * Sin esto, cada visita a la portada deja las dos tarjetas de arriba en esqueleto los
+     * 2,3 s que tarda la RPC. Con esto, el número está desde el primer paint (marcado como
+     * "actualizando") y la RPC sólo lo refresca. Si no hay nada guardado, se limpia lo que
+     * hubiera del rango anterior: mostrar los números de otro período sería peor que un
+     * esqueleto.
+     */
+    const cache = leerAtencionCache(companyId, rango);
+    setAtencion(cache?.filas ?? null);
     // El período anterior de la misma longitud, justo antes del actual. En "todo" no hay con qué comparar.
     const hayPrevio = rango !== "todo";
     const restar = (f: string, n: number) => iso(new Date(new Date(f + "T12:00:00").getTime() - n * 86400000));
@@ -320,17 +341,26 @@ export default function PanelEmpresa({
     const iniPrev = restar(desde, DIAS[rango] + 1);
     /*
      * La atención diaria se pide APARTE y no se espera: es la consulta más lenta del panel
-     * (medido contra Dropp el 05-11-2026: 2,51 s, contra 0,06-0,29 s de las otras cinco, y
+     * (medido contra Dropp el 05-11-2026: 2,4 s, contra 0,025-0,17 s de las otras cinco, y
      * eso devolviendo cero filas). Metida en el mismo Promise.all, el inicio se quedaba sin
-     * contenido hasta que terminaba. Arranca acá, en paralelo con las demás.
+     * contenido hasta que terminaba. Arranca acá, en paralelo con las demás y con su propio
+     * tope de tiempo: si a los 4 s no contestó, la pantalla sigue con lo que ya tenía.
      */
-    const atencionP = (supabase as any).rpc("get_atencion_ia_diaria", {
-      p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
-    });
-    const atencionPrevP = hayPrevio
-      ? (supabase as any).rpc("get_atencion_ia_diaria", { p_company_id: companyId, p_desde: iniPrev, p_hasta: finPrev })
-      : Promise.resolve(null);
-    const [res, tl, hr, vt, exp, pk, pr, vp] = await Promise.all([
+    const pedirAtencion = (d: string, h: string) => (supabase as any)
+      .rpc("get_atencion_ia_diaria", { p_company_id: companyId, p_desde: d, p_hasta: h })
+      .abortSignal(AbortSignal.timeout(TIMEOUT_ATENCION_MS));
+    const atencionP = pedirAtencion(desde, hoy());
+    const atencionPrevP = hayPrevio ? pedirAtencion(iniPrev, finPrev) : Promise.resolve(null);
+    /*
+     * Primera tanda: sólo lo que necesitan las cinco tarjetas de arriba.
+     *
+     * `experiencia_atencion` (170-270 ms medidos) y `peak_concurrencia` estaban acá y no
+     * alimentan ninguna tarjeta: sólo el panel de "Resolución del agente" y su módulo de
+     * espera. Metidos en el grupo, el más lento fijaba cuándo se apagaba `cargando`, así que
+     * las cuatro tarjetas de números esperaban por una consulta que no usan. Se piden en la
+     * segunda tanda (abajo) y los módulos que las usan se dibujan cuando llegan.
+     */
+    const [res, tl, hr, vt, pr, vp] = await Promise.all([
       supabase.rpc("get_analytics_summary", {
         p_company_id: companyId, p_start_date: desde, p_end_date: hoy(),
       }),
@@ -341,12 +371,6 @@ export default function PanelEmpresa({
         p_company_id: companyId, p_date_from: desde, p_date_to: hoy(),
       }),
       ventasResumen(companyId, desde, hoy()),
-      (supabase as any).rpc("experiencia_atencion", {
-        p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
-      }),
-      (supabase as any).rpc("peak_concurrencia", {
-        p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
-      }),
       hayPrevio
         ? supabase.rpc("get_analytics_summary", { p_company_id: companyId, p_start_date: iniPrev, p_end_date: finPrev })
         : Promise.resolve(null),
@@ -358,14 +382,12 @@ export default function PanelEmpresa({
       setPrevio({
         total: p.total_conversations ?? null,
         contencion: (TASA_ESTRICTA ? p.ai_resolution_rate_estricta ?? p.containment_rate : p.containment_rate) ?? null,
-        // La atención del período anterior llega después: se completa al final.
-        totalAt: null, contAt: null,
+        // La atención del período anterior llega después (o viene de la caché): se completa al final.
+        totalAt: cache?.prev?.totalAt ?? null, contAt: cache?.prev?.contAt ?? null,
         horas: p.time_saved_hours ?? null,
         ventas: ((vp ?? []) as FilaVenta[]).reduce((a, x) => a + (Number(x.ventas) || 0), 0),
       });
     } else setPrevio(null);
-    setExperiencia((exp?.data as Experiencia) ?? null);
-    setPeak((pk?.data as Peak) ?? null);
     setResumen((res.data as Resumen) ?? null);
     setLinea(Array.isArray(tl.data) ? (tl.data as FilaLinea[]) : []);
     setHoras(Array.isArray(hr.data) ? hr.data : []);
@@ -373,21 +395,64 @@ export default function PanelEmpresa({
     // Con esto el panel ya tiene todo lo rápido: pinta y deja en esqueleto lo que falta.
     setCargando(false);
 
+    /*
+     * Segunda tanda: lo del panel de "Resolución del agente". No la espera nadie de arriba y
+     * no fija ningún estado de carga compartido: cada módulo decide con su dato (hoy los dos
+     * que la usan devuelven `null` mientras `experiencia` es null y aparecen cuando llega).
+     */
+    Promise.all([
+      (supabase as any).rpc("experiencia_atencion", {
+        p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
+      }),
+      (supabase as any).rpc("peak_concurrencia", {
+        p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
+      }),
+    ]).then(([exp, pk]) => {
+      if (gen !== genCarga.current) return;
+      setExperiencia((exp?.data as Experiencia) ?? null);
+      setPeak((pk?.data as Peak) ?? null);
+    });
+
     // Parte lenta: las conversaciones se cuentan con la atención diaria (la misma del
     // gráfico), no con el análisis nocturno.
     const [at, apv] = await Promise.all([atencionP, atencionPrevP]);
     if (gen !== genCarga.current) return;
+
+    /*
+     * Si la RPC no llegó en 4 s o falló, se reintenta UNA vez sin tope de tiempo.
+     *
+     * El `AbortSignal.timeout` existe para que la pantalla no espere, no para perder el dato:
+     * abortar la petición deja las tarjetas con la lectura guardada, así que el reintento es
+     * lo que las pone al día. Es una sola llamada extra, y sólo cuando la primera no llegó.
+     */
+    let datosAt = at?.error ? null : at?.data;
+    if (at?.error) {
+      const otra = await (supabase as any).rpc("get_atencion_ia_diaria", {
+        p_company_id: companyId, p_desde: desde, p_hasta: hoy(),
+      });
+      if (gen !== genCarga.current) return;
+      if (!otra?.error) datosAt = otra?.data;
+    }
+
     const filasPrev = apv?.error ? null : filasAtencion(apv?.data);
     const sumPrev = filasPrev?.reduce((a, f) => ({
       total: a.total + f.simples + f.complejas + f.derivadas + f.sinAtencion, ia: a.ia + f.simples + f.complejas,
     }), { total: 0, ia: 0 }) ?? null;
     const totalAt = sumPrev && sumPrev.total > 0 ? sumPrev.total : null;
     const contAt = sumPrev && sumPrev.total > 0 ? (sumPrev.ia / sumPrev.total) * 100 : null;
-    // Si la función falla (o todavía no existe) queda null y el gráfico de siempre sigue funcionando.
-    setAtencion(at?.error ? null : filasAtencion(at?.data));
+    const filas = datosAt == null ? null : filasAtencion(datosAt);
+    /*
+     * Con dato nuevo se pinta y se guarda. Sin dato nuevo no se borra lo que ya se veía: la
+     * lectura de la caché sigue en pantalla con su "actualizando", que es la verdad (no se
+     * pudo actualizar), en vez de tapar el número con un esqueleto eterno.
+     */
+    if (filas) {
+      setAtencion(filas);
+      guardarAtencionCache(companyId, rango, filas, { totalAt, contAt });
+    }
     setPrevio(p => (p ? { ...p, totalAt, contAt } : p));
     setCargandoAtencion(false);
-  }, [companyId, desde]);
+  }, [companyId, desde, rango]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -578,7 +643,8 @@ export default function PanelEmpresa({
           titulo="Volumen y resolución"
           nota="Las dos franjas se suman: el alto de cada día es el total de conversaciones"
         >
-          {atencion ? <GraficoAtencion filas={atencion} cargando={cargando} alto={enPanel ? 340 : 230} /> : (<>
+          {/* Con filas (de la red o de la última visita) se dibuja ya: el gráfico no espera. */}
+          {atencion ? <GraficoAtencion filas={atencion} cargando={false} alto={enPanel ? 340 : 230} /> : (<>
           {cargando ? <Espera alto={enPanel ? 340 : 230} /> : serie.length === 0 ? (
             <Vacio texto="Todavía no hay conversaciones en este período" alto={enPanel ? 340 : 230} />
           ) : (
@@ -804,8 +870,9 @@ export default function PanelEmpresa({
           icon={MessageCircle} tono="text-primary" fondo="bg-primary/10"
           rotulo="Conversaciones"
           hub={{ abierto: hub === "conversaciones", alAbrir: () => setHub("conversaciones"), alEntrar: () => calentar("conversaciones"), innerRef: refConv }}
-          valor={cargando || cargandoAtencion ? null : nf(totalConv)}
+          valor={atencion || !cargando ? nf(totalConv) : null}
           delta={dConv}
+          actualizando={cargandoAtencion}
           pie={rango === "hoy" || rango === "todo"
             ? ""
             : `${((totalConv / DIAS[rango]) || 0).toFixed(1)} por día`}
@@ -814,8 +881,9 @@ export default function PanelEmpresa({
           icon={Bot} tono="text-emerald-600 dark:text-emerald-400" fondo="bg-emerald-500/15"
           rotulo="Resueltas sin operador"
           hub={{ abierto: hub === "resolucion", alAbrir: () => setHub("resolucion"), alEntrar: () => calentar("resolucion"), innerRef: refRes }}
-          valor={cargando || cargandoAtencion || contVista == null ? null : `${Math.round(contVista)}%`}
+          valor={(atencion || !cargando) && contVista != null ? `${Math.round(contVista)}%` : null}
           delta={dCont}
+          actualizando={cargandoAtencion}
           pie={`${nf(derivadasConv)} de ${nf(totalConv)} necesitaron a alguien`}
         />
         <Tile
@@ -1088,13 +1156,20 @@ function mkDelta(v: number, unidad: string, sube: "bueno" | "neutro"): Delta {
   };
 }
 
-function Tile({ icon: Icon, tono, fondo = "bg-muted", rotulo, valor, pie, alTocar, delta, hub }: {
+function Tile({ icon: Icon, tono, fondo = "bg-muted", rotulo, valor, pie, alTocar, delta, hub, actualizando }: {
   icon: React.ElementType; tono: string; fondo?: string; rotulo: string;
   valor: string | null; pie: string;
   /** Si se puede abrir el detrás del número. */
   alTocar?: () => void;
   /** Cuánto cambió contra el período anterior. */
   delta?: Delta;
+  /**
+   * La cifra que se ve todavía no es la definitiva: o es la última visita (caché), o es el
+   * respaldo del resumen mientras la atención diaria viene en camino. Se dice en la tarjeta
+   * en vez de dejar el número sin contexto: es un dato provisional y quien lo mira tiene que
+   * poder saberlo sin adivinar.
+   */
+  actualizando?: boolean;
   /** Si la tarjeta abre un panel con más información al mantener el cursor encima. */
   hub?: { abierto: boolean; alAbrir: () => void; alEntrar?: () => void; innerRef: React.RefObject<HTMLDivElement> };
 }) {
@@ -1133,6 +1208,12 @@ function Tile({ icon: Icon, tono, fondo = "bg-muted", rotulo, valor, pie, alToca
               : delta.bueno ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
               {delta.texto !== "0%" && delta.texto !== "0 pts" && (delta.subio ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
               {delta.texto}
+            </span>
+          )}
+          {actualizando && (
+            <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-muted-foreground/70">
+              <span className="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse" />
+              actualizando
             </span>
           )}
         </div>

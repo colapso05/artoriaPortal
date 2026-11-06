@@ -255,6 +255,15 @@ const LIMITE_SEGMENTOS: Record<Range, number> = {
   all: 10000,
 };
 
+/**
+ * Ids por consulta al enriquecer las problemáticas.
+ *
+ * Un `.in()` con más de ~200 uuids pasa de los 8 KB de URL que PostgREST tolera (y el
+ * `hint` del cliente lo dice explícitamente). Por tandas el largo es fijo y no depende de
+ * cuántos problemas tenga la empresa.
+ */
+const POR_TANDA_ANALISIS = 100;
+
 function dateRange(r: Range) {
   const to = new Date();
   const from = r === "all"
@@ -1181,10 +1190,36 @@ export default function ConversationsAnalytics({ companyId, companyName, isAdmin
       segs.filter(s => s.segment === "problema").map(s => s.conversation_id).filter(Boolean)
     )];
     if (problemConvIds.length > 0) {
-      const { data: anaRows } = await (supabase as any)
-        .from("conversation_analysis")
-        .select("id,conversation_id,session_start,reviewed,veredicto_revision,nota_revisada,nota_original,reviewed_by,reviewed_at")
-        .in("conversation_id", problemConvIds);
+      /*
+       * Los ids de conversaciones problemáticas pueden ser cientos o miles: un `.in()` con
+       * 1.000 uuids arma una URL de ~37 KB, y PostgREST (o el navegador) la corta. Cuando
+       * eso pasaba, la consulta fallaba entera y en silencio: las problemáticas se quedaban
+       * con el `id` que devuelve la RPC de segmentos —que no está garantizado— y sin su
+       * estado de revisión.
+       *
+       * Se resuelve en dos pasos:
+       *  1. `analisis_por_conversaciones(p_ids)` recibe el arreglo por POST, así que no hay
+       *     límite de URL (44 ms con 40 ids, medido). Trae todas las no revisadas.
+       *  2. La función filtra `reviewed = false`, así que las ya dictaminadas no vienen: se
+       *     piden por tandas de 100 al endpoint de siempre. Sin esta segunda pasada esas
+       *     conversaciones perderían su dictamen y volverían a "Requieren revisión humana"
+       *     (en Dropp son 361 de 2.750 filas). Si algún día la función deja de filtrarlas,
+       *     la segunda pasada se queda sin ids y no cuesta nada.
+       */
+      const porId = new Map<string, any>();
+      const { data: porRpc } = await (supabase as any)
+        .rpc("analisis_por_conversaciones", { p_ids: problemConvIds });
+      for (const r of ((porRpc ?? []) as any[])) porId.set(r.id, r);
+      const cubiertas = new Set(((porRpc ?? []) as any[]).map(r => r.conversation_id));
+      const faltan = problemConvIds.filter(id => !cubiertas.has(id));
+      for (let i = 0; i < faltan.length; i += POR_TANDA_ANALISIS) {
+        const { data } = await (supabase as any)
+          .from("conversation_analysis")
+          .select("id,conversation_id,session_start,reviewed,veredicto_revision,nota_revisada,nota_original,reviewed_by,reviewed_at")
+          .in("conversation_id", faltan.slice(i, i + POR_TANDA_ANALISIS));
+        for (const r of ((data ?? []) as any[])) porId.set(r.id, r);
+      }
+      const anaRows = [...porId.values()];
       if (anaRows?.length) {
         const keyOf = (cid: string, ss: string | null) => `${cid}__${ss ?? ""}`;
         const rowMap = new Map((anaRows as any[]).map((r: any) => [keyOf(r.conversation_id, r.session_start), r]));
