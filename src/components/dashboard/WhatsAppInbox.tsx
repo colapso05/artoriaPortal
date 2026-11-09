@@ -695,6 +695,15 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
   const CONV_PAGE = 40;
   const [convVisibleCount, setConvVisibleCount] = useState(CONV_PAGE);
   const convSentinelRef = useRef<HTMLDivElement | null>(null);
+  // Paginación del servidor: la lista se pide por páginas de 200 con .range().
+  const PAGINA_CONVS = 200;
+  const [hayMasConvs, setHayMasConvs] = useState(false);
+  const [cargandoMasConvs, setCargandoMasConvs] = useState(false);
+  const paginaConvsRef = useRef(0);            // última página pedida (0-based)
+  const cargandoMasRef = useRef(false);
+  const ticketsRowsRef = useRef<any[]>([]);    // filas de tickets para mapear estado por conversación
+  const finalStatusesRef = useRef<Set<string>>(new Set(['cerrado']));
+  const conversationsRef = useRef<Conversation[]>([]);
   // Visor de imágenes/PDF dentro del portal (sin abrir pestañas).
   const [lightbox, setLightbox] = useState<LightboxMedia | null>(null);
   const [ticketStatusByConvId, setTicketStatusByConvId] = useState<Record<string, string>>({});
@@ -1458,14 +1467,40 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   // Handle initialConversationId
   useEffect(() => {
-    if (initialConversationId && conversations.length > 0) {
-      const target = conversations.find(c => c.id === initialConversationId);
-      if (target) {
-        handleConvSelect(target);
-        setChatFilter('all');
-        onConversationOpened?.();
-      }
+    if (!initialConversationId) return;
+    const target = conversations.find(c => c.id === initialConversationId);
+    if (target) {
+      handleConvSelect(target);
+      setChatFilter('all');
+      onConversationOpened?.();
+      return;
     }
+    /*
+     * La conversación del "Ver chat" no está en lo cargado (ticket viejo, otra
+     * página de la bandeja). Antes esto no hacía nada y el botón parecía muerto:
+     * ahora se pide la fila puntual y se abre igual.
+     */
+    let cancelado = false;
+    (async () => {
+      let q: any = supabase
+        .from("conversations")
+        .select(
+          "id, wa_id, profile_name, profile_picture_url, last_message_at, last_message_preview, " +
+          "unread_count, is_agent_active, assigned_role, assigned_user_id, assigned_to, " +
+          "taken_by, taken_at, company_id, status, priority, web_activo_en"
+        )
+        .eq("id", initialConversationId);
+      if (companyId) q = q.eq("company_id", companyId);
+      const { data } = await q.maybeSingle();
+      if (cancelado || !data) return;
+      const conv = enriquecerConv(data) as unknown as Conversation;
+      setConversations(prev => (prev.some(c => c.id === conv.id) ? prev : [conv, ...prev]));
+      setTicketStatusByConvId(prev => ({ ...prev, ...mapaTickets([conv]) }));
+      handleConvSelect(conv);
+      setChatFilter('all');
+      onConversationOpened?.();
+    })();
+    return () => { cancelado = true; };
   }, [initialConversationId, conversations]);
 
   /**
@@ -2313,42 +2348,68 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
     }
   };
 
-  const loadConversations = async () => {
-    /*
-     * La bandeja pedía `select("*")` SIN límite: 4.072 filas, 3,4 MB y 14-23 s
-     * medidos contra producción. De ahí el «Cargando chats...» que no salía
-     * nunca. Se traen las 500 más recientes y sólo las columnas que la vista usa.
-     */
-    let query: any = supabase
+  /*
+   * Filas de la bandeja, por páginas de 200 con .range().
+   * Antes eran 500 fijas sin offset: con 2.406 conversaciones, el resto del
+   * historial no existía para la vista y "Ver chat" de un ticket viejo no
+   * encontraba nada. La página 0 se carga al entrar; el resto, al llegar al
+   * final del scroll.
+   */
+  const construirQueryConvs = () => {
+    let q: any = supabase
       .from("conversations")
       .select(
         "id, wa_id, profile_name, profile_picture_url, last_message_at, last_message_preview, " +
         "unread_count, is_agent_active, assigned_role, assigned_user_id, assigned_to, " +
         "taken_by, taken_at, company_id, status, priority, web_activo_en"
       );
-    if (companyId) {
-      query = query.eq("company_id", companyId);
-    }
-
+    if (companyId) q = q.eq("company_id", companyId);
     // Siempre excluir cerrados
-    query = query.neq("status", "cerrado");
+    q = q.neq("status", "cerrado");
     if (userRole === "operador" && userId) {
-      let orConditions = [`taken_by.eq.${userId}`];
+      const orConditions = [`taken_by.eq.${userId}`];
       if (operatorRoles && operatorRoles.length > 0) {
         orConditions.push(`and(assigned_role.in.(${operatorRoles.join(',')}),taken_by.is.null)`);
       }
-      query = query.or(orConditions.join(','));
+      q = q.or(orConditions.join(','));
     }
-
-    // Tope y orden: las conversaciones más recientes primero, como las pinta la lista.
-    query = query
+    // Orden estable entre páginas: sin un desempate, dos filas con el mismo
+    // last_message_at pueden repetirse o saltearse al pedir el offset siguiente.
+    return q
       .order("last_message_at", { ascending: false, nullsFirst: false })
-      .limit(500);
+      .order("id", { ascending: false });
+  };
+
+  const enriquecerConv = (c: any) => ({
+    ...c,
+    status: c.is_agent_active ? 'abierto' : 'en_progreso',
+  });
+
+  // Mapa conversación → estado del ticket, con las filas de tickets ya en memoria.
+  const mapaTickets = (convs: any[]) => {
+    const map: Record<string, string> = {};
+    for (const t of ticketsRowsRef.current) {
+      if (finalStatusesRef.current.has(t.status)) continue;
+      if (t.conversation_id && !map[t.conversation_id]) {
+        map[t.conversation_id] = t.status;
+      } else if (!t.conversation_id) {
+        const phone = t.customer_phone?.replace(/^\+/, '') || '';
+        const matchedConv = convs.find((c: any) => (c.wa_id ?? '').replace(/^\+/, '') === phone);
+        if (matchedConv && !map[matchedConv.id]) map[matchedConv.id] = t.status;
+      }
+    }
+    return map;
+  };
+
+  const loadConversations = async () => {
+    // Se recargan todas las páginas ya cargadas: si el operador scrolleó y entra
+    // un mensaje por realtime, el refresco no debe devolverlo al tope.
+    const hasta = paginaConvsRef.current * PAGINA_CONVS + (PAGINA_CONVS - 1);
 
     // Lanzar conversaciones y RPC de etiquetas en paralelo para que ticketLabels
     // esté disponible antes de construir el mapa de tickets.
     const [{ data }, rpcResult] = await Promise.all([
-      query,
+      construirQueryConvs().range(0, hasta),
       companyId
         ? (supabase as any).rpc('get_inbox_filter_counts', { p_company_id: companyId })
         : Promise.resolve({ data: null }),
@@ -2376,13 +2437,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       setTicketLabels(freshLabels);
       freshLabels.filter((l: any) => l.is_final).forEach((l: any) => freshFinalStatuses.add(l.key));
     }
+    finalStatusesRef.current = freshFinalStatuses;
 
     if (data) {
-      const enriched = data.map((c: any) => ({
-        ...c,
-        status: c.is_agent_active ? 'abierto' : 'en_progreso'
-      }));
+      const enriched = data.map(enriquecerConv);
       setConversations(enriched as unknown as Conversation[]);
+      setHayMasConvs(data.length > hasta);
       // La bandeja ya está: que «Cargando chats...» no espere también el mapa de tickets.
       setLoading(false);
       if (selectedConvRef.current) {
@@ -2400,26 +2460,43 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
           .neq("status", "cerrado")
           .order("created_at", { ascending: false });
 
-        const map: Record<string, string> = {};
-        if (ticketData) {
-          for (const t of ticketData) {
-            if (freshFinalStatuses.has(t.status)) continue;
-
-            if (t.conversation_id && !map[t.conversation_id]) {
-              map[t.conversation_id] = t.status;
-            } else if (!t.conversation_id) {
-              const phone = t.customer_phone?.replace(/^\+/, '') || '';
-              const matchedConv = enriched.find((c: any) => c.wa_id.replace(/^\+/, '') === phone);
-              if (matchedConv && !map[matchedConv.id]) {
-                map[matchedConv.id] = t.status;
-              }
-            }
-          }
-        }
-        setTicketStatusByConvId(map);
+        // Se guardan las filas: al paginar hay que mapear también las nuevas.
+        ticketsRowsRef.current = ticketData ?? [];
+        setTicketStatusByConvId(mapaTickets(enriched));
       }
     }
     setLoading(false);
+  };
+
+  /**
+   * Página siguiente de la bandeja (200 filas). La dispara el scroll al llegar
+   * al final; si ya hay una en vuelo o la última vino incompleta, no hace nada.
+   */
+  const cargarMasConversaciones = async () => {
+    if (cargandoMasRef.current || !hayMasConvs) return;
+    cargandoMasRef.current = true;
+    setCargandoMasConvs(true);
+    try {
+      const pagina = paginaConvsRef.current + 1;
+      const desde = pagina * PAGINA_CONVS;
+      const hasta = desde + PAGINA_CONVS - 1;
+      const { data } = await construirQueryConvs().range(desde, hasta);
+      const nuevos = (data ?? []).map(enriquecerConv);
+      if (nuevos.length > 0) {
+        setConversations(prev => {
+          const vistos = new Set(prev.map(c => c.id));
+          return [...prev, ...(nuevos.filter(c => !vistos.has(c.id)) as unknown as Conversation[])];
+        });
+        setTicketStatusByConvId(mapaTickets([...conversationsRef.current, ...nuevos]));
+      }
+      paginaConvsRef.current = pagina;
+      setHayMasConvs((data?.length ?? 0) === PAGINA_CONVS);
+    } catch (e) {
+      console.warn('[bandeja] no se pudo cargar la página siguiente', e);
+    } finally {
+      cargandoMasRef.current = false;
+      setCargandoMasConvs(false);
+    }
   };
 
   /**
@@ -3533,32 +3610,41 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   const convVisible = filtered.slice(0, convVisibleCount);
 
+  // El refresco por realtime usa esta referencia para mapear tickets sin stale closure.
+  useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
+
   // Reiniciar el bloque visible al cambiar filtro o búsqueda.
   useEffect(() => { setConvVisibleCount(CONV_PAGE); }, [chatFilter, searchTerm]);
 
-  // Scroll infinito determinístico: auto-rellena hasta que haya barra de scroll y
-  // carga el siguiente bloque al acercarse al final. (Mismo enfoque que el centro de tickets.)
+  // Scroll infinito determinístico: auto-rellena hasta que haya barra de scroll,
+  // carga el siguiente bloque local y, cuando ya se pintaron todas las filas
+  // traídas, pide la página siguiente al servidor (200 más).
   useEffect(() => {
     const el = convSentinelRef.current;
     const vp = el?.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null;
     if (!vp) return;
     const total = filtered.length;
     const grow = () => setConvVisibleCount(c => (c < total ? Math.min(c + CONV_PAGE, total) : c));
+    const pedirPagina = () => {
+      if (hayMasConvs && !cargandoMasRef.current) void cargarMasConversaciones();
+    };
     const maybeLoad = () => {
-      if (convVisibleCount >= total) return;
+      if (convVisibleCount >= total) { pedirPagina(); return; }
       const hasScrollbar = vp.scrollHeight > vp.clientHeight + 1;
       // Auto-rellenar solo hasta tener barra de scroll (tope de seguridad por si el
       // contenedor no recortara, para no cascadear a miles).
       const needFill = !hasScrollbar && convVisibleCount < 160;
       const nearBottom = hasScrollbar && vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 300;
       if (needFill || nearBottom) grow();
+      // Si el bloque local ya se agotó con este scroll, que la próxima página venga ya.
+      if (nearBottom && convVisibleCount + CONV_PAGE >= total) pedirPagina();
     };
     vp.addEventListener("scroll", maybeLoad, { passive: true });
     // Medir el relleno inicial tras el layout (si no, scrollHeight/clientHeight
     // vienen sin asentar y se auto-rellena de más).
     const raf = requestAnimationFrame(maybeLoad);
     return () => { cancelAnimationFrame(raf); vp.removeEventListener("scroll", maybeLoad); };
-  }, [filtered.length, convVisibleCount]);
+  }, [filtered.length, convVisibleCount, hayMasConvs]);
 
   /*
    * Las iniciales salen del telefono, no del nombre.
@@ -3864,7 +3950,21 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
 
   const badgeCounts = useMemo(() => {
     const counts: Record<string, { count: number; unread: number }> = {};
+    // La RPC get_inbox_filter_counts cuenta sobre TODA la empresa (22 tickets en
+    // revisión_ia, no 4). Antes se ignoraba y el chip contaba solo lo cargado;
+    // por eso el badge decía 4 con 2.406 conversaciones en la tabla.
+    const porRpc = new Map<string, { count: number; unread: number }>();
+    for (const r of filterCounts ?? []) {
+      if (!r?.key) continue;
+      porRpc.set(r.key, {
+        count: Number(r.total_convs ?? 0),
+        unread: Number(r.unread_convs ?? 0),
+      });
+    }
     for (const label of ticketLabels) {
+      const deRpc = porRpc.get(label.key);
+      if (deRpc) { counts[label.key] = deRpc; continue; }
+      // Sin dato de la RPC (p.ej. 'en_espera' agregada en el cliente): calcular acá.
       let count = 0;
       let unread = 0;
       for (const c of conversations) {
@@ -3876,7 +3976,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
       counts[label.key] = { count, unread };
     }
     return counts;
-  }, [conversations, ticketStatusByConvId, ticketLabels]);
+  }, [conversations, ticketStatusByConvId, ticketLabels, filterCounts]);
 
   /*
    * Etiquetas en el orden en que se están usando.
@@ -4227,9 +4327,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
               </div>
             </button>
           ))}
-          {convVisibleCount < filtered.length && (
+          {(convVisibleCount < filtered.length || hayMasConvs) && (
             <div ref={convSentinelRef} className="py-3 flex items-center justify-center">
-              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" />
+              {convVisibleCount >= filtered.length && cargandoMasConvs ? (
+                <span className="text-[10px] text-muted-foreground/60">Cargando más chats...</span>
+              ) : (
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground/40" />
+              )}
             </div>
           )}
         </ScrollArea>
