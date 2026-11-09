@@ -209,10 +209,12 @@ function StatusBadge({ status, className = "" }: { status: string, className?: s
 }
 
 // Badge dinámico: Prioriza etiqueta de ticket (si no es resuelto), sino muestra EN VIVO (agente)
-function ConvStatusBadge({ conv, ticketStatus, labels }: {
+function ConvStatusBadge({ conv, ticketStatus, labels, ocultarBot = false }: {
   conv: Conversation;
   ticketStatus?: string;
   labels: Array<{ key: string; name: string; color: string }>;
+  /** En la lista no se muestra el estado del bot: solo la etiqueta del ticket. */
+  ocultarBot?: boolean;
 }) {
   const tsLabel = ticketStatus ? labels.find(l => l.key === ticketStatus) : null;
 
@@ -224,6 +226,9 @@ function ConvStatusBadge({ conv, ticketStatus, labels }: {
       </span>
     );
   }
+
+  // En la lista, el estado del bot no se pinta (la lógica de is_agent_active sigue intacta).
+  if (ocultarBot) return null;
 
   /*
    * La etiqueta dice lo que el dato realmente dice: `is_agent_active` es el bot,
@@ -4182,7 +4187,7 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                 </div>
                 <div className="flex flex-col gap-0.5">
                   <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                    <ConvStatusBadge conv={conv} ticketStatus={ticketStatusByConvId[conv.id]} labels={ticketLabels} />
+                    <ConvStatusBadge conv={conv} ticketStatus={ticketStatusByConvId[conv.id]} labels={ticketLabels} ocultarBot />
                     {/*
                      * Que la nota se vea sin pasar el mouse. Es el dato que hace
                      * abrir un chat antes que otro, y estaba escondido detrás de un
@@ -5355,7 +5360,12 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                           </Button>
                         ) : (
                           <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:bg-violet-500/10 font-bold uppercase tracking-wider" variant="outline">
-                            <Bot className="w-3.5 h-3.5" /> Activar IA
+                            <Bot className="w-3.5 h-3.5 shrink-0" />
+                            <span className="whitespace-normal leading-tight text-left">
+                              {activeTicket && !ticketIsFinal
+                                ? "Devolver al bot (la IA retoma esta conversacion)"
+                                : "Activar IA"}
+                            </span>
                           </Button>
                         )}
                         <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 font-bold uppercase tracking-wider" variant="outline">
