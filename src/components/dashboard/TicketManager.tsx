@@ -803,7 +803,7 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                       <Button variant="outline" size="sm" className="h-7 text-[10px] flex-1 gap-1" onClick={restoreAll}>
                         <History className="w-3 h-3" /> Restaurar Todo
                       </Button>
-                      <Button variant="outline" size="sm" className="h-7 text-[10px] flex-1 gap-1 text-destructive hover:bg-destructive/10" onClick={emptyTrash}>
+                      <Button variant="outline" size="sm" className="h-7 text-[10px] flex-1 gap-1 text-destructive hover:!bg-destructive/10 hover:!text-destructive" onClick={emptyTrash}>
                         <Trash className="w-3 h-3" /> Vaciar Papelera
                       </Button>
                     </div>
@@ -1014,15 +1014,15 @@ export default function TicketManager({ companyId, onOpenConversation, initialFi
                       </OnboardingTip>
                       
                       {!selectedTicket.deleted_at ? (
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10" onClick={() => softDeleteTicket(selectedTicket.id)}>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:!text-destructive hover:!bg-destructive/10" onClick={() => softDeleteTicket(selectedTicket.id)}>
                           <Trash2 className="w-4 h-4" />
                         </Button>
                       ) : (
                         <div className="flex gap-1">
-                           <Button variant="ghost" size="icon" className="h-8 w-8 text-emerald-500 hover:bg-emerald-500/10" onClick={() => restoreTicket(selectedTicket.id)}>
+                           <Button variant="ghost" size="icon" className="h-8 w-8 text-emerald-500 hover:!bg-emerald-500/10 hover:!text-emerald-500" onClick={() => restoreTicket(selectedTicket.id)}>
                             <History className="w-4 h-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:bg-destructive/10" onClick={() => permanentDeleteTicket(selectedTicket.id)}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:!bg-destructive/10 hover:!text-destructive" onClick={() => permanentDeleteTicket(selectedTicket.id)}>
                             <Trash className="w-4 h-4" />
                           </Button>
                         </div>

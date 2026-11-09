@@ -5350,16 +5350,16 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                           <Ticket className="w-3.5 h-3.5" /> Escalar a Ticket Central
                         </Button>
                         {!selectedConv.taken_by && (
-                          <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10 font-bold uppercase tracking-wider" variant="outline">
+                          <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                             <Hand className="w-3.5 h-3.5" /> Tomar Caso
                           </Button>
                         )}
                         {selectedConv.is_agent_active ? (
-                          <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:bg-accent hover:text-accent-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
+                          <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
                             <User className="w-3.5 h-3.5" /> Intervenir
                           </Button>
                         ) : (
-                          <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:bg-violet-500/10 font-bold uppercase tracking-wider" variant="outline">
+                          <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                             <Bot className="w-3.5 h-3.5 shrink-0" />
                             <span className="whitespace-normal leading-tight text-left">
                               {activeTicket && !ticketIsFinal
@@ -5368,13 +5368,13 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                             </span>
                           </Button>
                         )}
-                        <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 font-bold uppercase tracking-wider" variant="outline">
+                        <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                           <Forward className="w-3.5 h-3.5" /> Transferir Chat
                         </Button>
-                        <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:bg-orange-500/10 font-bold uppercase tracking-wider" variant="outline">
+                        <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                           ⚠️ Reportar Error IA
                         </Button>
-                        <Button onClick={() => setInfoClientModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-cyan-500/30 text-cyan-500 hover:bg-cyan-500/10 font-bold uppercase tracking-wider" variant="outline">
+                        <Button onClick={() => setInfoClientModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-cyan-500/30 text-cyan-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                           <RefreshCw className="w-3.5 h-3.5" /> Actualizar Info Cliente
                         </Button>
                       </div>
@@ -5400,23 +5400,23 @@ export default function WhatsAppInbox({ companyId, userId, userName, userRole, o
                       <Ticket className="w-3.5 h-3.5" /> Escalar a Ticket Central
                     </Button>
                     {!selectedConv.taken_by && (
-                      <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10 font-bold uppercase tracking-wider" variant="outline">
+                      <Button onClick={handleTakeCase} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-emerald-500/30 text-emerald-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                         <Hand className="w-3.5 h-3.5" /> Tomar Caso
                       </Button>
                     )}
                     {selectedConv.is_agent_active ? (
-                      <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:bg-accent hover:text-accent-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
+                      <Button onClick={() => handleToggleBot(false)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-input bg-background/50 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider text-foreground shadow-sm transition-all" variant="ghost">
                         <User className="w-3.5 h-3.5" /> Intervenir
                       </Button>
                     ) : (
-                      <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:bg-violet-500/10 font-bold uppercase tracking-wider" variant="outline">
+                      <Button onClick={() => handleToggleBot(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-violet-500/30 text-violet-500 dark:text-violet-400 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                         <Bot className="w-3.5 h-3.5" /> Activar IA
                       </Button>
                     )}
-                    <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:bg-blue-500/10 font-bold uppercase tracking-wider" variant="outline">
+                    <Button onClick={() => setIsTransferModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-blue-500/30 text-blue-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                       <Forward className="w-3.5 h-3.5" /> Transferir Chat
                     </Button>
-                    <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:bg-orange-500/10 font-bold uppercase tracking-wider" variant="outline">
+                    <Button onClick={() => setReportModalOpen(true)} className="w-full justify-center text-[10px] h-9 gap-2 rounded-xl border border-orange-500/30 text-orange-500 hover:!bg-muted hover:!text-foreground font-bold uppercase tracking-wider" variant="outline">
                       ⚠️ Reportar Error IA
                     </Button>
                   </div>
